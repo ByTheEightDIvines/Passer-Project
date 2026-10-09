@@ -138,6 +138,99 @@ daNpcPasser_c* nearestPasser(const daTag_KMsg_c* tag) {
     return result;
 }
 
+daNpcPasser_c* nearestThreatTarget(const fopAc_ac_c* enemy) {
+    if (enemy == nullptr || fopAcM_GetGroup(enemy) != fopAc_ENEMY_e || !inFieldRoom(enemy)) {
+        return nullptr;
+    }
+    daNpcPasser_c* result = nullptr;
+    f32 nearestDistanceSq = kThreatRadius * kThreatRadius;
+    for (auto& state : g_states) {
+        if (state.actor == nullptr || state.dead || !isPrototypePasser(state.actor) ||
+            fopAcM_GetRoomNo(state.actor) != fopAcM_GetRoomNo(enemy)) {
+            continue;
+        }
+        const f32 dx = state.actor->current.pos.x - enemy->current.pos.x;
+        const f32 dz = state.actor->current.pos.z - enemy->current.pos.z;
+        const f32 distanceSq = dx * dx + dz * dz;
+        if (distanceSq <= nearestDistanceSq) {
+            nearestDistanceSq = distanceSq;
+            result = state.actor;
+        }
+    }
+    return result;
+}
+
+bool isEnemyPlayerQuery(void* args, const fopAc_ac_c** enemyOut,
+                        const fopAc_ac_c** playerOut, daNpcPasser_c** targetOut) {
+    const auto* enemy = mods::arg<const fopAc_ac_c*>(args, 0);
+    const auto* target = mods::arg<const fopAc_ac_c*>(args, 1);
+    if (enemy == nullptr || target == nullptr || target != dComIfGp_getPlayer(0)) {
+        return false;
+    }
+    auto* passer = nearestThreatTarget(enemy);
+    if (passer == nullptr) {
+        return false;
+    }
+    *enemyOut = enemy;
+    *playerOut = target;
+    *targetOut = passer;
+    return true;
+}
+
+void redirectEnemyAngleY(void* args, void* retval) {
+    if (retval == nullptr) {
+        return;
+    }
+    const fopAc_ac_c* enemy = nullptr;
+    const fopAc_ac_c* player = nullptr;
+    daNpcPasser_c* passer = nullptr;
+    if (isEnemyPlayerQuery(args, &enemy, &player, &passer)) {
+        *static_cast<s16*>(retval) = cLib_targetAngleY(&enemy->current.pos, &passer->current.pos);
+    }
+}
+
+void redirectEnemyAngleX(void* args, void* retval) {
+    if (retval == nullptr) {
+        return;
+    }
+    const fopAc_ac_c* enemy = nullptr;
+    const fopAc_ac_c* player = nullptr;
+    daNpcPasser_c* passer = nullptr;
+    if (isEnemyPlayerQuery(args, &enemy, &player, &passer)) {
+        *static_cast<s16*>(retval) = cLib_targetAngleX(&enemy->current.pos, &passer->current.pos);
+    }
+}
+
+void redirectEnemyDistance(void* args, void* retval, bool squared, bool xzOnly) {
+    if (retval == nullptr) {
+        return;
+    }
+    const fopAc_ac_c* enemy = nullptr;
+    const fopAc_ac_c* player = nullptr;
+    daNpcPasser_c* passer = nullptr;
+    if (!isEnemyPlayerQuery(args, &enemy, &player, &passer)) {
+        return;
+    }
+    const f32 dx = passer->current.pos.x - enemy->current.pos.x;
+    const f32 dy = xzOnly ? 0.0f : passer->current.pos.y - enemy->current.pos.y;
+    const f32 dz = passer->current.pos.z - enemy->current.pos.z;
+    const f32 distanceSq = dx * dx + dy * dy + dz * dz;
+    *static_cast<f32*>(retval) = squared ? distanceSq : std::sqrt(distanceSq);
+}
+
+void redirectEnemySeenAngle(void* args, void* retval) {
+    if (retval == nullptr) {
+        return;
+    }
+    const fopAc_ac_c* enemy = nullptr;
+    const fopAc_ac_c* player = nullptr;
+    daNpcPasser_c* passer = nullptr;
+    if (isEnemyPlayerQuery(args, &enemy, &player, &passer)) {
+        *static_cast<s32*>(retval) = std::abs(static_cast<s16>(
+            cLib_targetAngleY(&enemy->current.pos, &passer->current.pos) - enemy->shape_angle.y));
+    }
+}
+
 void setDamageable(daNpcPasser_c* passer) {
     // Accept ordinary weapon target hits on the NPC's existing collision cylinder.
     passer->mCyl.SetTgType(0xD8FBFDFF);
@@ -190,6 +283,13 @@ DEFINE_HOOK(&daNpcPasser_c::setBaseMtx, PasserSetBaseMtx);
 DEFINE_HOOK(&daNpcPasser_c::execute, PasserExecute);
 DEFINE_HOOK(&daNpcCd2_c::checkFearSituation, PasserFearCheck);
 DEFINE_HOOK(&daTag_KMsg_c::Execute, TalkTagExecute);
+DEFINE_HOOK(&fopAcM_searchActorAngleY, EnemyTargetAngleY);
+DEFINE_HOOK(&fopAcM_searchActorAngleX, EnemyTargetAngleX);
+DEFINE_HOOK(&fopAcM_seenActorAngleY, EnemyTargetSeenAngle);
+DEFINE_HOOK(&fopAcM_searchActorDistance, EnemyTargetDistance);
+DEFINE_HOOK(&fopAcM_searchActorDistance2, EnemyTargetDistanceSquared);
+DEFINE_HOOK(&fopAcM_searchActorDistanceXZ, EnemyTargetDistanceXZ);
+DEFINE_HOOK(&fopAcM_searchActorDistanceXZ2, EnemyTargetDistanceXZSquared);
 
 void onCreateInitPost(ModContext*, void* args, void*, void*) {
     auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
@@ -326,6 +426,34 @@ void onTalkTagExecutePost(ModContext*, void* args, void*, void*) {
     }
 }
 
+void onEnemyTargetAngleYPost(ModContext*, void* args, void* retval, void*) {
+    redirectEnemyAngleY(args, retval);
+}
+
+void onEnemyTargetAngleXPost(ModContext*, void* args, void* retval, void*) {
+    redirectEnemyAngleX(args, retval);
+}
+
+void onEnemyTargetSeenAnglePost(ModContext*, void* args, void* retval, void*) {
+    redirectEnemySeenAngle(args, retval);
+}
+
+void onEnemyTargetDistancePost(ModContext*, void* args, void* retval, void*) {
+    redirectEnemyDistance(args, retval, false, false);
+}
+
+void onEnemyTargetDistanceSquaredPost(ModContext*, void* args, void* retval, void*) {
+    redirectEnemyDistance(args, retval, true, false);
+}
+
+void onEnemyTargetDistanceXZPost(ModContext*, void* args, void* retval, void*) {
+    redirectEnemyDistance(args, retval, false, true);
+}
+
+void onEnemyTargetDistanceXZSquaredPost(ModContext*, void* args, void* retval, void*) {
+    redirectEnemyDistance(args, retval, true, true);
+}
+
 ModResult registerGreetingFlow() {
     mods::flow::MessageBuilder builder;
     builder.box_kind(MESSAGE_BOX_TALK)
@@ -365,12 +493,19 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
         mods::hook::add_pre<PasserExecute>(onExecutePre) != MOD_OK ||
         mods::hook::add_post<PasserFearCheck>(onFearCheckPost) != MOD_OK ||
         mods::hook::add_pre<TalkTagExecute>(onTalkTagExecutePre) != MOD_OK ||
-        mods::hook::add_post<TalkTagExecute>(onTalkTagExecutePost) != MOD_OK) {
+        mods::hook::add_post<TalkTagExecute>(onTalkTagExecutePost) != MOD_OK ||
+        mods::hook::add_post<EnemyTargetAngleY>(onEnemyTargetAngleYPost) != MOD_OK ||
+        mods::hook::add_post<EnemyTargetAngleX>(onEnemyTargetAngleXPost) != MOD_OK ||
+        mods::hook::add_post<EnemyTargetSeenAngle>(onEnemyTargetSeenAnglePost) != MOD_OK ||
+        mods::hook::add_post<EnemyTargetDistance>(onEnemyTargetDistancePost) != MOD_OK ||
+        mods::hook::add_post<EnemyTargetDistanceSquared>(onEnemyTargetDistanceSquaredPost) != MOD_OK ||
+        mods::hook::add_post<EnemyTargetDistanceXZ>(onEnemyTargetDistanceXZPost) != MOD_OK ||
+        mods::hook::add_post<EnemyTargetDistanceXZSquared>(onEnemyTargetDistanceXZSquaredPost) != MOD_OK) {
         return mods::set_error(error, MOD_UNAVAILABLE, "failed to install passer prototype hooks");
     }
 
     svc_log->info(mod_ctx,
-        "Hyrule Field room 5 passer prototype initialized (damage, talk, escape, fall, Poe effect)");
+        "Hyrule Field room 5 passer prototype initialized (enemy pursuit, damage, talk, escape, fall, Poe effect)");
     return MOD_OK;
 }
 
