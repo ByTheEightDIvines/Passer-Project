@@ -15,6 +15,7 @@
 #include "d/d_particle_name.h"
 #include "f_op/f_op_actor_mng.h"
 #include "f_pc/f_pc_name.h"
+#include "m_Do/m_Do_ext.h"
 #include "m_Do/m_Do_mtx.h"
 #include "mods/service.hpp"
 #include "mods/svc/flow.hpp"
@@ -39,6 +40,13 @@ constexpr f32 kTalkTagRadius = 180.0f;
 constexpr int kStartingHealth = 3;
 constexpr int kDeathDuration = 84;
 constexpr u16 kTalkAnimation = 6;
+
+// Night schedule: the passer carries Link's own lantern (al_kantera.bmd from the Alink archive)
+// while it is dark. Game time runs 0-24 h; dusk starts at 18:00 and dawn is at 06:00.
+constexpr int kDuskHour = 18;
+constexpr int kDawnHour = 6;
+constexpr s32 kLanternJoint = 7;  // the hand joint the stock jar/basket/milk-jug accessories use
+constexpr f32 kLanternScale = 1.0f;
 constexpr u16 kTalkFlowGroup = 0;
 
 // Stock Hyrule Field room 5 already contains road route 0 (six points along the road, west to east).
@@ -69,6 +77,7 @@ struct PasserState {
     bool dead = false;
     bool grounded = false;
     bool talking = false;
+    J3DModel* lantern = nullptr;  // Link's stock lantern, owned by the passer's own heap
 };
 
 std::array<PasserState, 16> g_states{};
@@ -319,6 +328,8 @@ void beginDeath(daNpcPasser_c* passer, PasserState& state) {
 
 DEFINE_HOOK(&daNpcPasser_c::create_init, PasserCreateInit);
 DEFINE_HOOK(&daNpcPasser_c::callExecute, PasserCallExecute);
+DEFINE_HOOK(&daNpcPasser_c::createHeap, PasserCreateHeap);
+DEFINE_HOOK(&daNpcPasser_c::draw, PasserDraw);
 DEFINE_HOOK(&daNpcPasser_c::setCollision, PasserSetCollision);
 DEFINE_HOOK(&daNpcPasser_c::setBaseMtx, PasserSetBaseMtx);
 DEFINE_HOOK(&daNpcPasser_c::execute, PasserExecute);
@@ -331,6 +342,48 @@ DEFINE_HOOK(&fopAcM_searchActorDistance, EnemyTargetDistance);
 DEFINE_HOOK(&fopAcM_searchActorDistance2, EnemyTargetDistanceSquared);
 DEFINE_HOOK(&fopAcM_searchActorDistanceXZ, EnemyTargetDistanceXZ);
 DEFINE_HOOK(&fopAcM_searchActorDistanceXZ2, EnemyTargetDistanceXZSquared);
+
+bool isNight() {
+    if (dKy_darkworld_check()) {
+        return false;
+    }
+    const int hour = dKy_getdaytime_hour();
+    return hour >= kDuskHour || hour < kDawnHour;
+}
+
+// Runs inside the passer's heap-creation callback, so the lantern model lives and dies with the actor.
+void onCreateHeapPost(ModContext*, void* args, void* retval, void*) {
+    auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
+    if (passer == nullptr || fopAcM_GetName(passer) != fpcNm_NPC_PASSER_e ||
+        (fopAcM_GetParam(passer) & 0xFF) != kPasserType || retval == nullptr || *static_cast<int*>(retval) == 0) {
+        return;
+    }
+    auto* state = findState(passer, true);
+    if (state == nullptr) {
+        return;
+    }
+    auto* data = static_cast<J3DModelData*>(dComIfG_getObjectRes("Alink", "al_kantera.bmd"));
+    if (data != nullptr) {
+        state->lantern = mDoExt_J3DModel__create(data, 0x80000, 0x11000084);
+    }
+}
+
+void onDrawPost(ModContext*, void* args, void*, void*) {
+    auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
+    auto* state = findState(passer, false);
+    if (!isPrototypePasser(passer) || state == nullptr || state->lantern == nullptr || state->dead ||
+        passer->mpMorf == nullptr || !isNight()) {
+        return;
+    }
+    // Hang the lantern from the hand: follow the hand position but stay upright, like it would on a cord.
+    cXyz hand;
+    mDoMtx_multVecZero(passer->mpMorf->getModel()->getAnmMtx(kLanternJoint), &hand);
+    g_env_light.setLightTevColorType_MAJI(state->lantern, &passer->tevStr);
+    mDoMtx_stack_c::transS(hand.x, hand.y, hand.z);
+    mDoMtx_stack_c::scaleM(kLanternScale, kLanternScale, kLanternScale);
+    state->lantern->setBaseTRMtx(mDoMtx_stack_c::get());
+    mDoExt_modelUpdateDL(state->lantern);
+}
 
 void onCreateInitPost(ModContext*, void* args, void*, void*) {
     auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
@@ -586,6 +639,8 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
 
     if (mods::hook::add_post<PasserCreateInit>(onCreateInitPost) != MOD_OK ||
         mods::hook::add_pre<PasserCallExecute>(onCallExecutePre) != MOD_OK ||
+        mods::hook::add_post<PasserCreateHeap>(onCreateHeapPost) != MOD_OK ||
+        mods::hook::add_post<PasserDraw>(onDrawPost) != MOD_OK ||
         mods::hook::add_post<PasserSetCollision>(onSetCollisionPost) != MOD_OK ||
         mods::hook::add_post<PasserSetBaseMtx>(onBaseMtxPost) != MOD_OK ||
         mods::hook::add_pre<PasserExecute>(onExecutePre) != MOD_OK ||

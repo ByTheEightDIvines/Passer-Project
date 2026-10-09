@@ -29,6 +29,6 @@ Install the `.dusk` through Dusklight and test `F_SP121`, room 5.
 
 - The custom fall is procedural; the Bulblin animation has not been retargeted to the passer rig.
 - Enemy targeting uses shared aim/range hooks; enemy-specific routines that access Link directly may need their own handling.
-- Lantern behavior and additional dialogue lines are not included in this first pass.
+- The passer carries Link's stock lantern at night (18:00-06:00 game time, light world only). The lantern has no light source yet, and additional dialogue lines are not included.
 - The package builds, but collision, talk prompt, animation, and particle behavior still need an in-game test in Dusklight.
 
