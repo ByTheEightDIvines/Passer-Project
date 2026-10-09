@@ -83,7 +83,16 @@ jobs:
           cmake -B build "${args[@]}"
 
       - name: Build
-        run: cmake --build build --parallel
+        shell: bash
+        run: |
+          set +e
+          cmake --build build --parallel 2>&1 | tee build.log
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            # Surface the compiler errors as annotations so they are readable without opening the log.
+            grep -E 'error|FAILED|undefined' build.log | head -25 | sed 's/^/::error::/'
+          fi
+          exit "$rc"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
