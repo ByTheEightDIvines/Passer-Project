@@ -1,31 +1,33 @@
 # Hyrule Field Passer Prototype
 
-A local-first Twilight Princess / Dusklight prototype for a road-walking passer in Hyrule Field. The initial overlay is limited to stage `F_SP121`, room 5; it does not add routes in Eldin Bridge or the rooms that connect directly to Kakariko Village.
+A Twilight Princess / Dusklight prototype for one road-walking passer in Hyrule Field stage `F_SP121`, room 5. The room overlay and behavior hooks stay scoped to that stage and room.
 
-## Current prototype
+## Prototype behavior
 
-- Replaces room 5's room archive with a version containing the authored road path and one `MAN_a2` passer (`Passer`, type 8) assigned to path 1.
-- Adds a `TagEsc` waypoint on that same road path so the vanilla passer's existing escape behavior has a route to follow.
-- Packages as a Dusk asset overlay. It does not include the experimental native hook draft as compiled code.
+- A `MAN_a2` passer follows authored road route 1, with escape markers on that route.
+- Link can lock onto the passer and ordinary weapon target hits can damage it. The first prototype uses three hits.
+- Nearby enemies trigger the passer's vanilla run-away action.
+- At zero health, a short knockback/fall is played, the Poe smoke and spark effect appears, then the actor is removed.
+- A talk marker beside the passer uses Dusklight's Flow and Message services to show one custom line. The passer plays its existing talk animation during the conversation.
 
-## Build the asset overlay
+Enemy collision hits and enemy AI target selection are separate systems. The current hooks make the passer a valid collision target and trigger its flee response, but do not yet redirect every enemy's target choice from Link to a passer. That behavior must be implemented and verified for the field enemy actors before this prototype can claim it.
 
-Use a complete Dusklight source checkout and a compatible CMake toolchain:
+## Build locally
+
+The public repository intentionally excludes all ROM-derived files. The local prototype uses the prepared room archive built from your ROM dump, which contains the placed passer and the authored road route. The stock ROM's room 5 archive does not contain that prototype placement, so pass the prepared archive as the input:
 
 ```powershell
-cmake -S . -B build -DDUSK_DIR="C:\path\to\dusklight"
-cmake --build build
+python tools/build_overlay.py --room-archive "C:\path\to\prepared\F_SP121\R05_00.arc"
+cmake -S . -B build -DDUSK_DIR="C:\path\to\dusklight-source" -DDUSK_GAME_EXE="C:\path\to\Dusklight\sdk\windows-amd64.lib"
+cmake --build build --config Release
 ```
 
-Dusk writes `hyrule_field_passer_prototype.dusk` under the build output's `mods` directory. Install it through Dusklight and load `F_SP121`, room 5, to inspect the road passer.
+The generated overlay and finished `.dusk` stay local and are ignored by Git. The Windows package was built successfully at `build/mods/hyrule_field_passer_prototype.dusk`; it contains the native module and the local room overlay. Install it through Dusklight and test `F_SP121`, room 5.
 
-## Experimental behavior hooks
+## Current limits
 
-[`experimental/passer_hooks.cpp`](experimental/passer_hooks.cpp) is an uncompiled development draft for room-local lock-on attention, damage tracking, nearby-enemy flee, a procedural fall, and Poe death particles. It is included as source for continued development only. It has not been verified in game and is not part of the installable overlay build.
-
-Dialogue changes, a lantern prop, custom Bulblin animation retargeting, enemy AI target selection, and cyan recoloring are not implemented.
-
-## Data and scope
-
-The repository contains only the room 5 overlay needed for the prototype. It does not contain the ROM dump or the rest of the extracted game files. Keep future testing confined to `F_SP121`, room 5 until the route and actor behavior have been checked in game.
+- The custom fall is procedural; the Bulblin animation has not been retargeted to the passer rig.
+- Enemy AI target retargeting is not implemented yet; the current prototype only enables attack collision and threat-based fleeing.
+- Lantern behavior and additional dialogue lines are not included in this first pass.
+- The package builds, but collision, talk prompt, animation, and particle behavior still need an in-game test in Dusklight.
 
