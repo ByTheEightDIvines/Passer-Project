@@ -1,8 +1,8 @@
 {
   "id": "com.brian.hyrule_field_passer_prototype",
   "name": "Hyrule Field Passer Prototype",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "Brian",
-  "description": "Asset-only prototype adding one MAN_a2 passer to the road in Hyrule Field stage F_SP121 room 5."
+  "description": "Room-5 road passer prototype with damage, fleeing, a procedural death and Poe effect, and a custom talk line."
 }
 
