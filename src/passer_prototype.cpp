@@ -40,7 +40,7 @@ constexpr f32 kThreatRadius = 900.0f;
 constexpr f32 kTalkTagRadius = 180.0f;
 constexpr int kStartingHealth = 3;
 // Timings copied from the Bulblin (e_rd): it tips over backwards, hits the ground with a body-fall
-// sound, lies there for about 35 frames, then the game's standard smoke puff replaces it.
+// sound, lies there for about 35 frames, then it is removed. The Poe death effect plays when it dies.
 constexpr int kDeathFallFrames = 21;
 constexpr int kDeathDuration = kDeathFallFrames + 35;
 constexpr int kFlinchFrames = 18;
@@ -331,6 +331,12 @@ void beginDeath(daNpcPasser_c* passer, PasserState& state) {
     }
 
     passer->mCitizen.playVoice(2);
+
+    const cXyz scale(1.0f, 1.0f, 1.0f);
+    dComIfGp_particle_set(static_cast<u16>(dPa_RM(ID_ZF_S_PODEATH00SMK)),
+                          &passer->current.pos, &passer->shape_angle, &scale);
+    dComIfGp_particle_set(static_cast<u16>(dPa_RM(ID_ZF_S_PODEATH02SP)),
+                          &passer->current.pos, &passer->shape_angle, &scale);
 }
 
 DEFINE_HOOK(&daNpcPasser_c::create_init, PasserCreateInit);
@@ -477,9 +483,6 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
             mDoAud_seStart(Z2SE_CM_BODYFALL_M, &passer->current.pos, 0, 0);
         }
         if (state->deathFrame >= kDeathDuration) {
-            cXyz puff = passer->current.pos;
-            puff.y += 40.0f;
-            fopAcM_createDisappear(passer, &puff, 10, 0, 11);
             fopAcM_delete(passer);
             state->actor = nullptr;
             return HOOK_SKIP_ORIGINAL;
