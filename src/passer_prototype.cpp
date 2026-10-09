@@ -1,3 +1,12 @@
+// Standard headers first: the game headers redefine NULL, which breaks MSVC's STL if it is included afterwards.
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstring>
+#include <memory>
+#include <utility>
+#include <vector>
+
 #include "global.h"
 
 #include "d/actor/d_a_npc_passer.h"
@@ -12,10 +21,6 @@
 #include "mods/svc/hook.hpp"
 #include "mods/svc/log.h"
 
-#include <array>
-#include <cmath>
-#include <cstring>
-#include <vector>
 
 DEFINE_MOD();
 IMPORT_SERVICE(HookService, svc_hook);
