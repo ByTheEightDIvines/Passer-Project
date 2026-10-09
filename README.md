@@ -10,7 +10,7 @@ A Twilight Princess / Dusklight prototype for one road-walking passer in Hyrule 
 - At zero health, a short knockback/fall is played, the Poe smoke and spark effect appears, then the actor is removed.
 - A talk marker beside the passer uses Dusklight's Flow and Message services to show one custom line. The passer plays its existing talk animation during the conversation.
 
-Enemy collision hits and enemy AI target selection are separate systems. The current hooks make the passer a valid collision target and trigger its flee response, but do not yet redirect every enemy's target choice from Link to a passer. That behavior must be implemented and verified for the field enemy actors before this prototype can claim it.
+The prototype redirects shared enemy aim and range queries to the nearest living passer in room 5 when that passer is within 900 game units. This gives enemies using the common player-search helpers a passer target while preserving Link as the actual player actor. Enemy collision and AI target choice are separate systems, and enemies with special routines that read Link directly may still focus Link; the pursuit and attack behavior needs in-game verification.
 
 ## Build locally
 
@@ -27,7 +27,7 @@ The generated overlay and finished `.dusk` stay local and are ignored by Git. Th
 ## Current limits
 
 - The custom fall is procedural; the Bulblin animation has not been retargeted to the passer rig.
-- Enemy AI target retargeting is not implemented yet; the current prototype only enables attack collision and threat-based fleeing.
+- Enemy targeting uses shared aim/range hooks; enemy-specific routines that access Link directly may need their own handling.
 - Lantern behavior and additional dialogue lines are not included in this first pass.
 - The package builds, but collision, talk prompt, animation, and particle behavior still need an in-game test in Dusklight.
 
