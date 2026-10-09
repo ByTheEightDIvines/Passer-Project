@@ -90,7 +90,7 @@ jobs:
           rc=${PIPESTATUS[0]}
           if [ "$rc" -ne 0 ]; then
             # Surface the compiler errors as annotations so they are readable without opening the log.
-            grep -E 'error|FAILED|undefined' build.log | head -25 | sed 's/^/::error::/'
+            grep -E 'error|FAILED|undefined|passer_prototype.cpp\([0-9]+\)|see reference|see the first' build.log | head -45 | sed 's/^/::error::/'
           fi
           exit "$rc"
 
