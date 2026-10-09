@@ -20,12 +20,10 @@ add_subdirectory("${DUSKLIGHT_DIR}/sdk" dusklight-sdk EXCLUDE_FROM_ALL)
 
 configure_file(mod.json.in "${CMAKE_CURRENT_BINARY_DIR}/mod.json" @ONLY NEWLINE_STYLE LF)
 
-# The room overlay is built locally from your own ROM dump (tools/build_overlay.py) and is never
-# committed, so CI bundles contain only the native module. tools/inject_overlay.py adds the overlay
-# to the combined bundle afterwards.
+# No game files are modified: the passer, its escape tags and the talk tag are added to Hyrule Field
+# room 5 at runtime through Dusklight's StageService (see src/passer_prototype.cpp).
 add_mod(hyrule_field_passer_prototype
         FEATURES game
         SOURCES src/passer_prototype.cpp
         MOD_JSON "${CMAKE_CURRENT_BINARY_DIR}/mod.json"
-        OVERLAY_DIR overlay
 )

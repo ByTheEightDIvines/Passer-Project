@@ -20,6 +20,7 @@
 #include "mods/svc/flow.hpp"
 #include "mods/svc/hook.hpp"
 #include "mods/svc/log.h"
+#include "mods/svc/stage.h"
 
 
 DEFINE_MOD();
@@ -27,6 +28,7 @@ IMPORT_SERVICE(HookService, svc_hook);
 IMPORT_SERVICE(FlowService, svc_flow);
 IMPORT_SERVICE(MessageService, svc_message);
 IMPORT_SERVICE(LogService, svc_log);
+IMPORT_SERVICE(StageService, svc_stage);
 
 namespace {
 
@@ -38,6 +40,18 @@ constexpr int kStartingHealth = 3;
 constexpr int kDeathDuration = 84;
 constexpr u16 kTalkAnimation = 6;
 constexpr u16 kTalkFlowGroup = 0;
+
+// Stock Hyrule Field room 5 already contains road route 0 (six points along the road, west to east).
+// The passer, its two escape tags and the talk tag are added to the room at load time through
+// Dusklight's StageService, so no modified game files are needed.
+constexpr const char* kFieldStage = "F_SP121";
+constexpr int kRoadRoute = 0;
+constexpr f32 kSpawnHeight = 2000.0f;  // well above the road; the passer snaps itself to the ground on create
+struct RoadPoint {
+    f32 x, y, z;
+};
+constexpr RoadPoint kRoadStart{-14154.0f, kSpawnHeight, 23838.1f};
+constexpr RoadPoint kRoadEnd{-8813.7f, kSpawnHeight, 24389.4f};
 constexpr std::array kLanguages{
     MESSAGE_LANGUAGE_ENGLISH, MESSAGE_LANGUAGE_GERMAN, MESSAGE_LANGUAGE_FRENCH,
     MESSAGE_LANGUAGE_SPANISH, MESSAGE_LANGUAGE_ITALIAN, MESSAGE_LANGUAGE_JAPANESE,
@@ -436,6 +450,10 @@ HookAction onTalkTagExecutePre(ModContext*, void* args, void*, void*) {
     }
     auto* passer = nearestPasser(tag);
     if (passer != nullptr) {
+        // The tag is placed once at room load; keep it on the passer as it walks the road.
+        tag->current.pos = passer->current.pos;
+        tag->attention_info.position = passer->current.pos;
+        tag->eyePos = passer->current.pos;
         tag->mFlowNodeNo = g_talkNode;
         if (tag->eventInfo.checkCommandTalk()) {
             if (auto* state = findState(passer, false); state != nullptr && !state->talking) {
@@ -511,6 +529,48 @@ ModResult registerGreetingFlow() {
     return g_talkGraph ? MOD_OK : g_talkGraph.result();
 }
 
+ModResult addRoomActors() {
+    const auto add = [](const stage_actor_data_class& record) {
+        return svc_stage->add_actor(mod_ctx, kFieldStage, kFieldRoom, -1, &record, sizeof(record),
+                                    nullptr);
+    };
+
+    // The road passer: type 8 (MAN_a2), model variant 0, following road route 0. current.angle.x of
+    // 0xFF means "no end time", so it stays on the road all day.
+    const stage_actor_data_class passer{
+        .name = "Passer",
+        .base = {.parameters = static_cast<u32>(kPasserType) | (static_cast<u32>(kRoadRoute) << 16),
+                 .position = {kRoadStart.x, kRoadStart.y, kRoadStart.z},
+                 .angle = {0xFF, 0x4000, 0},
+                 .setID = 0xFFFF},
+    };
+    // Escape markers at both ends of the route: the passer runs to the nearer one when enemies appear.
+    const auto escapeTag = [](const RoadPoint& at) {
+        return stage_actor_data_class{
+            .name = "TagEsc",
+            .base = {.parameters = static_cast<u32>(kRoadRoute),
+                     .position = {at.x, at.y, at.z},
+                     .angle = {0, 0, 0},
+                     .setID = 0xFFFF},
+        };
+    };
+    // Type 0 KMsg talk marker. Finite eye/attention offsets give Link's ordinary A-button talk
+    // prompt; the hooks above move it onto the passer and give it the dialogue.
+    const stage_actor_data_class talkTag{
+        .name = "TagKMsg",
+        .base = {.parameters = 0x0080A0FF,
+                 .position = {kRoadStart.x, kRoadStart.y, kRoadStart.z},
+                 .angle = {0, 0, 0},
+                 .setID = 0xFFFF},
+    };
+
+    if (add(passer) != MOD_OK || add(escapeTag(kRoadStart)) != MOD_OK ||
+        add(escapeTag(kRoadEnd)) != MOD_OK || add(talkTag) != MOD_OK) {
+        return MOD_ERROR;
+    }
+    return MOD_OK;
+}
+
 }  // namespace
 
 extern "C" {
@@ -518,6 +578,10 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     const ModResult flowResult = registerGreetingFlow();
     if (flowResult != MOD_OK) {
         return mods::set_error(error, flowResult, "failed to register the passer dialogue flow");
+    }
+
+    if (addRoomActors() != MOD_OK) {
+        return mods::set_error(error, MOD_UNAVAILABLE, "failed to add the passer to Hyrule Field room 5");
     }
 
     if (mods::hook::add_post<PasserCreateInit>(onCreateInitPost) != MOD_OK ||
@@ -539,7 +603,7 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     }
 
     svc_log->info(mod_ctx,
-        "Hyrule Field room 5 passer prototype initialized (enemy pursuit, damage, talk, escape, fall, Poe effect)");
+        "Hyrule Field room 5 passer added at runtime (enemy pursuit, damage, talk, escape, fall, Poe effect)");
     return MOD_OK;
 }
 

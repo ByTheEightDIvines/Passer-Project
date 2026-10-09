@@ -1,10 +1,10 @@
 # Hyrule Field Passer Prototype
 
-A Twilight Princess / Dusklight prototype for one road-walking passer in Hyrule Field stage `F_SP121`, room 5. The room overlay and behavior hooks stay scoped to that stage and room.
+A Twilight Princess / Dusklight prototype for one road-walking passer in Hyrule Field stage `F_SP121`, room 5. Everything is done by code hooks plus Dusklight's StageService: no modified game files and no ROM-derived data are needed, so the whole mod builds from this repository.
 
 ## Prototype behavior
 
-- A `MAN_a2` passer follows authored road route 1, with escape markers on that route.
+- A `MAN_a2` passer is added to the room at load time and follows the stock road route 0 (six points along the field road), with escape markers at both ends of the route.
 - Link can lock onto the passer and ordinary weapon target hits can damage it. The first prototype uses three hits.
 - Nearby enemies trigger the passer's vanilla run-away action.
 - At zero health, a short knockback/fall is played, the Poe smoke and spark effect appears, then the actor is removed.
@@ -14,24 +14,16 @@ The prototype redirects shared enemy aim and range queries to the nearest living
 
 ## Build
 
-The public repository intentionally excludes all ROM-derived files. The room overlay (the prepared `F_SP121\R05_00.arc`, which contains the placed passer and the authored road route) is built locally from your own ROM dump and never committed.
+Pushing to GitHub runs the Actions workflow: it builds the native module for Linux, macOS, iOS, Windows and Android, then merges them into one all-platform `.dusk` (`mod-combined` artifact, `tools/merge_mod.py`). Nothing else is needed.
 
-**All-platform bundle.** Pushing to GitHub runs the Actions workflow. It builds the native module for Linux, macOS, iOS, Windows and Android, then merges them into one `mod-combined` artifact (`tools/merge_mod.py`). That bundle has no room data yet. Add your local overlay to it:
-
-```powershell
-python tools/build_overlay.py --room-archive "C:\path\to\prepared\F_SP121\R05_00.arc"
-python tools/inject_overlay.py path\to\hyrule_field_passer_prototype.dusk -o hyrule_field_passer_prototype_final.dusk
-```
-
-**Local Windows-only build** (no CI):
+Local build:
 
 ```powershell
-python tools/build_overlay.py --room-archive "C:\path\to\prepared\F_SP121\R05_00.arc"
 cmake -S . -B build -DDUSKLIGHT_DIR="C:\path\to\dusklight-source" -DDUSK_GAME_EXE="C:\path\to\Dusklight\sdk\windows-amd64.lib"
 cmake --build build --config Release
 ```
 
-The generated overlay and finished `.dusk` stay local and are ignored by Git. Install the `.dusk` through Dusklight and test `F_SP121`, room 5.
+Install the `.dusk` through Dusklight and test `F_SP121`, room 5.
 
 ## Current limits
 

@@ -2,7 +2,7 @@
 
 | Behavior | Status |
 | --- | --- |
-| One MAN_a2 passer on road route 1 in F_SP121 room 5 | Room overlay builder implements it; needs in-game verification |
+| One MAN_a2 passer on road route 1 in F_SP121 room 5 | Added at room load through StageService; needs in-game verification |
 | Escape path | Two TagEsc markers are placed at route 1 endpoints; needs in-game verification |
 | Link lock-on | Hook enables battle attention on the scoped passer; needs in-game verification |
 | Damage | Existing passer collision cylinder is made weapon-targetable; three target hits reduce its health; needs in-game verification |
@@ -16,5 +16,5 @@
 | Bulblin animation retarget | Not implemented |
 | Nighttime lantern | Not implemented |
 
-All runtime hooks are scoped to stage `F_SP121`, room 5, and passer type 8. The overlay builder reads the prepared local room archive derived from the user's ROM dump. The generated archive and `.dusk` are ignored by Git and must not be committed to the public repository. The source compiled and the package was created; no in-game behavior has been verified yet.
+All runtime hooks are scoped to stage `F_SP121`, room 5, and passer type 8. The passer, escape tags and talk tag are added at runtime through StageService, so no ROM-derived file is used or needed. The source compiled and the package was created; no in-game behavior has been verified yet.
 
