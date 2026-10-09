@@ -2,8 +2,8 @@
 
 | Behavior | Status |
 | --- | --- |
-| One MAN_a2 passer on road route 1 in F_SP121 room 5 | Added at room load through StageService; needs in-game verification |
-| Escape path | Two TagEsc markers are placed at route 1 endpoints; needs in-game verification |
+| One MAN_a2 passer on road route 0 in F_SP121 room 5 | Added at room load through StageService; needs in-game verification |
+| Escape path | Two TagEsc markers are placed at route 0 endpoints; needs in-game verification |
 | Link lock-on | Hook enables battle attention on the scoped passer; needs in-game verification |
 | Damage | Existing passer collision cylinder is made weapon-targetable; three target hits reduce its health; needs in-game verification |
 | Enemy pursuit | Shared enemy aim/range queries redirect to the nearest living passer within 900 units in the same room; needs in-game verification. Special enemies that read Link directly may need actor-specific hooks. |
