@@ -12,17 +12,26 @@ A Twilight Princess / Dusklight prototype for one road-walking passer in Hyrule 
 
 The prototype redirects shared enemy aim and range queries to the nearest living passer in room 5 when that passer is within 900 game units. This gives enemies using the common player-search helpers a passer target while preserving Link as the actual player actor. Enemy collision and AI target choice are separate systems, and enemies with special routines that read Link directly may still focus Link; the pursuit and attack behavior needs in-game verification.
 
-## Build locally
+## Build
 
-The public repository intentionally excludes all ROM-derived files. The local prototype uses the prepared room archive built from your ROM dump, which contains the placed passer and the authored road route. The stock ROM's room 5 archive does not contain that prototype placement, so pass the prepared archive as the input:
+The public repository intentionally excludes all ROM-derived files. The room overlay (the prepared `F_SP121\R05_00.arc`, which contains the placed passer and the authored road route) is built locally from your own ROM dump and never committed.
+
+**All-platform bundle.** Pushing to GitHub runs the Actions workflow. It builds the native module for Linux, macOS, iOS, Windows and Android, then merges them into one `mod-combined` artifact (`tools/merge_mod.py`). That bundle has no room data yet. Add your local overlay to it:
 
 ```powershell
 python tools/build_overlay.py --room-archive "C:\path\to\prepared\F_SP121\R05_00.arc"
-cmake -S . -B build -DDUSK_DIR="C:\path\to\dusklight-source" -DDUSK_GAME_EXE="C:\path\to\Dusklight\sdk\windows-amd64.lib"
+python tools/inject_overlay.py path\to\hyrule_field_passer_prototype.dusk -o hyrule_field_passer_prototype_final.dusk
+```
+
+**Local Windows-only build** (no CI):
+
+```powershell
+python tools/build_overlay.py --room-archive "C:\path\to\prepared\F_SP121\R05_00.arc"
+cmake -S . -B build -DDUSKLIGHT_DIR="C:\path\to\dusklight-source" -DDUSK_GAME_EXE="C:\path\to\Dusklight\sdk\windows-amd64.lib"
 cmake --build build --config Release
 ```
 
-The generated overlay and finished `.dusk` stay local and are ignored by Git. The Windows package was built successfully at `build/mods/hyrule_field_passer_prototype.dusk`; it contains the native module and the local room overlay. Install it through Dusklight and test `F_SP121`, room 5.
+The generated overlay and finished `.dusk` stay local and are ignored by Git. Install the `.dusk` through Dusklight and test `F_SP121`, room 5.
 
 ## Current limits
 

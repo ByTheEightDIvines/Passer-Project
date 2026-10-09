@@ -7,3 +7,5 @@ __pycache__/
 /overlay/files/res/Stage/F_SP121/R05_00.arc
 /rom_input/
 
+/build*/
+/dusklight/

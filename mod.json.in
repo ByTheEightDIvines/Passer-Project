@@ -1,8 +1,7 @@
 {
-  "id": "com.brian.hyrule_field_passer_prototype",
+  "id": "com.bytheeightdivines.passerprototype",
   "name": "Hyrule Field Passer Prototype",
-  "version": "0.2.0",
-  "author": "Brian",
+  "version": "@PROJECT_VERSION@",
+  "author": "ByTheEightDivines",
   "description": "Room-5 road passer prototype with damage, fleeing, a procedural death and Poe effect, and a custom talk line."
 }
-
