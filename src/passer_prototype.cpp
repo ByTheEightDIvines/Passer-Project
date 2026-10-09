@@ -40,6 +40,8 @@ constexpr std::array kLanguages{
 
 struct PasserState {
     daNpcPasser_c* actor = nullptr;
+    fpc_ProcID id = 0;
+    bool registered = false;  // seen by process ID at least once (create may not be registered yet)
     int health = kStartingHealth;
     int deathFrame = 0;
     f32 knockbackX = 0.0f;
@@ -67,7 +69,24 @@ bool isPrototypePasser(const fopAc_ac_c* actor) {
            (fopAcM_GetParam(actor) & 0xFF) == kPasserType;
 }
 
+// Drop state for passers that were unloaded (room change, stage load) without dying, so a
+// stale pointer is never dereferenced or matched to a new actor allocated at the same address.
+void pruneStates() {
+    for (auto& state : g_states) {
+        if (state.actor == nullptr) {
+            continue;
+        }
+        fopAc_ac_c* found = fopAcM_SearchByID(state.id);
+        if (found == state.actor) {
+            state.registered = true;
+        } else if (state.registered || found != nullptr) {
+            state = PasserState{};
+        }
+    }
+}
+
 PasserState* findState(daNpcPasser_c* actor, bool create) {
+    pruneStates();
     for (auto& state : g_states) {
         if (state.actor == actor) {
             return &state;
@@ -78,6 +97,7 @@ PasserState* findState(daNpcPasser_c* actor, bool create) {
             if (state.actor == nullptr) {
                 state = PasserState{};
                 state.actor = actor;
+                state.id = fopAcM_GetID(actor);
                 return &state;
             }
         }
@@ -117,6 +137,7 @@ fopAc_ac_c* nearestEnemy(const daNpcPasser_c* passer, f32 maxDistance) {
 }
 
 daNpcPasser_c* nearestPasser(const daTag_KMsg_c* tag) {
+    pruneStates();
     daNpcPasser_c* result = nullptr;
     f32 nearestDistanceSq = kTalkTagRadius * kTalkTagRadius;
     for (auto& state : g_states) {
@@ -142,6 +163,7 @@ daNpcPasser_c* nearestThreatTarget(const fopAc_ac_c* enemy) {
     if (enemy == nullptr || fopAcM_GetGroup(enemy) != fopAc_ENEMY_e || !inFieldRoom(enemy)) {
         return nullptr;
     }
+    pruneStates();
     daNpcPasser_c* result = nullptr;
     f32 nearestDistanceSq = kThreatRadius * kThreatRadius;
     for (auto& state : g_states) {
@@ -374,7 +396,14 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
     }
 
     if (passer->mCyl.ChkTgHit()) {
+        // Only enemies may hurt the passer. Link's sword, arrows, bombs, boomerang and
+        // other player-owned actors all report a non-enemy attacker and are ignored.
+        auto* attacker = passer->mCyl.GetTgHitAc();
         passer->mCyl.ResetTgHit();
+        if (attacker == nullptr || !fopAcM_IsActor(attacker) ||
+            fopAcM_GetGroup(attacker) != fopAc_ENEMY_e) {
+            return HOOK_CONTINUE;
+        }
         --state->health;
         passer->health = static_cast<s16>(state->health);
         if (state->health <= 0) {
