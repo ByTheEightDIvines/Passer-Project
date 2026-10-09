@@ -15,6 +15,7 @@
 #include "d/d_particle_name.h"
 #include "f_op/f_op_actor_mng.h"
 #include "f_pc/f_pc_name.h"
+#include "m_Do/m_Do_audio.h"
 #include "m_Do/m_Do_ext.h"
 #include "m_Do/m_Do_mtx.h"
 #include "mods/service.hpp"
@@ -38,7 +39,13 @@ constexpr int kPasserType = 8;  // MAN_a2
 constexpr f32 kThreatRadius = 900.0f;
 constexpr f32 kTalkTagRadius = 180.0f;
 constexpr int kStartingHealth = 3;
-constexpr int kDeathDuration = 84;
+// Timings copied from the Bulblin (e_rd): it tips over backwards, hits the ground with a body-fall
+// sound, lies there for about 35 frames, then the game's standard smoke puff replaces it.
+constexpr int kDeathFallFrames = 21;
+constexpr int kDeathDuration = kDeathFallFrames + 35;
+constexpr int kFlinchFrames = 18;
+constexpr f32 kFlinchPush = 7.0f;
+constexpr s16 kFlinchLean = 0x1800;
 constexpr u16 kTalkAnimation = 6;
 
 // Night schedule: the passer carries Link's own lantern (al_kantera.bmd from the Alink archive)
@@ -77,6 +84,9 @@ struct PasserState {
     bool dead = false;
     bool grounded = false;
     bool talking = false;
+    int flinchFrame = 0;
+    f32 flinchX = 0.0f;
+    f32 flinchZ = 0.0f;
     J3DModel* lantern = nullptr;  // Link's stock lantern, owned by the passer's own heap
 };
 
@@ -302,6 +312,7 @@ void beginDeath(daNpcPasser_c* passer, PasserState& state) {
     state.deathFrame = 0;
     state.grounded = false;
     state.talking = false;
+    state.flinchFrame = 0;
     state.knockbackY = 8.0f;
     passer->health = 0;
     passer->attention_info.flags = 0;
@@ -319,11 +330,7 @@ void beginDeath(daNpcPasser_c* passer, PasserState& state) {
         }
     }
 
-    const cXyz scale(1.0f, 1.0f, 1.0f);
-    dComIfGp_particle_set(static_cast<u16>(dPa_RM(ID_ZF_S_PODEATH00SMK)),
-                          &passer->current.pos, &passer->shape_angle, &scale);
-    dComIfGp_particle_set(static_cast<u16>(dPa_RM(ID_ZF_S_PODEATH02SP)),
-                          &passer->current.pos, &passer->shape_angle, &scale);
+    passer->mCitizen.playVoice(2);
 }
 
 DEFINE_HOOK(&daNpcPasser_c::create_init, PasserCreateInit);
@@ -405,7 +412,7 @@ void onCreateInitPost(ModContext*, void* args, void*, void*) {
 HookAction onCallExecutePre(ModContext*, void* args, void*, void*) {
     auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
     const auto* state = findState(passer, false);
-    if (isPrototypePasser(passer) && state != nullptr && (state->dead || state->talking)) {
+    if (isPrototypePasser(passer) && state != nullptr && (state->dead || state->talking || state->flinchFrame > 0)) {
         return HOOK_SKIP_ORIGINAL;
     }
     return HOOK_CONTINUE;
@@ -424,12 +431,19 @@ void onSetCollisionPost(ModContext*, void* args, void*, void*) {
 void onBaseMtxPost(ModContext*, void* args, void*, void*) {
     auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
     auto* state = findState(passer, false);
-    if (!isPrototypePasser(passer) || state == nullptr || !state->dead || passer->mpMorf == nullptr) {
+    if (!isPrototypePasser(passer) || state == nullptr || passer->mpMorf == nullptr ||
+        (!state->dead && state->flinchFrame <= 0)) {
         return;
     }
 
-    const int progress = state->deathFrame < 32 ? state->deathFrame : 32;
-    const s16 fallAngle = static_cast<s16>(progress * (0x4000 / 32));
+    s16 fallAngle;
+    if (state->dead) {
+        const int progress = state->deathFrame < kDeathFallFrames ? state->deathFrame : kDeathFallFrames;
+        fallAngle = static_cast<s16>(-(progress * 0x4000 / kDeathFallFrames));  // backwards onto the back
+    } else {
+        const f32 t = 1.0f - static_cast<f32>(state->flinchFrame) / kFlinchFrames;
+        fallAngle = static_cast<s16>(-kFlinchLean * std::sin(t * 3.14159265f));
+    }
     mDoMtx_stack_c::transS(passer->current.pos.x, passer->current.pos.y, passer->current.pos.z);
     mDoMtx_stack_c::YrotM(passer->shape_angle.y);
     mDoMtx_stack_c::XrotM(fallAngle);
@@ -459,7 +473,13 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
                 state->knockbackY = 0.0f;
             }
         }
+        if (state->deathFrame == kDeathFallFrames) {
+            mDoAud_seStart(Z2SE_CM_BODYFALL_M, &passer->current.pos, 0, 0);
+        }
         if (state->deathFrame >= kDeathDuration) {
+            cXyz puff = passer->current.pos;
+            puff.y += 40.0f;
+            fopAcM_createDisappear(passer, &puff, 10, 0, 11);
             fopAcM_delete(passer);
             state->actor = nullptr;
             return HOOK_SKIP_ORIGINAL;
@@ -467,13 +487,36 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         return HOOK_CONTINUE;
     }
 
+    if (state->flinchFrame > 0) {
+        --state->flinchFrame;
+        passer->current.pos.x += state->flinchX;
+        passer->current.pos.z += state->flinchZ;
+        state->flinchX *= 0.85f;
+        state->flinchZ *= 0.85f;
+        passer->mAcch.CrrPos(dComIfG_Bgsp());
+        passer->mCyl.ResetTgHit();
+        return HOOK_CONTINUE;
+    }
+
     if (passer->mCyl.ChkTgHit()) {
-        // Only enemies may hurt the passer. Link's sword, arrows, bombs, boomerang and
-        // other player-owned actors all report a non-enemy attacker and are ignored.
+        // Only enemies hurt the passer. A hit from Link (sword, arrows, bombs, boomerang, ...)
+        // only makes it flinch: it is pushed back and staggers, then carries on walking.
         auto* attacker = passer->mCyl.GetTgHitAc();
         passer->mCyl.ResetTgHit();
-        if (attacker == nullptr || !fopAcM_IsActor(attacker) ||
-            fopAcM_GetGroup(attacker) != fopAc_ENEMY_e) {
+        if (attacker == nullptr || !fopAcM_IsActor(attacker)) {
+            return HOOK_CONTINUE;
+        }
+        if (fopAcM_GetGroup(attacker) != fopAc_ENEMY_e) {
+            f32 dx = passer->current.pos.x - attacker->current.pos.x;
+            f32 dz = passer->current.pos.z - attacker->current.pos.z;
+            const f32 length = std::sqrt(dx * dx + dz * dz);
+            if (length > 0.001f) {
+                state->flinchX = (dx / length) * kFlinchPush;
+                state->flinchZ = (dz / length) * kFlinchPush;
+            }
+            state->flinchFrame = kFlinchFrames;
+            passer->speedF = 0.0f;
+            passer->mCitizen.playVoice(2);
             return HOOK_CONTINUE;
         }
         --state->health;
