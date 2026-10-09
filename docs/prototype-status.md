@@ -2,18 +2,18 @@
 
 | Behavior | Status |
 | --- | --- |
-| One MAN_a2 passer in F_SP121 room 5 | Included in the room overlay |
-| Walk the authored road path 1 | Included; needs in-game confirmation |
-| Vanilla escape route waypoint | Included on road path 1; needs in-game confirmation |
-| Link lock-on targeting changes | Experimental C++ draft only; not built |
-| Take damage and track health | Experimental C++ draft only; not built or verified |
-| Flee from nearby enemies | Experimental C++ draft only; escape route also needs in-game confirmation |
-| Fall animation | Procedural transform draft only; no Bulblin animation retarget |
-| Poe death particles | Experimental C++ draft only; not built or verified |
-| Dialogue | Not implemented |
+| One MAN_a2 passer on road route 1 in F_SP121 room 5 | Room overlay builder implements it; needs in-game verification |
+| Escape path | Two TagEsc markers are placed at route 1 endpoints; needs in-game verification |
+| Link lock-on | Hook enables battle attention on the scoped passer; needs in-game verification |
+| Damage | Existing passer collision cylinder is made weapon-targetable; three target hits reduce its health; needs in-game verification |
+| Flee from enemies | Nearby enemy presence feeds the vanilla passer fear/escape action; needs in-game verification |
+| Death | Short knockback and procedural fall; actor removed after the effect window; needs in-game verification |
+| Poe death effect | Poe smoke and spark particle IDs are emitted once at death; needs in-game verification |
+| Dialogue | A colocated TagKMsg receives a runtime-created Flow node with one custom line; needs in-game verification |
+| Talk animation | Passer's existing talk clip is selected while the TagKMsg conversation is active; needs in-game verification |
+| Enemy AI targeting | Not implemented. Enemy decisions still target Link; collision targetability does not retarget AI |
+| Bulblin animation retarget | Not implemented |
 | Nighttime lantern | Not implemented |
-| Enemy AI retargeting | Not implemented |
-| Cyan particle recolor | Not implemented |
 
-All planned native behavior must be built and tested in Dusklight before being described as working. The current local Dusk source snapshot is incomplete, so the experimental hooks are kept out of the installable package.
+All runtime hooks are scoped to stage `F_SP121`, room 5, and passer type 8. The overlay builder reads the prepared local room archive derived from the user's ROM dump. The generated archive and `.dusk` are ignored by Git and must not be committed to the public repository. The source compiled and the package was created; no in-game behavior has been verified yet.
 
