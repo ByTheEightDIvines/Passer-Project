@@ -2,6 +2,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <utility>
@@ -400,6 +401,15 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
 
 void onCreateInitPost(ModContext*, void* args, void*, void*) {
     auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
+    if (passer != nullptr) {
+        // Diagnostic: every passer that finishes creation logs where it ended up.
+        char line[160];
+        std::snprintf(line, sizeof(line), "passer created: stage=%s room=%d type=%d pos=(%.0f, %.0f, %.0f)",
+                      dComIfGp_getStartStageName() != nullptr ? dComIfGp_getStartStageName() : "?",
+                      static_cast<int>(fopAcM_GetRoomNo(passer)), static_cast<int>(passer->getType()),
+                      passer->current.pos.x, passer->current.pos.y, passer->current.pos.z);
+        svc_log->info(mod_ctx, line);
+    }
     if (!isPrototypePasser(passer)) {
         return;
     }
@@ -656,7 +666,7 @@ ModResult addRoomActors() {
     // Type 0 KMsg talk marker. Finite eye/attention offsets give Link's ordinary A-button talk
     // prompt; the hooks above move it onto the passer and give it the dialogue.
     const stage_actor_data_class talkTag{
-        .name = "TagKMsg",
+        .name = "KMsg",
         .base = {.parameters = 0x0080A0FF,
                  .position = {kRoadStart.x, kRoadStart.y, kRoadStart.z},
                  .angle = {0, 0, 0},
