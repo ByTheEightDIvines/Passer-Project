@@ -1,9 +1,9 @@
 /build/
-/build-clang/
+/build-*/
+/dusklight/
 *.dusk
 *.blend1
 __pycache__/
-# Extracted/modified Twilight Princess assets stay local and are never committed.
+# ROM-derived files never belong in this repository.
 /overlay/
 /rom_input/
-

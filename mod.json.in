@@ -1,0 +1,7 @@
+{
+  "id": "com.brian.hyrule_field_passer_prototype",
+  "name": "Hyrule Field Passer Prototype",
+  "version": "@PROJECT_VERSION@",
+  "author": "ByTheEightDivines",
+  "description": "A test passerby that walks the Hyrule Field room 5 road, can be talked to and locked onto, flees enemies, and leaves once out of view."
+}

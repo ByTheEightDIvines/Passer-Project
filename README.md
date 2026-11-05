@@ -1,33 +1,31 @@
 # Hyrule Field Passer Prototype
 
-A Twilight Princess / Dusklight prototype for one road-walking passer in Hyrule Field stage `F_SP121`, room 5. The room overlay and behavior hooks stay scoped to that stage and room.
+A Twilight Princess / Dusklight test mod: one passerby on the road through Hyrule Field stage `F_SP121`, room 5.
 
-## Prototype behavior
+## What it does
 
-- A `MAN_a2` passer follows authored road route 1, with escape markers on that route.
-- Link can lock onto the passer and ordinary weapon target hits can damage it. The first prototype uses three hits.
-- Nearby enemies trigger the passer's vanilla run-away action.
-- At zero health, a short knockback/fall is played, the Poe smoke and spark effect appears, then the actor is removed.
-- A talk marker beside the passer uses Dusklight's Flow and Message services to show one custom line. The passer plays its existing talk animation during the conversation.
+- When room 5 loads, the mod adds a `MAN_a2` passer at the top-right end of the road, out of view of Link's entrance.
+  No game files are replaced; the actor is added through Dusklight's StageService.
+- The passer walks a route the mod builds in code along the middle of the road, toward Link's entrance.
+- At the end of the road it waits until the camera can no longer see it, then disappears.
+- Link can lock onto it and talk to it (one custom line, with its talk animation). The talk marker follows it.
+- Only enemies can hurt it. Nearby enemies make it run away along the road, and enemies that use the common
+  player-search helpers aim at the passer when it is within 900 units.
+- After three enemy hits it falls with a short knockback, the Poe smoke and spark effect plays, and it is removed.
 
-The prototype redirects shared enemy aim and range queries to the nearest living passer in room 5 when that passer is within 900 game units. This gives enemies using the common player-search helpers a passer target while preserving Link as the actual player actor. Enemy collision and AI target choice are separate systems, and enemies with special routines that read Link directly may still focus Link; the pursuit and attack behavior needs in-game verification.
+## Build
 
-## Build locally
+The mod builds like the other Dusklight mods: CMake fetches the pinned Dusklight version (`DUSKLIGHT_VERSION` in
+`CMakeLists.txt`), and GitHub Actions builds every platform and merges them into one `.dusk`. Pushes to `main` publish
+the combined bundle to the `dist` branch.
 
-The public repository intentionally excludes all ROM-derived files. The local prototype uses the prepared room archive built from your ROM dump, which contains the placed passer and the authored road route. The stock ROM's room 5 archive does not contain that prototype placement, so pass the prepared archive as the input:
-
-```powershell
-python tools/build_overlay.py --room-archive "C:\path\to\prepared\F_SP121\R05_00.arc"
-cmake -S . -B build -DDUSK_DIR="C:\path\to\dusklight-source" -DDUSK_GAME_EXE="C:\path\to\Dusklight\sdk\windows-amd64.lib"
-cmake --build build --config Release
+```sh
+cmake -B build -G Ninja
+cmake --build build
 ```
-
-The generated overlay and finished `.dusk` stay local and are ignored by Git. The Windows package was built successfully at `build/mods/hyrule_field_passer_prototype.dusk`; it contains the native module and the local room overlay. Install it through Dusklight and test `F_SP121`, room 5.
 
 ## Current limits
 
-- The custom fall is procedural; the Bulblin animation has not been retargeted to the passer rig.
-- Enemy targeting uses shared aim/range hooks; enemy-specific routines that access Link directly may need their own handling.
-- Lantern behavior and additional dialogue lines are not included in this first pass.
-- The package builds, but collision, talk prompt, animation, and particle behavior still need an in-game test in Dusklight.
-
+- The fall is procedural; the Bulblin animation is not retargeted to the passer rig.
+- Enemies with special routines that read Link directly may still go after Link.
+- No lantern at night and only one talk line.

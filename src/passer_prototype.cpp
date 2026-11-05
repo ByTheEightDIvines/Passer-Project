@@ -4,6 +4,8 @@
 #include "d/actor/d_a_tag_kmsg.h"
 #include "d/d_com_inf_game.h"
 #include "d/d_particle_name.h"
+#include "d/d_path.h"
+#include "d/d_stage.h"
 #include "f_op/f_op_actor_mng.h"
 #include "f_pc/f_pc_name.h"
 #include "m_Do/m_Do_mtx.h"
@@ -11,9 +13,11 @@
 #include "mods/svc/flow.hpp"
 #include "mods/svc/hook.hpp"
 #include "mods/svc/log.h"
+#include "mods/svc/stage.h"
 
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <vector>
 
@@ -22,11 +26,69 @@ IMPORT_SERVICE(HookService, svc_hook);
 IMPORT_SERVICE(FlowService, svc_flow);
 IMPORT_SERVICE(MessageService, svc_message);
 IMPORT_SERVICE(LogService, svc_log);
+IMPORT_SERVICE(StageService, svc_stage);
 
 namespace {
 
+constexpr const char* kFieldStage = "F_SP121";
 constexpr s8 kFieldRoom = 5;
 constexpr int kPasserType = 8;  // MAN_a2
+
+// Path IDs answered by this mod. Stock room 5 only has path 0, so these never collide.
+constexpr int kRoutePathId = 0x40;    // top-right exit -> Link's entrance (walking route)
+constexpr int kReversePathId = 0x41;  // Link's entrance -> top-right exit (escape route)
+
+// Middle of the road in F_SP121 room 5, traced from the room's collision. Starts at the
+// top-right exit (out of view when Link enters) and ends at Link's entrance.
+constexpr std::array<std::array<f32, 3>, 20> kRoadPoints{{
+    {-10655.0f, -1075.0f, 25295.0f}, {-11167.0f, -1075.0f, 25784.0f},
+    {-11673.0f, -1080.0f, 26281.0f}, {-12138.0f, -1147.0f, 26815.0f},
+    {-12653.0f, -1218.0f, 27302.0f}, {-13283.0f, -1258.0f, 27614.0f},
+    {-13988.0f, -1318.0f, 27660.0f}, {-14697.0f, -1438.0f, 27660.0f},
+    {-15405.0f, -1564.0f, 27627.0f}, {-16104.0f, -1610.0f, 27515.0f},
+    {-16807.0f, -1658.0f, 27429.0f}, {-17516.0f, -1700.0f, 27420.0f},
+    {-18221.0f, -1779.0f, 27479.0f}, {-18906.0f, -1868.0f, 27655.0f},
+    {-19520.0f, -1967.0f, 28007.0f}, {-20065.0f, -2026.0f, 28456.0f},
+    {-20480.0f, -2032.0f, 29030.0f}, {-20773.0f, -2038.0f, 29672.0f},
+    {-20950.0f, -2045.0f, 30358.0f}, {-20980.0f, -2121.0f, 31065.0f},
+}};
+
+// A path built in memory, laid out exactly like a room's RPAT/RPPN entry.
+struct RouteStore {
+    dPath path;
+    std::array<dPnt, kRoadPoints.size()> points;
+};
+RouteStore g_route{};
+RouteStore g_reverseRoute{};
+
+void buildRoute(RouteStore& store, bool reverse) {
+    const size_t count = kRoadPoints.size();
+    for (size_t i = 0; i < count; ++i) {
+        const auto& src = kRoadPoints[reverse ? count - 1 - i : i];
+        dPnt& point = store.points[i];
+        point.mArg0 = 0xFF;  // no special action at the point; just keep walking
+        point.mArg1 = 0xFF;
+        point.mArg2 = 0xFF;
+        point.mArg3 = 0xFF;
+        point.m_position = Vec{src[0], src[1], src[2]};
+    }
+    store.path.m_num = static_cast<u16>(count);
+    store.path.m_nextID = 0xFFFF;
+    store.path.field_0x4 = 0;
+    store.path.m_closed = false;
+    store.path.swbit = 0xFF;
+    store.path.field_0x7 = 0;
+    // The point pointer is an offset from the pointer field itself; the top bit marks it as
+    // already relocated so the game never tries to relocate it again.
+    const auto offset = static_cast<s32>(reinterpret_cast<char*>(store.points.data()) -
+                                         reinterpret_cast<char*>(&store.path.m_points));
+    store.path.m_points.value.value = static_cast<s32>(static_cast<u32>(offset) | 0x80000000u);
+}
+
+bool inFieldStage() {
+    const char* stage = dComIfGp_getStartStageName();
+    return stage != nullptr && std::strcmp(stage, kFieldStage) == 0;
+}
 constexpr f32 kThreatRadius = 900.0f;
 constexpr f32 kTalkTagRadius = 180.0f;
 constexpr int kStartingHealth = 3;
@@ -50,6 +112,7 @@ struct PasserState {
     bool dead = false;
     bool grounded = false;
     bool talking = false;
+    bool arrived = false;  // reached Link's end of the road; waits there until out of view
 };
 
 std::array<PasserState, 16> g_states{};
@@ -58,15 +121,15 @@ mods::flow::Graph g_talkGraph;
 uint16_t g_talkNode = 0xFFFF;
 
 bool inFieldRoom(const fopAc_ac_c* actor) {
-    const char* stage = dComIfGp_getStartStageName();
-    return actor != nullptr && stage != nullptr && std::strcmp(stage, "F_SP121") == 0 &&
-           fopAcM_GetRoomNo(actor) == kFieldRoom;
+    return actor != nullptr && inFieldStage() && fopAcM_GetRoomNo(actor) == kFieldRoom;
 }
 
+// Only the passer this mod spawns: the right model type and our walking route.
 bool isPrototypePasser(const fopAc_ac_c* actor) {
     return inFieldRoom(actor) &&
            fopAcM_GetName(const_cast<fopAc_ac_c*>(actor)) == fpcNm_NPC_PASSER_e &&
-           (fopAcM_GetParam(actor) & 0xFF) == kPasserType;
+           (fopAcM_GetParam(actor) & 0xFF) == kPasserType &&
+           ((fopAcM_GetParam(actor) >> 16) & 0xFF) == kRoutePathId;
 }
 
 // Drop state for passers that were unloaded (room change, stage load) without dying, so a
@@ -157,6 +220,17 @@ daNpcPasser_c* nearestPasser(const daTag_KMsg_c* tag) {
         }
     }
     return result;
+}
+
+// The talk marker follows the one live test passer around the room.
+daNpcPasser_c* livePasser() {
+    pruneStates();
+    for (auto& state : g_states) {
+        if (state.actor != nullptr && !state.dead && isPrototypePasser(state.actor)) {
+            return state.actor;
+        }
+    }
+    return nullptr;
 }
 
 daNpcPasser_c* nearestThreatTarget(const fopAc_ac_c* enemy) {
@@ -303,6 +377,8 @@ DEFINE_HOOK(&daNpcPasser_c::callExecute, PasserCallExecute);
 DEFINE_HOOK(&daNpcPasser_c::setCollision, PasserSetCollision);
 DEFINE_HOOK(&daNpcPasser_c::setBaseMtx, PasserSetBaseMtx);
 DEFINE_HOOK(&daNpcPasser_c::execute, PasserExecute);
+DEFINE_HOOK(&daNpcPasser_c::executePath, PasserExecutePath);
+DEFINE_HOOK(&dPath_GetRoomPath, RoomPathLookup);
 DEFINE_HOOK(&daNpcCd2_c::checkFearSituation, PasserFearCheck);
 DEFINE_HOOK(&daTag_KMsg_c::Execute, TalkTagExecute);
 DEFINE_HOOK(&fopAcM_searchActorAngleY, EnemyTargetAngleY);
@@ -333,10 +409,51 @@ void onCreateInitPost(ModContext*, void* args, void*, void*) {
 HookAction onCallExecutePre(ModContext*, void* args, void*, void*) {
     auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
     const auto* state = findState(passer, false);
-    if (isPrototypePasser(passer) && state != nullptr && (state->dead || state->talking)) {
+    if (isPrototypePasser(passer) && state != nullptr &&
+        (state->dead || state->talking || state->arrived)) {
         return HOOK_SKIP_ORIGINAL;
     }
     return HOOK_CONTINUE;
+}
+
+// Vanilla deletes a passer the instant it reaches the end of its path, even on screen.
+// Instead, stop at Link's end of the road and wait there until the camera can't see it.
+HookAction onExecutePathPre(ModContext*, void* args, void*, void*) {
+    auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
+    if (!isPrototypePasser(passer) || passer->mPathMode != 2 || !passer->m_path.isPath()) {
+        return HOOK_CONTINUE;
+    }
+    const int last = passer->m_path.mPath->m_num - 1;
+    if (passer->m_path.field_0x20 < last) {
+        return HOOK_CONTINUE;
+    }
+    auto* state = findState(passer, false);
+    if (state == nullptr) {
+        return HOOK_CONTINUE;
+    }
+    state->arrived = true;
+    passer->speedF = 0.0f;
+    auto* idle = static_cast<J3DAnmTransformKey*>(passer->getAnmP(0, passer->getObjNum()));
+    if (idle != nullptr) {
+        passer->setAnm(idle, 1.0f, 12.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
+    }
+    return HOOK_SKIP_ORIGINAL;
+}
+
+void onRoomPathPost(ModContext*, void* args, void* retval, void*) {
+    if (retval == nullptr || !inFieldStage()) {
+        return;
+    }
+    const int pathId = mods::arg<int>(args, 0);
+    const int room = mods::arg<int>(args, 1);
+    if (room != kFieldRoom) {
+        return;
+    }
+    if (pathId == kRoutePathId) {
+        *static_cast<dPath**>(retval) = &g_route.path;
+    } else if (pathId == kReversePathId) {
+        *static_cast<dPath**>(retval) = &g_reverseRoute.path;
+    }
 }
 
 void onSetCollisionPost(ModContext*, void* args, void*, void*) {
@@ -395,6 +512,16 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         return HOOK_CONTINUE;
     }
 
+    if (state->arrived && !state->talking) {
+        passer->speedF = 0.0f;
+        if (fopAcM_CheckCondition(passer, fopAcCnd_NODRAW_e)) {
+            // Out of the camera's view at the end of the road: leave quietly.
+            fopAcM_delete(passer);
+            state->actor = nullptr;
+            return HOOK_SKIP_ORIGINAL;
+        }
+    }
+
     if (passer->mCyl.ChkTgHit()) {
         // Only enemies may hurt the passer. Link's sword, arrows, bombs, boomerang and
         // other player-owned actors all report a non-enemy attacker and are ignored.
@@ -409,6 +536,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         if (state->health <= 0) {
             beginDeath(passer, *state);
         } else if (nearestEnemy(passer, kThreatRadius) != nullptr) {
+            state->arrived = false;  // running away replaces waiting at the end of the road
             passer->setAction(daNpcPasser_c::MODE_1);
         }
     }
@@ -429,6 +557,11 @@ HookAction onTalkTagExecutePre(ModContext*, void* args, void*, void*) {
         g_talkNode == 0xFFFF) {
         return HOOK_CONTINUE;
     }
+    // The talk marker is spawned once at the start of the road; keep it on the walking passer.
+    if (auto* walker = livePasser()) {
+        tag->current.pos = walker->current.pos;
+        tag->home.pos = walker->current.pos;
+    }
     auto* passer = nearestPasser(tag);
     if (passer != nullptr) {
         tag->mFlowNodeNo = g_talkNode;
@@ -447,11 +580,15 @@ void onTalkTagExecutePost(ModContext*, void* args, void*, void*) {
     if (!inFieldRoom(tag) || tag->getType() != daTag_KMsg_c::KMSG_TYPE_0) {
         return;
     }
-    if (auto* passer = nearestPasser(tag)) {
-        if (auto* state = findState(passer, false); state != nullptr && state->talking &&
-            !tag->eventInfo.checkCommandTalk()) {
-            state->talking = false;
-        }
+    auto* passer = nearestPasser(tag);
+    if (passer == nullptr) {
+        // No passer to talk to (not spawned yet, dead or gone): no talk prompt.
+        tag->attention_info.flags = 0;
+        return;
+    }
+    if (auto* state = findState(passer, false); state != nullptr && state->talking &&
+        !tag->eventInfo.checkCommandTalk()) {
+        state->talking = false;
     }
 }
 
@@ -506,6 +643,51 @@ ModResult registerGreetingFlow() {
     return g_talkGraph ? MOD_OK : g_talkGraph.result();
 }
 
+stage_actor_data_class makeRecord(const char* name, u32 params, const std::array<f32, 3>& pos,
+                                  s16 angleX, s16 angleY, s16 angleZ) {
+    stage_actor_data_class record{};
+    std::strncpy(record.name, name, sizeof(record.name));
+    record.base.parameters = params;
+    record.base.position = cXyz(pos[0], pos[1], pos[2]);
+    record.base.angle = csXyz(angleX, angleY, angleZ);
+    record.base.setID = 0xFFFF;
+    return record;
+}
+
+// Adds the passer, its talk marker and two escape markers to room 5 as the room loads.
+// Nothing on the disc is changed; the game creates them like any other placed actor.
+ModResult addRoomActors() {
+    const auto& first = kRoadPoints.front();
+    const auto& second = kRoadPoints[1];
+    const auto& last = kRoadPoints.back();
+    const cXyz from(first[0], first[1], first[2]);
+    const cXyz to(second[0], second[1], second[2]);
+    const s16 facing = cLib_targetAngleY(&from, &to);
+
+    // Passer: MAN_a2 (type 8), no carried object, our route, walk (move type 1).
+    // angle.x = 0xFF turns off the vanilla "leave at a set time of day" timer.
+    const u32 passerParams = kPasserType | (0u << 8) | (static_cast<u32>(kRoutePathId) << 16) |
+                             (1u << 24);
+    // KMsg type 0: attention offset 0x80, eye offset 0xA0, default talk distance and angle.
+    // angle.x = 0xFF means no switch; angle.z = 0xFFFF means no flow node (set at runtime).
+    const std::array records{
+        makeRecord("Passer", passerParams, first, 0xFF, facing, 0),
+        makeRecord("KMsg", 0x0080A0FF, first, 0xFF, 0, static_cast<s16>(0xFFFF)),
+        // Fleeing toward Link's end keeps following the road route...
+        makeRecord("TagEsc", 0xFFFFFF00u | kRoutePathId, last, 0, 0, 0),
+        // ...fleeing back toward the top-right exit follows it in reverse.
+        makeRecord("TagEsc", 0xFFFFFF00u | kReversePathId, first, 0, 0, 0),
+    };
+    for (const auto& record : records) {
+        const ModResult result = svc_stage->add_actor(mod_ctx, kFieldStage, kFieldRoom, -1,
+                                                      &record, sizeof(record), nullptr);
+        if (result != MOD_OK) {
+            return result;
+        }
+    }
+    return MOD_OK;
+}
+
 }  // namespace
 
 extern "C" {
@@ -515,7 +697,15 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
         return mods::set_error(error, flowResult, "failed to register the passer dialogue flow");
     }
 
-    if (mods::hook::add_post<PasserCreateInit>(onCreateInitPost) != MOD_OK ||
+    buildRoute(g_route, false);
+    buildRoute(g_reverseRoute, true);
+    if (const ModResult stageResult = addRoomActors(); stageResult != MOD_OK) {
+        return mods::set_error(error, stageResult, "failed to add the passer to Hyrule Field room 5");
+    }
+
+    if (mods::hook::add_post<RoomPathLookup>(onRoomPathPost) != MOD_OK ||
+        mods::hook::add_pre<PasserExecutePath>(onExecutePathPre) != MOD_OK ||
+        mods::hook::add_post<PasserCreateInit>(onCreateInitPost) != MOD_OK ||
         mods::hook::add_pre<PasserCallExecute>(onCallExecutePre) != MOD_OK ||
         mods::hook::add_post<PasserSetCollision>(onSetCollisionPost) != MOD_OK ||
         mods::hook::add_post<PasserSetBaseMtx>(onBaseMtxPost) != MOD_OK ||
@@ -534,7 +724,7 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     }
 
     svc_log->info(mod_ctx,
-        "Hyrule Field room 5 passer prototype initialized (enemy pursuit, damage, talk, escape, fall, Poe effect)");
+        "Hyrule Field room 5 test passer ready: spawned by code on a code-built road route");
     return MOD_OK;
 }
 
