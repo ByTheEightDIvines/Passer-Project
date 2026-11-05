@@ -19,7 +19,8 @@ from gclib.rarc import RARC
 from gclib.yaz0_yay0 import Yaz0
 
 
-STAGE_ROOM = Path("files/res/Stage/F_SP121/R05_00.arc")
+# Overlay paths are relative to the disc root (no "files/" prefix from an extracted ROM dump).
+STAGE_ROOM = Path("res/Stage/F_SP121/R05_00.arc")
 ACTOR_SIZE = 32
 PASSER_NAME = b"Passer\0\0"
 TAG_ESCAPE_NAME = b"TagEsc\0\0"
