@@ -435,10 +435,11 @@ void beginDeath(daNpcPasser_c* passer, PasserState& state) {
 }
 
 DEFINE_HOOK(&daNpcPasser_c::create_init, PasserCreateInit);
-DEFINE_HOOK(&daNpcPasser_c::callExecute, PasserCallExecute);
-DEFINE_HOOK(&daNpcPasser_c::setCollision, PasserSetCollision);
-DEFINE_HOOK(&daNpcPasser_c::setBaseMtx, PasserSetBaseMtx);
-DEFINE_HOOK(&daNpcPasser_c::execute, PasserExecute);
+// execute(), callExecute(), setCollision() and setBaseMtx() are small and get inlined into the
+// passer's profile entry in release builds, so hooks on them never fire. Hook the profile entry
+// (called through the actor method table) and the action functions (called through a member
+// function pointer table) instead; neither can be inlined away.
+DEFINE_HOOK_SYMBOL("daNpcPasser_Execute", int(void*), PasserProfileExecute);
 DEFINE_HOOK(&daNpcPasser_c::executePath, PasserExecutePath);
 DEFINE_HOOK(&daNpcPasser_c::executeEscape, PasserExecuteEscape);
 DEFINE_HOOK(&daNpcPasser_c::executeFear, PasserExecuteFear);
@@ -471,26 +472,27 @@ void onCreateInitPost(ModContext*, void* args, void*, void*) {
     setDamageable(passer);
 }
 
-HookAction onCallExecutePre(ModContext*, void* args, void*, void*) {
-    auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
+// Runs at the start of every action function, after execute() has set this frame's wall check.
+// Returns true when the action should be skipped (dead, talking or waiting at the road's end).
+bool gateAction(daNpcPasser_c* passer) {
+    if (!isPrototypePasser(passer)) {
+        return false;
+    }
+    // The vanilla wall check is lower than the 41-unit step onto the bridge, so the passer
+    // walked into it as a wall. The ground probe reaches 60 units; a 55-unit wall check lets
+    // him step up like Link.
+    passer->mAcchCir.SetWallH(kWallCheckHeight);
     const auto* state = findState(passer, false);
-    if (isPrototypePasser(passer)) {
-        // execute() resets the wall check height every frame just before this. The vanilla
-        // value is lower than the 41-unit step onto the bridge, so the passer walked into it as
-        // a wall. Link's ground probe reaches 60 units, so a 55-unit wall check lets him step up.
-        passer->mAcchCir.SetWallH(kWallCheckHeight);
-    }
-    if (isPrototypePasser(passer) && state != nullptr &&
-        (state->dead || state->talking || state->arrived)) {
-        return HOOK_SKIP_ORIGINAL;
-    }
-    return HOOK_CONTINUE;
+    return state != nullptr && (state->dead || state->talking || state->arrived);
 }
 
 // Vanilla deletes a passer the instant it reaches the end of its path, even on screen.
 // Instead, stop at the end of the road and wait there until the camera can't see it.
 HookAction onExecutePathPre(ModContext*, void* args, void*, void*) {
     auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
+    if (gateAction(passer)) {
+        return HOOK_SKIP_ORIGINAL;
+    }
     if (!isPrototypePasser(passer) || passer->mPathMode != 2 || !passer->m_path.isPath()) {
         return HOOK_CONTINUE;
     }
@@ -516,6 +518,9 @@ HookAction onExecutePathPre(ModContext*, void* args, void*, void*) {
 // turns away from the danger and cowers until it is safe to walk on.
 HookAction onExecuteEscapePre(ModContext*, void* args, void*, void*) {
     auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
+    if (gateAction(passer)) {
+        return HOOK_SKIP_ORIGINAL;
+    }
     auto* state = findState(passer, false);
     if (!isPrototypePasser(passer) || state == nullptr) {
         return HOOK_CONTINUE;
@@ -545,6 +550,9 @@ HookAction onExecuteEscapePre(ModContext*, void* args, void*, void*) {
 // Cowering also deletes the passer once it is off screen; keep it.
 HookAction onKeepWhenOffscreenPre(ModContext*, void* args, void*, void*) {
     auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
+    if (gateAction(passer)) {
+        return HOOK_SKIP_ORIGINAL;
+    }
     if (isPrototypePasser(passer)) {
         fopAcM_OffCondition(passer, fopAcCnd_NODRAW_e);
     }
@@ -555,6 +563,9 @@ HookAction onKeepWhenOffscreenPre(ModContext*, void* args, void*, void*) {
 // after three seconds put it back on its walking route instead of leaving it frozen.
 HookAction onReliefPre(ModContext*, void* args, void*, void*) {
     auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
+    if (gateAction(passer)) {
+        return HOOK_SKIP_ORIGINAL;
+    }
     auto* state = findState(passer, false);
     if (!isPrototypePasser(passer) || state == nullptr) {
         return HOOK_CONTINUE;
@@ -584,20 +595,19 @@ void onRoomPathPost(ModContext*, void* args, void* retval, void*) {
     }
 }
 
-void onSetCollisionPost(ModContext*, void* args, void*, void*) {
-    auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
-    if (!isPrototypePasser(passer)) {
-        return;
-    }
-    if (auto* state = findState(passer, false); state != nullptr && !state->dead) {
-        setDamageable(passer);
-    }
-}
-
-void onBaseMtxPost(ModContext*, void* args, void*, void*) {
+// After the whole frame (setCollision and setBaseMtx have run): keep the passer hittable by
+// enemies only, and tilt the model while it falls.
+void onProfileExecutePost(ModContext*, void* args, void*, void*) {
     auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
     auto* state = findState(passer, false);
-    if (!isPrototypePasser(passer) || state == nullptr || !state->dead || passer->mpMorf == nullptr) {
+    if (!isPrototypePasser(passer) || state == nullptr) {
+        return;
+    }
+    if (!state->dead) {
+        setDamageable(passer);
+        return;
+    }
+    if (passer->mpMorf == nullptr) {
         return;
     }
 
@@ -874,10 +884,8 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
         mods::hook::add_pre<PasserExecuteFear>(onKeepWhenOffscreenPre) != MOD_OK ||
         mods::hook::add_pre<PasserExecuteRelief>(onReliefPre) != MOD_OK ||
         mods::hook::add_post<PasserCreateInit>(onCreateInitPost) != MOD_OK ||
-        mods::hook::add_pre<PasserCallExecute>(onCallExecutePre) != MOD_OK ||
-        mods::hook::add_post<PasserSetCollision>(onSetCollisionPost) != MOD_OK ||
-        mods::hook::add_post<PasserSetBaseMtx>(onBaseMtxPost) != MOD_OK ||
-        mods::hook::add_pre<PasserExecute>(onExecutePre) != MOD_OK ||
+        mods::hook::add_pre<PasserProfileExecute>(onExecutePre) != MOD_OK ||
+        mods::hook::add_post<PasserProfileExecute>(onProfileExecutePost) != MOD_OK ||
         mods::hook::add_post<PasserFearCheck>(onFearCheckPost) != MOD_OK ||
         mods::hook::add_pre<TalkTagExecute>(onTalkTagExecutePre) != MOD_OK ||
         mods::hook::add_post<TalkTagExecute>(onTalkTagExecutePost) != MOD_OK ||
