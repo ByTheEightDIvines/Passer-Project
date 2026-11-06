@@ -15,6 +15,7 @@
 #include "mods/svc/log.h"
 #include "mods/svc/stage.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -35,11 +36,11 @@ constexpr s8 kFieldRoom = 5;
 constexpr int kPasserType = 8;  // MAN_a2
 
 // Path IDs answered by this mod. Stock room 5 only has path 0, so these never collide.
-constexpr int kRoutePathId = 0x40;    // top-right exit -> Link's entrance (walking route)
-constexpr int kReversePathId = 0x41;  // Link's entrance -> top-right exit (escape route)
+constexpr int kRoutePathId = 0x40;    // Link's entrance -> top-right exit (walking route)
+constexpr int kReversePathId = 0x41;  // top-right exit -> Link's entrance (escape route)
 
-// Middle of the road in F_SP121 room 5, traced from the room's collision. Starts at the
-// top-right exit (out of view when Link enters) and ends at Link's entrance.
+// Middle of the road in F_SP121 room 5, traced from the room's collision, listed from the
+// top-right exit (toward the bridge) to Link's entrance. The walking route runs it backwards.
 constexpr std::array<std::array<f32, 3>, 20> kRoadPoints{{
     {-10655.0f, -1075.0f, 25295.0f}, {-11167.0f, -1075.0f, 25784.0f},
     {-11673.0f, -1080.0f, 26281.0f}, {-12138.0f, -1147.0f, 26815.0f},
@@ -90,6 +91,7 @@ bool inFieldStage() {
     return stage != nullptr && std::strcmp(stage, kFieldStage) == 0;
 }
 constexpr f32 kThreatRadius = 900.0f;
+constexpr int kSafeFramesToResume = 90;  // three seconds with nothing scary nearby
 constexpr f32 kTalkTagRadius = 180.0f;
 constexpr int kStartingHealth = 3;
 constexpr int kDeathDuration = 84;
@@ -112,7 +114,9 @@ struct PasserState {
     bool dead = false;
     bool grounded = false;
     bool talking = false;
-    bool arrived = false;  // reached Link's end of the road; waits there until out of view
+    bool arrived = false;   // reached the end of the road; waits there until out of view
+    bool cowering = false;  // finished running away; waits until it is safe, then walks on
+    int safeFrames = 0;
 };
 
 std::array<PasserState, 16> g_states{};
@@ -220,6 +224,15 @@ daNpcPasser_c* nearestPasser(const daTag_KMsg_c* tag) {
         }
     }
     return result;
+}
+
+// Back on the walking route from the nearest point, heading on toward the top-right exit.
+void resumeRoute(daNpcPasser_c* passer, PasserState& state) {
+    state.cowering = false;
+    state.safeFrames = 0;
+    passer->m_path.setPath(kRoutePathId, fopAcM_GetRoomNo(passer), 1, &passer->current.pos, true);
+    passer->m_path.setNextPoint(passer->current.pos);
+    passer->setAction(daNpcPasser_c::MODE_0);
 }
 
 // The talk marker follows the one live test passer around the room.
@@ -378,6 +391,9 @@ DEFINE_HOOK(&daNpcPasser_c::setCollision, PasserSetCollision);
 DEFINE_HOOK(&daNpcPasser_c::setBaseMtx, PasserSetBaseMtx);
 DEFINE_HOOK(&daNpcPasser_c::execute, PasserExecute);
 DEFINE_HOOK(&daNpcPasser_c::executePath, PasserExecutePath);
+DEFINE_HOOK(&daNpcPasser_c::executeEscape, PasserExecuteEscape);
+DEFINE_HOOK(&daNpcPasser_c::executeFear, PasserExecuteFear);
+DEFINE_HOOK(&daNpcPasser_c::executeRelief, PasserExecuteRelief);
 DEFINE_HOOK(&dPath_GetRoomPath, RoomPathLookup);
 DEFINE_HOOK(&daNpcCd2_c::checkFearSituation, PasserFearCheck);
 DEFINE_HOOK(&daTag_KMsg_c::Execute, TalkTagExecute);
@@ -417,7 +433,7 @@ HookAction onCallExecutePre(ModContext*, void* args, void*, void*) {
 }
 
 // Vanilla deletes a passer the instant it reaches the end of its path, even on screen.
-// Instead, stop at Link's end of the road and wait there until the camera can't see it.
+// Instead, stop at the end of the road and wait there until the camera can't see it.
 HookAction onExecutePathPre(ModContext*, void* args, void*, void*) {
     auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
     if (!isPrototypePasser(passer) || passer->mPathMode != 2 || !passer->m_path.isPath()) {
@@ -438,6 +454,46 @@ HookAction onExecutePathPre(ModContext*, void* args, void*, void*) {
         passer->setAnm(idle, 1.0f, 12.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
     }
     return HOOK_SKIP_ORIGINAL;
+}
+
+// Vanilla deletes a fleeing passer when it reaches the end of its escape path or leaves the
+// camera's view. Instead it keeps running out of view, and at the end of the path it stops,
+// turns away from the danger and cowers until it is safe to walk on.
+HookAction onExecuteEscapePre(ModContext*, void* args, void*, void*) {
+    auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
+    auto* state = findState(passer, false);
+    if (!isPrototypePasser(passer) || state == nullptr) {
+        return HOOK_CONTINUE;
+    }
+    fopAcM_OffCondition(passer, fopAcCnd_NODRAW_e);
+    if (passer->field_0xb1c != 1 || !passer->m_path.isPath()) {
+        return HOOK_CONTINUE;
+    }
+    const int last = passer->m_path.mPath->m_num - 1;
+    if (passer->m_path.field_0x20 < last) {
+        return HOOK_CONTINUE;
+    }
+    const dPnt* points = passer->m_path.mPath->m_points;
+    const Vec end = points[last].m_position;
+    const f32 dx = passer->current.pos.x - end.x;
+    const f32 dz = passer->current.pos.z - end.z;
+    const f32 reach = std::max(passer->speedF * 2.0f, 30.0f);
+    if (dx * dx + dz * dz > reach * reach) {
+        return HOOK_CONTINUE;
+    }
+    state->cowering = true;
+    state->safeFrames = 0;
+    passer->setAction(daNpcPasser_c::MODE_2);  // vanilla cower: stops and turns away from Link
+    return HOOK_SKIP_ORIGINAL;
+}
+
+// Cowering and the wall-bump pause also delete the passer once it is off screen; keep it.
+HookAction onKeepWhenOffscreenPre(ModContext*, void* args, void*, void*) {
+    auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
+    if (isPrototypePasser(passer)) {
+        fopAcM_OffCondition(passer, fopAcCnd_NODRAW_e);
+    }
+    return HOOK_CONTINUE;
 }
 
 void onRoomPathPost(ModContext*, void* args, void* retval, void*) {
@@ -512,6 +568,16 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         return HOOK_CONTINUE;
     }
 
+    if (state->cowering && !state->talking) {
+        passer->speedF = 0.0f;
+        // Wait until nothing scary has been near for a few seconds, then walk on.
+        if (passer->checkFearSituation()) {
+            state->safeFrames = 0;
+        } else if (++state->safeFrames >= kSafeFramesToResume) {
+            resumeRoute(passer, *state);
+        }
+    }
+
     if (state->arrived && !state->talking) {
         passer->speedF = 0.0f;
         if (fopAcM_CheckCondition(passer, fopAcCnd_NODRAW_e)) {
@@ -537,6 +603,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
             beginDeath(passer, *state);
         } else if (nearestEnemy(passer, kThreatRadius) != nullptr) {
             state->arrived = false;  // running away replaces waiting at the end of the road
+            state->cowering = false;
             passer->setAction(daNpcPasser_c::MODE_1);
         }
     }
@@ -657,9 +724,10 @@ stage_actor_data_class makeRecord(const char* name, u32 params, const std::array
 // Adds the passer, its talk marker and two escape markers to room 5 as the room loads.
 // Nothing on the disc is changed; the game creates them like any other placed actor.
 ModResult addRoomActors() {
-    const auto& first = kRoadPoints.front();
-    const auto& second = kRoadPoints[1];
-    const auto& last = kRoadPoints.back();
+    // The passer starts at Link's entrance and walks toward the top-right exit.
+    const auto& first = kRoadPoints.back();
+    const auto& second = kRoadPoints[kRoadPoints.size() - 2];
+    const auto& last = kRoadPoints.front();
     const cXyz from(first[0], first[1], first[2]);
     const cXyz to(second[0], second[1], second[2]);
     const s16 facing = cLib_targetAngleY(&from, &to);
@@ -668,14 +736,16 @@ ModResult addRoomActors() {
     // angle.x = 0xFF turns off the vanilla "leave at a set time of day" timer.
     const u32 passerParams = kPasserType | (0u << 8) | (static_cast<u32>(kRoutePathId) << 16) |
                              (1u << 24);
-    // KMsg type 0: attention offset 0x80, eye offset 0xA0, default talk distance and angle.
+    // KMsg type 0: attention offset 0x80, eye offset 0xA0, talk distance 3 (200 units) and talk
+    // angle 6 (any side). Distance 0 is only 50 units, closer than the passer's body lets Link get.
+    constexpr u32 kTalkTagParams = 0x0080A000u | (6u << 5) | 3u;
     // angle.x = 0xFF means no switch; angle.z = 0xFFFF means no flow node (set at runtime).
     const std::array records{
         makeRecord("Passer", passerParams, first, 0xFF, facing, 0),
-        makeRecord("KMsg", 0x0080A0FF, first, 0xFF, 0, static_cast<s16>(0xFFFF)),
-        // Fleeing toward Link's end keeps following the road route...
+        makeRecord("KMsg", kTalkTagParams, first, 0xFF, 0, static_cast<s16>(0xFFFF)),
+        // Each escape marker sits at the end its path runs to: fleeing toward the top-right exit
+        // follows the walking route, fleeing toward Link's entrance follows it in reverse.
         makeRecord("TagEsc", 0xFFFFFF00u | kRoutePathId, last, 0, 0, 0),
-        // ...fleeing back toward the top-right exit follows it in reverse.
         makeRecord("TagEsc", 0xFFFFFF00u | kReversePathId, first, 0, 0, 0),
     };
     for (const auto& record : records) {
@@ -697,14 +767,17 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
         return mods::set_error(error, flowResult, "failed to register the passer dialogue flow");
     }
 
-    buildRoute(g_route, false);
-    buildRoute(g_reverseRoute, true);
+    buildRoute(g_route, true);
+    buildRoute(g_reverseRoute, false);
     if (const ModResult stageResult = addRoomActors(); stageResult != MOD_OK) {
         return mods::set_error(error, stageResult, "failed to add the passer to Hyrule Field room 5");
     }
 
     if (mods::hook::add_post<RoomPathLookup>(onRoomPathPost) != MOD_OK ||
         mods::hook::add_pre<PasserExecutePath>(onExecutePathPre) != MOD_OK ||
+        mods::hook::add_pre<PasserExecuteEscape>(onExecuteEscapePre) != MOD_OK ||
+        mods::hook::add_pre<PasserExecuteFear>(onKeepWhenOffscreenPre) != MOD_OK ||
+        mods::hook::add_pre<PasserExecuteRelief>(onKeepWhenOffscreenPre) != MOD_OK ||
         mods::hook::add_post<PasserCreateInit>(onCreateInitPost) != MOD_OK ||
         mods::hook::add_pre<PasserCallExecute>(onCallExecutePre) != MOD_OK ||
         mods::hook::add_post<PasserSetCollision>(onSetCollisionPost) != MOD_OK ||
