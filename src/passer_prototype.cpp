@@ -1,6 +1,7 @@
 #include "global.h"
 
 #include "d/actor/d_a_npc_passer.h"
+#include "d/actor/d_a_player.h"
 #include "d/actor/d_a_tag_kmsg.h"
 #include "d/d_com_inf_game.h"
 #include "d/d_particle_name.h"
@@ -19,6 +20,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 
@@ -128,7 +130,8 @@ struct PasserState {
     bool arrived = false;   // reached the end of the road; waits there until out of view
     bool cowering = false;  // finished running away; waits until it is safe, then walks on
     int safeFrames = 0;
-    int reliefFrames = 0;   // frames spent in the vanilla wall-bump pause
+    int reliefFrames = 0;
+    int logFrames = 0;   // frames spent in the vanilla wall-bump pause
 };
 
 std::array<PasserState, 16> g_states{};
@@ -257,6 +260,24 @@ void resumeRoute(daNpcPasser_c* passer, PasserState& state) {
     passer->setAction(daNpcPasser_c::MODE_0);
 }
 
+// Test logging: once a second, where the passer is and what it is doing.
+void logProgress(daNpcPasser_c* passer, PasserState& state) {
+    if (++state.logFrames < 30) {
+        return;
+    }
+    state.logFrames = 0;
+    const int point = passer->m_path.isPath() ? passer->m_path.field_0x20 : -1;
+    char line[256];
+    std::snprintf(line, sizeof(line),
+                  "passer pos=(%.0f,%.0f,%.0f) mode=%d point=%d speed=%.1f wall=%d stuck=%d "
+                  "talk=%d cower=%d arrived=%d",
+                  passer->current.pos.x, passer->current.pos.y, passer->current.pos.z,
+                  static_cast<int>(passer->mActionIdx), point, passer->speedF,
+                  passer->mAcch.ChkWallHit() ? 1 : 0, static_cast<int>(passer->field_0xb25),
+                  state.talking ? 1 : 0, state.cowering ? 1 : 0, state.arrived ? 1 : 0);
+    svc_log->info(mod_ctx, line);
+}
+
 // The talk marker follows the one live test passer around the room.
 daNpcPasser_c* livePasser() {
     pruneStates();
@@ -369,11 +390,18 @@ void setDamageable(daNpcPasser_c* passer) {
     passer->mCyl.SetTgSe(dCcD_SE_SOFT_BODY);
 }
 
+// Stop, face Link and blend quickly into the talk loop.
 void setTalkAnimation(daNpcPasser_c* passer) {
+    passer->speedF = 0.0f;
+    if (auto* player = dComIfGp_getPlayer(0)) {
+        const s16 toPlayer = cLib_targetAngleY(&passer->current.pos, &player->current.pos);
+        passer->current.angle.y = toPlayer;
+        passer->shape_angle.y = toPlayer;
+    }
     auto* animation = static_cast<J3DAnmTransformKey*>(passer->getAnmP(kTalkAnimation,
                                                                        passer->getObjNum()));
     if (animation != nullptr) {
-        passer->setAnm(animation, 1.0f, 12.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
+        passer->setAnm(animation, 1.0f, 3.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
     }
 }
 
@@ -589,6 +617,8 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         return HOOK_CONTINUE;
     }
 
+    logProgress(passer, *state);
+
     if (state->dead) {
         ++state->deathFrame;
         if (!state->grounded) {
@@ -703,9 +733,24 @@ void onTalkTagExecutePost(ModContext*, void* args, void*, void*) {
         tag->attention_info.flags = 0;
         return;
     }
+    // Wolf Link can't talk to people; to the passer he is something to run from.
+    if (daPy_py_c::checkNowWolf()) {
+        tag->attention_info.flags = 0;
+    }
     if (auto* state = findState(passer, false); state != nullptr && state->talking &&
         !tag->eventInfo.checkCommandTalk()) {
+        // Conversation over: put the walk (or wait) animation back instead of looping the talk.
         state->talking = false;
+        if (state->arrived) {
+            auto* idle = static_cast<J3DAnmTransformKey*>(passer->getAnmP(0, passer->getObjNum()));
+            if (idle != nullptr) {
+                passer->setAnm(idle, 1.0f, 8.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
+            }
+        } else if (state->cowering) {
+            passer->setAction(daNpcPasser_c::MODE_2);
+        } else {
+            resumeRoute(passer, *state);
+        }
     }
 }
 
