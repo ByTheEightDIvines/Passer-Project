@@ -40,9 +40,17 @@ constexpr int kRoutePathId = 0x40;    // Link's entrance -> top-right exit (walk
 constexpr int kReversePathId = 0x41;  // top-right exit -> Link's entrance (escape route)
 
 // Middle of the road in F_SP121 room 5, traced from the room's collision, listed from the
-// top-right exit (toward the bridge) to Link's entrance. The walking route runs it backwards.
-constexpr std::array<std::array<f32, 3>, 20> kRoadPoints{{
-    {-10655.0f, -1075.0f, 25295.0f}, {-11167.0f, -1075.0f, 25784.0f},
+// enemy field past the bridge to Link's entrance. The walking route runs it backwards.
+constexpr std::array<std::array<f32, 3>, 29> kRoadPoints{{
+    // Room 0: into the field past the mailbox, where the Leevers, Bulblins and Kargaroks are.
+    {-11500.0f, 6.0f, 13800.0f}, {-11700.0f, -111.0f, 15000.0f},
+    {-11450.0f, -417.0f, 16500.0f}, {-11450.0f, -724.0f, 18000.0f},
+    {-11500.0f, -892.0f, 19400.0f},
+    // Room 0: the bridge, flat at -1034.
+    {-11500.0f, -1024.0f, 20600.0f}, {-11500.0f, -1034.0f, 21800.0f},
+    {-11500.0f, -1034.0f, 23000.0f}, {-11500.0f, -1034.0f, 24100.0f},
+    // Room 5: the canyon road down to Link's entrance.
+    {-11400.0f, -1075.0f, 24900.0f}, {-11167.0f, -1075.0f, 25784.0f},
     {-11673.0f, -1080.0f, 26281.0f}, {-12138.0f, -1147.0f, 26815.0f},
     {-12653.0f, -1218.0f, 27302.0f}, {-13283.0f, -1258.0f, 27614.0f},
     {-13988.0f, -1318.0f, 27660.0f}, {-14697.0f, -1438.0f, 27660.0f},
@@ -124,6 +132,16 @@ mods::flow::RegisteredMessage g_greeting;
 mods::flow::Graph g_talkGraph;
 uint16_t g_talkNode = 0xFFFF;
 
+// Rooms 0 (the field past the bridge), 4 and 5 are loaded together, and the passer walks
+// through them, so enemies from any of them count.
+bool inPasserArea(const fopAc_ac_c* actor) {
+    if (actor == nullptr || !inFieldStage()) {
+        return false;
+    }
+    const int room = fopAcM_GetRoomNo(actor);
+    return room == 0 || room == 4 || room == kFieldRoom;
+}
+
 bool inFieldRoom(const fopAc_ac_c* actor) {
     return actor != nullptr && inFieldStage() && fopAcM_GetRoomNo(actor) == kFieldRoom;
 }
@@ -186,8 +204,7 @@ fopAc_ac_c* nearestEnemy(const daNpcPasser_c* passer, f32 maxDistance) {
             return nullptr;
         }
         auto* enemy = static_cast<fopAc_ac_c*>(candidate);
-        if (fopAcM_GetGroup(enemy) != fopAc_ENEMY_e ||
-            fopAcM_GetRoomNo(enemy) != fopAcM_GetRoomNo(data->passer)) {
+        if (fopAcM_GetGroup(enemy) != fopAc_ENEMY_e || !inPasserArea(enemy)) {
             return nullptr;
         }
         const f32 dx = enemy->current.pos.x - data->passer->current.pos.x;
@@ -247,15 +264,14 @@ daNpcPasser_c* livePasser() {
 }
 
 daNpcPasser_c* nearestThreatTarget(const fopAc_ac_c* enemy) {
-    if (enemy == nullptr || fopAcM_GetGroup(enemy) != fopAc_ENEMY_e || !inFieldRoom(enemy)) {
+    if (enemy == nullptr || fopAcM_GetGroup(enemy) != fopAc_ENEMY_e || !inPasserArea(enemy)) {
         return nullptr;
     }
     pruneStates();
     daNpcPasser_c* result = nullptr;
     f32 nearestDistanceSq = kThreatRadius * kThreatRadius;
     for (auto& state : g_states) {
-        if (state.actor == nullptr || state.dead || !isPrototypePasser(state.actor) ||
-            fopAcM_GetRoomNo(state.actor) != fopAcM_GetRoomNo(enemy)) {
+        if (state.actor == nullptr || state.dead || !isPrototypePasser(state.actor)) {
             continue;
         }
         const f32 dx = state.actor->current.pos.x - enemy->current.pos.x;
@@ -628,6 +644,12 @@ HookAction onTalkTagExecutePre(ModContext*, void* args, void*, void*) {
     if (auto* walker = livePasser()) {
         tag->current.pos = walker->current.pos;
         tag->home.pos = walker->current.pos;
+    }
+    // The marker only offers a talk while Link is in its home room. Follow Link between the
+    // rooms the passer walks through (room 5, the bridge and the field in room 0).
+    const int stay = dComIfGp_roomControl_getStayNo();
+    if (stay == 0 || stay == 4 || stay == kFieldRoom) {
+        tag->home.roomNo = static_cast<s8>(stay);
     }
     auto* passer = nearestPasser(tag);
     if (passer != nullptr) {

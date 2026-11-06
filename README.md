@@ -4,10 +4,12 @@ A Twilight Princess / Dusklight test mod: one passerby on the road through Hyrul
 
 ## What it does
 
-- When room 5 loads, the mod adds a `MAN_a2` passer at the top-right end of the road, out of view of Link's entrance.
-  No game files are replaced; the actor is added through Dusklight's StageService.
-- The passer walks a route the mod builds in code along the middle of the road, toward Link's entrance.
-- At the end of the road it waits until the camera can no longer see it, then disappears.
+- When room 5 loads, the mod adds a `MAN_a2` passer at Link's entrance. No game files are replaced; the actor is
+  added through Dusklight's StageService.
+- The passer walks a route the mod builds in code: up the canyon road, over the bridge and into the field in room 0
+  where the enemies are.
+- At the end of the route it waits until the camera can no longer see it, then disappears.
+- When scared it runs along the road, then stops and cowers instead of vanishing, and walks on once it is safe.
 - Link can lock onto it and talk to it (one custom line, with its talk animation). The talk marker follows it.
 - Only enemies can hurt it. Nearby enemies make it run away along the road, and enemies that use the common
   player-search helpers aim at the passer when it is within 900 units.
