@@ -8,6 +8,8 @@
 #include "d/d_path.h"
 #include "d/d_stage.h"
 #include "f_op/f_op_actor_mng.h"
+#include "f_pc/f_pc_searcher.h"
+#include "f_op/f_op_actor_iter.h"
 #include "f_pc/f_pc_name.h"
 #include "m_Do/m_Do_mtx.h"
 #include "mods/service.hpp"
@@ -278,6 +280,48 @@ void logProgress(daNpcPasser_c* passer, PasserState& state) {
     svc_log->info(mod_ctx, line);
 }
 
+daNpcPasser_c* livePasser();
+
+// The Bulblin currently running its update, while a live passer is close enough to target.
+fopAc_ac_c* g_bulblinNearPasser = nullptr;
+constexpr f32 kBulblinTargetRadius = 1500.0f;
+
+HookAction onBulblinExecutePre(ModContext*, void* args, void*, void*) {
+    g_bulblinNearPasser = nullptr;
+    auto* bulblin = mods::arg<fopAc_ac_c*>(args, 0);
+    if (!inPasserArea(bulblin) || fopAcM_SearchByName(fpcNm_NPC_COACH_e) != nullptr) {
+        return HOOK_CONTINUE;  // the real escort wagon (if any) keeps priority
+    }
+    if (auto* passer = livePasser()) {
+        const f32 dx = passer->current.pos.x - bulblin->current.pos.x;
+        const f32 dz = passer->current.pos.z - bulblin->current.pos.z;
+        if (dx * dx + dz * dz <= kBulblinTargetRadius * kBulblinTargetRadius) {
+            g_bulblinNearPasser = bulblin;
+        }
+    }
+    return HOOK_CONTINUE;
+}
+
+void onBulblinExecutePost(ModContext*, void*, void*, void*) {
+    g_bulblinNearPasser = nullptr;
+}
+
+// fopAcM_SearchByName(NPC_COACH) is an inline wrapper over fopAcIt_Judge(fpcSch_JudgeForPName).
+void onActorJudgePost(ModContext*, void* args, void* retval, void*) {
+    if (g_bulblinNearPasser == nullptr || retval == nullptr) {
+        return;
+    }
+    const auto judge = mods::arg<fopAcIt_JudgeFunc>(args, 0);
+    const auto* name = mods::arg<const s16*>(args, 1);
+    if (judge != fpcSch_JudgeForPName || name == nullptr || *name != fpcNm_NPC_COACH_e ||
+        *static_cast<void**>(retval) != nullptr) {
+        return;
+    }
+    if (auto* passer = livePasser()) {
+        *static_cast<void**>(retval) = passer;
+    }
+}
+
 // The talk marker follows the one live test passer around the room.
 daNpcPasser_c* livePasser() {
     pruneStates();
@@ -445,6 +489,11 @@ DEFINE_HOOK(&daNpcPasser_c::executeEscape, PasserExecuteEscape);
 DEFINE_HOOK(&daNpcPasser_c::executeFear, PasserExecuteFear);
 DEFINE_HOOK(&daNpcPasser_c::executeRelief, PasserExecuteRelief);
 DEFINE_HOOK(&dPath_GetRoomPath, RoomPathLookup);
+// Bulblins (E_rd) already know how to fight something other than Link: in the escort mission
+// get_pla() targets the wagon (NPC_COACH) whenever it is closer than Link. While a Bulblin is
+// updating near the passer, answer its wagon lookup with the passer so it attacks him instead.
+DEFINE_HOOK_SYMBOL("daE_RD_Execute", int(void*), BulblinExecute);
+DEFINE_HOOK(&fopAcIt_Judge, ActorJudge);
 DEFINE_HOOK(&daNpcCd2_c::checkFearSituation, PasserFearCheck);
 DEFINE_HOOK(&daTag_KMsg_c::Execute, TalkTagExecute);
 DEFINE_HOOK(&fopAcM_searchActorAngleY, EnemyTargetAngleY);
@@ -894,6 +943,9 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
         mods::hook::add_pre<PasserExecuteRelief>(onReliefPre) != MOD_OK ||
         mods::hook::add_post<PasserCreateInit>(onCreateInitPost) != MOD_OK ||
         mods::hook::add_pre<PasserProfileExecute>(onExecutePre) != MOD_OK ||
+        mods::hook::add_pre<BulblinExecute>(onBulblinExecutePre) != MOD_OK ||
+        mods::hook::add_post<BulblinExecute>(onBulblinExecutePost) != MOD_OK ||
+        mods::hook::add_post<ActorJudge>(onActorJudgePost) != MOD_OK ||
         mods::hook::add_post<PasserProfileExecute>(onProfileExecutePost) != MOD_OK ||
         mods::hook::add_post<PasserFearCheck>(onFearCheckPost) != MOD_OK ||
         mods::hook::add_pre<TalkTagExecute>(onTalkTagExecutePre) != MOD_OK ||
