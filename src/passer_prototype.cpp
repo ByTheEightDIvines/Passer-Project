@@ -100,11 +100,14 @@ bool inFieldStage() {
 }
 constexpr f32 kThreatRadius = 900.0f;
 constexpr int kSafeFramesToResume = 90;  // three seconds with nothing scary nearby
+constexpr f32 kWallCheckHeight = 55.0f;
 constexpr f32 kTalkTagRadius = 180.0f;
 constexpr int kStartingHealth = 3;
 constexpr int kDeathDuration = 84;
 constexpr u16 kTalkAnimation = 6;
-constexpr u16 kTalkFlowGroup = 0;
+// The talk marker runs its flow in the stage's message file. Hyrule Field (F_SP121) uses group 8;
+// registering in group 0 left the node unresolved, so the talk opened with no text and never ended.
+constexpr u16 kTalkFlowGroup = 8;
 constexpr std::array kLanguages{
     MESSAGE_LANGUAGE_ENGLISH, MESSAGE_LANGUAGE_GERMAN, MESSAGE_LANGUAGE_FRENCH,
     MESSAGE_LANGUAGE_SPANISH, MESSAGE_LANGUAGE_ITALIAN, MESSAGE_LANGUAGE_JAPANESE,
@@ -125,6 +128,7 @@ struct PasserState {
     bool arrived = false;   // reached the end of the road; waits there until out of view
     bool cowering = false;  // finished running away; waits until it is safe, then walks on
     int safeFrames = 0;
+    int reliefFrames = 0;   // frames spent in the vanilla wall-bump pause
 };
 
 std::array<PasserState, 16> g_states{};
@@ -247,6 +251,7 @@ daNpcPasser_c* nearestPasser(const daTag_KMsg_c* tag) {
 void resumeRoute(daNpcPasser_c* passer, PasserState& state) {
     state.cowering = false;
     state.safeFrames = 0;
+    state.reliefFrames = 0;
     passer->m_path.setPath(kRoutePathId, fopAcM_GetRoomNo(passer), 1, &passer->current.pos, true);
     passer->m_path.setNextPoint(passer->current.pos);
     passer->setAction(daNpcPasser_c::MODE_0);
@@ -441,6 +446,12 @@ void onCreateInitPost(ModContext*, void* args, void*, void*) {
 HookAction onCallExecutePre(ModContext*, void* args, void*, void*) {
     auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
     const auto* state = findState(passer, false);
+    if (isPrototypePasser(passer)) {
+        // execute() resets the wall check height every frame just before this. The vanilla
+        // value is lower than the 41-unit step onto the bridge, so the passer walked into it as
+        // a wall. Link's ground probe reaches 60 units, so a 55-unit wall check lets him step up.
+        passer->mAcchCir.SetWallH(kWallCheckHeight);
+    }
     if (isPrototypePasser(passer) && state != nullptr &&
         (state->dead || state->talking || state->arrived)) {
         return HOOK_SKIP_ORIGINAL;
@@ -503,11 +514,28 @@ HookAction onExecuteEscapePre(ModContext*, void* args, void*, void*) {
     return HOOK_SKIP_ORIGINAL;
 }
 
-// Cowering and the wall-bump pause also delete the passer once it is off screen; keep it.
+// Cowering also deletes the passer once it is off screen; keep it.
 HookAction onKeepWhenOffscreenPre(ModContext*, void* args, void*, void*) {
     auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
     if (isPrototypePasser(passer)) {
         fopAcM_OffCondition(passer, fopAcCnd_NODRAW_e);
+    }
+    return HOOK_CONTINUE;
+}
+
+// The wall-bump pause only ends in vanilla by deleting the passer off screen. Keep it, and
+// after three seconds put it back on its walking route instead of leaving it frozen.
+HookAction onReliefPre(ModContext*, void* args, void*, void*) {
+    auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
+    auto* state = findState(passer, false);
+    if (!isPrototypePasser(passer) || state == nullptr) {
+        return HOOK_CONTINUE;
+    }
+    fopAcM_OffCondition(passer, fopAcCnd_NODRAW_e);
+    if (++state->reliefFrames >= kSafeFramesToResume && !passer->checkFearSituation()) {
+        state->reliefFrames = 0;
+        resumeRoute(passer, *state);
+        return HOOK_SKIP_ORIGINAL;
     }
     return HOOK_CONTINUE;
 }
@@ -799,7 +827,7 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
         mods::hook::add_pre<PasserExecutePath>(onExecutePathPre) != MOD_OK ||
         mods::hook::add_pre<PasserExecuteEscape>(onExecuteEscapePre) != MOD_OK ||
         mods::hook::add_pre<PasserExecuteFear>(onKeepWhenOffscreenPre) != MOD_OK ||
-        mods::hook::add_pre<PasserExecuteRelief>(onKeepWhenOffscreenPre) != MOD_OK ||
+        mods::hook::add_pre<PasserExecuteRelief>(onReliefPre) != MOD_OK ||
         mods::hook::add_post<PasserCreateInit>(onCreateInitPost) != MOD_OK ||
         mods::hook::add_pre<PasserCallExecute>(onCallExecutePre) != MOD_OK ||
         mods::hook::add_post<PasserSetCollision>(onSetCollisionPost) != MOD_OK ||
