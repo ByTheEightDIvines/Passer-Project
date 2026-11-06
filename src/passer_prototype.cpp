@@ -466,6 +466,11 @@ void onCreateInitPost(ModContext*, void* args, void*, void*) {
     }
 
     passer->health = kStartingHealth;
+    // Room 5 has invisible "ClearB" walls across the road that keep enemies from following Link
+    // out of the field. Their polygons let Link through but block objects, so check walls the way
+    // Link does and walk through them like he can.
+    passer->mAcch.ClrObj();
+    passer->mAcch.SetLink();
     // Battle attention makes this prototype passer lock-on targetable by Link.
     passer->attention_info.flags |= fopAc_AttnFlag_BATTLE_e;
     passer->attention_info.distances[fopAc_attn_BATTLE_e] = 180;
@@ -725,6 +730,9 @@ HookAction onTalkTagExecutePre(ModContext*, void* args, void*, void*) {
         if (tag->eventInfo.checkCommandTalk()) {
             if (auto* state = findState(passer, false); state != nullptr && !state->talking) {
                 state->talking = true;
+                // A talk event only lets its two participants (Link and this marker) move, so the
+                // passer froze for the whole conversation. Let him keep animating while it runs.
+                fopAcM_OnStatus(passer, fopAcStts_NOPAUSE_e);
                 setTalkAnimation(passer);
             }
         }
@@ -751,6 +759,7 @@ void onTalkTagExecutePost(ModContext*, void* args, void*, void*) {
         !tag->eventInfo.checkCommandTalk()) {
         // Conversation over: put the walk (or wait) animation back instead of looping the talk.
         state->talking = false;
+        fopAcM_OffStatus(passer, fopAcStts_NOPAUSE_e);
         if (state->arrived) {
             auto* idle = static_cast<J3DAnmTransformKey*>(passer->getAnmP(0, passer->getObjNum()));
             if (idle != nullptr) {
