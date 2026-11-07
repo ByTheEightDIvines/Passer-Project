@@ -283,6 +283,7 @@ void logProgress(daNpcPasser_c* passer, PasserState& state) {
 }
 
 daNpcPasser_c* livePasser();
+bool lockedOnPasser(const fopAc_ac_c* enemy, const daNpcPasser_c* passer);
 
 // The Bulblin currently running its update, while a live passer is close enough to target.
 fopAc_ac_c* g_bulblinNearPasser = nullptr;
@@ -298,7 +299,8 @@ HookAction onBulblinExecutePre(ModContext*, void* args, void*, void*) {
     if (auto* passer = livePasser()) {
         const f32 dx = passer->current.pos.x - bulblin->current.pos.x;
         const f32 dz = passer->current.pos.z - bulblin->current.pos.z;
-        if (dx * dx + dz * dz <= kBulblinTargetRadius * kBulblinTargetRadius) {
+        if (dx * dx + dz * dz <= kBulblinTargetRadius * kBulblinTargetRadius ||
+            lockedOnPasser(bulblin, passer)) {
             g_bulblinNearPasser = bulblin;
         }
     }
@@ -334,6 +336,15 @@ BulblinLock* findLock(fpc_ProcID id, bool create) {
     return nullptr;
 }
 
+bool lockedOnPasser(const fopAc_ac_c* enemy, const daNpcPasser_c* passer) {
+    if (enemy == nullptr || passer == nullptr) {
+        return false;
+    }
+    auto* lock = findLock(fopAcM_GetID(const_cast<fopAc_ac_c*>(enemy)), false);
+    return lock != nullptr && lock->frames > 0 &&
+           enemy->current.pos.abs(passer->current.pos) <= kBulblinChaseRadius;
+}
+
 void onGetPlaPost(ModContext*, void* args, void* retval, void*) {
     auto* bulblin = mods::arg<fopAc_ac_c*>(args, 0);
     auto** target = static_cast<fopAc_ac_c**>(retval);
@@ -356,9 +367,20 @@ void onGetPlaPost(ModContext*, void* args, void* retval, void*) {
 }
 
 void onBulblinExecutePost(ModContext*, void* args, void*, void*) {
-    if (auto* lock = findLock(fopAcM_GetID(mods::arg<fopAc_ac_c*>(args, 0)), false);
+    auto* self = mods::arg<e_rd_class*>(args, 0);
+    auto* selfActor = reinterpret_cast<fopAc_ac_c*>(self);
+    if (auto* lock = findLock(fopAcM_GetID(selfActor), false);
         lock != nullptr && lock->frames > 0) {
         --lock->frames;
+    }
+    // It aimed at the passer this frame (its target distance is his distance): lock on.
+    if (auto* passer = livePasser(); passer != nullptr && g_coachSwaps > 0) {
+        const f32 toPasser = selfActor->current.pos.abs(passer->current.pos);
+        if (std::fabs(self->dis - toPasser) < 150.0f) {
+            if (auto* lock = findLock(fopAcM_GetID(selfActor), true)) {
+                lock->frames = kBulblinLockFrames;
+            }
+        }
     }
     auto* bulblin = mods::arg<e_rd_class*>(args, 0);
     auto* actor = reinterpret_cast<fopAc_ac_c*>(bulblin);
@@ -409,6 +431,8 @@ daNpcPasser_c* livePasser() {
     return nullptr;
 }
 
+bool lockedOnPasser(const fopAc_ac_c* enemy, const daNpcPasser_c* passer);
+
 daNpcPasser_c* nearestThreatTarget(const fopAc_ac_c* enemy) {
     if (enemy == nullptr || fopAcM_GetGroup(enemy) != fopAc_ENEMY_e || !inPasserArea(enemy)) {
         return nullptr;
@@ -426,6 +450,13 @@ daNpcPasser_c* nearestThreatTarget(const fopAc_ac_c* enemy) {
         if (distanceSq <= nearestDistanceSq) {
             nearestDistanceSq = distanceSq;
             result = state.actor;
+        }
+    }
+    // A Bulblin that has already gone for the passer keeps reading him as "Link" while he is
+    // within chase range, so get_pla's closer-of-the-two check keeps picking him when he runs.
+    if (result == nullptr) {
+        if (auto* passer = livePasser(); passer != nullptr && lockedOnPasser(enemy, passer)) {
+            result = passer;
         }
     }
     return result;
@@ -778,6 +809,9 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
             }
         }
         if (state->deathFrame >= kDeathDuration) {
+            // The Poe particles live in Poe areas' own particle set and never show in Hyrule
+            // Field. Use the shared "monster defeated" burst (type 0, no item drop) instead.
+            fopAcM_createDisappear(passer, &passer->current.pos, 10, 0, 0xFF);
             fopAcM_delete(passer);
             state->actor = nullptr;
             return HOOK_SKIP_ORIGINAL;
