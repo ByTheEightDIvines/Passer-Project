@@ -1,6 +1,7 @@
 #include "global.h"
 
 #include "d/actor/d_a_npc_passer.h"
+#include "d/actor/d_a_e_rd.h"
 #include "d/actor/d_a_player.h"
 #include "d/actor/d_a_tag_kmsg.h"
 #include "d/d_com_inf_game.h"
@@ -285,6 +286,7 @@ daNpcPasser_c* livePasser();
 
 // The Bulblin currently running its update, while a live passer is close enough to target.
 fopAc_ac_c* g_bulblinNearPasser = nullptr;
+int g_coachSwaps = 0;  // wagon lookups answered with the passer during this Bulblin update
 constexpr f32 kBulblinTargetRadius = 1500.0f;
 
 HookAction onBulblinExecutePre(ModContext*, void* args, void*, void*) {
@@ -303,8 +305,27 @@ HookAction onBulblinExecutePre(ModContext*, void* args, void*, void*) {
     return HOOK_CONTINUE;
 }
 
-void onBulblinExecutePost(ModContext*, void*, void*, void*) {
+// Test logging: once a second per nearby Bulblin, what it is aiming at and doing.
+void onBulblinExecutePost(ModContext*, void* args, void*, void*) {
+    auto* bulblin = mods::arg<e_rd_class*>(args, 0);
+    auto* actor = reinterpret_cast<fopAc_ac_c*>(bulblin);
+    if (g_bulblinNearPasser == actor && (bulblin->counter % 30) == 0) {
+        auto* passer = livePasser();
+        auto* player = dComIfGp_getPlayer(0);
+        if (passer != nullptr && player != nullptr) {
+            char line[256];
+            std::snprintf(line, sizeof(line),
+                          "bulblin %u: toPasser=%.0f toLink=%.0f targetDis=%.0f range=%.0f "
+                          "action=%d mode=%d swaps=%d",
+                          static_cast<unsigned>(fopAcM_GetID(actor)),
+                          actor->current.pos.abs(passer->current.pos),
+                          actor->current.pos.abs(player->current.pos), bulblin->dis,
+                          bulblin->attack_range, bulblin->action, bulblin->mode, g_coachSwaps);
+            svc_log->info(mod_ctx, line);
+        }
+    }
     g_bulblinNearPasser = nullptr;
+    g_coachSwaps = 0;
 }
 
 // fopAcM_SearchByName(NPC_COACH) is an inline wrapper over fopAcIt_Judge(fpcSch_JudgeForPName).
@@ -320,6 +341,7 @@ void onActorJudgePost(ModContext*, void* args, void* retval, void*) {
     }
     if (auto* passer = livePasser()) {
         *static_cast<void**>(retval) = passer;
+        ++g_coachSwaps;
     }
 }
 
