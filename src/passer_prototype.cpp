@@ -105,6 +105,7 @@ bool inFieldStage() {
 constexpr f32 kThreatRadius = 900.0f;
 constexpr int kSafeFramesToResume = 90;  // three seconds with nothing scary nearby
 constexpr f32 kWallCheckHeight = 55.0f;
+constexpr std::array<f32, 3> kBridgeBulblinPos{-11500.0f, -1034.0f, 22400.0f};
 constexpr f32 kTalkTagRadius = 180.0f;
 constexpr int kStartingHealth = 3;
 constexpr int kDeathDuration = 84;
@@ -910,6 +911,9 @@ ModResult addRoomActors() {
         // follows the walking route, fleeing toward Link's entrance follows it in reverse.
         makeRecord("TagEsc", 0xFFFFFF00u | kRoutePathId, last, 0, 0, 0),
         makeRecord("TagEsc", 0xFFFFFF00u | kReversePathId, first, 0, 0, 0),
+        // Test enemy: a club Bulblin on foot (E_rd: no switch, arg0 0 = on foot, weapon 1 = club)
+        // standing mid-bridge, facing the canyon the passer walks out of.
+        makeRecord("E_rd", 0xFF00F100u, kBridgeBulblinPos, 0, 0, 0),
     };
     for (const auto& record : records) {
         const ModResult result = svc_stage->add_actor(mod_ctx, kFieldStage, kFieldRoom, -1,
