@@ -306,7 +306,60 @@ HookAction onBulblinExecutePre(ModContext*, void* args, void*, void*) {
 }
 
 // Test logging: once a second per nearby Bulblin, what it is aiming at and doing.
+// Bulblins that have picked the passer keep chasing him (get_pla otherwise switches to Link as
+// soon as he runs and Link becomes the closer one). Keyed by process ID, a few at a time.
+struct BulblinLock {
+    fpc_ProcID id = fpcM_ERROR_PROCESS_ID_e;
+    int frames = 0;
+};
+std::array<BulblinLock, 8> g_bulblinLocks{};
+constexpr f32 kBulblinChaseRadius = 3000.0f;
+constexpr int kBulblinLockFrames = 600;  // forget him after 20 seconds without seeing him
+
+BulblinLock* findLock(fpc_ProcID id, bool create) {
+    BulblinLock* empty = nullptr;
+    for (auto& lock : g_bulblinLocks) {
+        if (lock.id == id) {
+            return &lock;
+        }
+        if (empty == nullptr && (lock.id == fpcM_ERROR_PROCESS_ID_e || lock.frames <= 0)) {
+            empty = &lock;
+        }
+    }
+    if (create && empty != nullptr) {
+        empty->id = id;
+        empty->frames = 0;
+        return empty;
+    }
+    return nullptr;
+}
+
+void onGetPlaPost(ModContext*, void* args, void* retval, void*) {
+    auto* bulblin = mods::arg<fopAc_ac_c*>(args, 0);
+    auto** target = static_cast<fopAc_ac_c**>(retval);
+    auto* passer = livePasser();
+    if (target == nullptr || bulblin == nullptr || passer == nullptr || !inPasserArea(bulblin)) {
+        return;
+    }
+    const fpc_ProcID id = fopAcM_GetID(bulblin);
+    if (*target == passer) {
+        if (auto* lock = findLock(id, true)) {
+            lock->frames = kBulblinLockFrames;
+        }
+        return;
+    }
+    auto* lock = findLock(id, false);
+    if (lock != nullptr && lock->frames > 0 &&
+        bulblin->current.pos.abs(passer->current.pos) <= kBulblinChaseRadius) {
+        *target = passer;
+    }
+}
+
 void onBulblinExecutePost(ModContext*, void* args, void*, void*) {
+    if (auto* lock = findLock(fopAcM_GetID(mods::arg<fopAc_ac_c*>(args, 0)), false);
+        lock != nullptr && lock->frames > 0) {
+        --lock->frames;
+    }
     auto* bulblin = mods::arg<e_rd_class*>(args, 0);
     auto* actor = reinterpret_cast<fopAc_ac_c*>(bulblin);
     if (g_bulblinNearPasser == actor && (bulblin->counter % 30) == 0) {
@@ -333,10 +386,10 @@ void onActorJudgePost(ModContext*, void* args, void* retval, void*) {
     if (g_bulblinNearPasser == nullptr || retval == nullptr) {
         return;
     }
-    const auto judge = mods::arg<fopAcIt_JudgeFunc>(args, 0);
+    // Match on the name searched for. The judge function's address can't be compared: inside a
+    // mod it resolves to an import stub, never the game's own address.
     const auto* name = mods::arg<const s16*>(args, 1);
-    if (judge != fpcSch_JudgeForPName || name == nullptr || *name != fpcNm_NPC_COACH_e ||
-        *static_cast<void**>(retval) != nullptr) {
+    if (name == nullptr || *name != fpcNm_NPC_COACH_e || *static_cast<void**>(retval) != nullptr) {
         return;
     }
     if (auto* passer = livePasser()) {
@@ -452,7 +505,9 @@ void redirectEnemySeenAngle(void* args, void* retval) {
 void setDamageable(daNpcPasser_c* passer) {
     // Accept ordinary weapon target hits on the NPC's existing collision cylinder.
     passer->mCyl.SetTgType(0xD8FBFDFF);
-    passer->mCyl.OnTgSetBit();
+    // Target group 0x10 (plus the "set" bit), the same as the escort wagon. A hit only lands when
+    // the attack's groups overlap the target's; group 0 meant no attack could ever hit him.
+    passer->mCyl.SetTgSPrm(0x11);
     passer->mCyl.SetTgHitMark(CcG_Tg_UNK_MARK_1);
     passer->mCyl.SetTgSe(dCcD_SE_SOFT_BODY);
 }
@@ -517,6 +572,7 @@ DEFINE_HOOK(&dPath_GetRoomPath, RoomPathLookup);
 // updating near the passer, answer its wagon lookup with the passer so it attacks him instead.
 DEFINE_HOOK_SYMBOL("daE_RD_Execute", int(void*), BulblinExecute);
 DEFINE_HOOK(&fopAcIt_Judge, ActorJudge);
+DEFINE_HOOK_SYMBOL("src/d/actor/d_a_e_rd.cpp#get_pla", fopAc_ac_c*(fopAc_ac_c*), BulblinGetPla);
 DEFINE_HOOK(&daNpcCd2_c::checkFearSituation, PasserFearCheck);
 DEFINE_HOOK(&daTag_KMsg_c::Execute, TalkTagExecute);
 DEFINE_HOOK(&fopAcM_searchActorAngleY, EnemyTargetAngleY);
@@ -760,6 +816,12 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         }
         --state->health;
         passer->health = static_cast<s16>(state->health);
+        {
+            char line[128];
+            std::snprintf(line, sizeof(line), "passer hit by enemy %u, health now %d",
+                          static_cast<unsigned>(fopAcM_GetID(attacker)), state->health);
+            svc_log->info(mod_ctx, line);
+        }
         if (state->health <= 0) {
             beginDeath(passer, *state);
         } else if (nearestEnemy(passer, kThreatRadius) != nullptr) {
@@ -986,6 +1048,11 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
         return mods::set_error(error, MOD_UNAVAILABLE, "failed to install passer prototype hooks");
     }
 
+    // Optional: keeps Bulblins chasing the passer once they've picked him. If get_pla can't be
+    // hooked (missing from the symbol manifest), the passer still works with nearest-target only.
+    if (mods::hook::add_post<BulblinGetPla>(onGetPlaPost) != MOD_OK) {
+        svc_log->info(mod_ctx, "Bulblin get_pla hook unavailable; Bulblins target whoever is closer");
+    }
     svc_log->info(mod_ctx,
         "Hyrule Field room 5 test passer ready: spawned by code on a code-built road route");
     return MOD_OK;
