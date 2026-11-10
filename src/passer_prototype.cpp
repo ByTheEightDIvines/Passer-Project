@@ -19,6 +19,7 @@
 #include "mods/svc/hook.hpp"
 #include "mods/svc/log.h"
 #include "mods/svc/stage.h"
+#include "spot_picker.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1118,12 +1119,16 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     if (mods::hook::add_post<BulblinGetPla>(onGetPlaPost) != MOD_OK) {
         svc_log->info(mod_ctx, "Bulblin get_pla hook unavailable; Bulblins target whoever is closer");
     }
+    spot_picker::initialize();
     svc_log->info(mod_ctx,
         "Hyrule Field room 5 test passer ready: spawned by code on a code-built road route");
     return MOD_OK;
 }
 
-MOD_EXPORT ModResult mod_update(ModError*) { return MOD_OK; }
+MOD_EXPORT ModResult mod_update(ModError*) {
+    spot_picker::update();
+    return MOD_OK;
+}
 
 MOD_EXPORT ModResult mod_shutdown(ModError*) {
     g_talkGraph.reset();

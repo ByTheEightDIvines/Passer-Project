@@ -14,3 +14,4 @@
 | Enemy targeting through shared aim/range helpers | Implemented; enemy-specific routines may still target Link |
 | Bulblin animation retarget | Not implemented |
 | Nighttime lantern | Not implemented |
+| Spot picker: log camp / Beedle's tent / road spots from the Mods window or L + R + D-pad, saved to `spots.tsv` in the mod's data folder, copy all to clipboard | Implemented; needs in-game check |

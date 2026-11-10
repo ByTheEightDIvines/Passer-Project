@@ -20,7 +20,7 @@ configure_file(mod.json.in "${CMAKE_CURRENT_BINARY_DIR}/mod.json" @ONLY NEWLINE_
 
 add_mod(hyrule_field_passer_prototype
         FEATURES game
-        SOURCES src/passer_prototype.cpp
+        SOURCES src/passer_prototype.cpp src/spot_picker.cpp
         MOD_JSON "${CMAKE_CURRENT_BINARY_DIR}/mod.json"
 )
 

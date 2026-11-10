@@ -16,6 +16,17 @@ A Twilight Princess / Dusklight test mod: one passerby on the road through Hyrul
 - After three enemy hits it is launched away from the enemy, backflipping through the air like a Wind Waker
   Bokoblin, and bursts into smoke when it lands.
 
+## Spot picker (scouting tool)
+
+For choosing where camps, Beedle's tent and the road network go. Stand Link on a spot and log it:
+
+- From this mod's page in the Mods window (shows Link's live position, the logged list, Undo, Copy all, Clear all), or
+- With the controller: hold **L + R** and tap the D-pad. **Up** = road point, **Right** = camp, **Left** = Beedle's tent,
+  **Down** = undo the last spot. A toast confirms each one.
+
+Spots are saved as they are logged to `spots.tsv` in the mod's data folder, one tab-separated line each
+(kind, stage, room, x, y, z, facing, day, time). **Copy all to clipboard** gives the same text to paste into chat.
+
 ## Build
 
 The mod builds like the other Dusklight mods: CMake fetches the pinned Dusklight version (`DUSKLIGHT_VERSION` in
