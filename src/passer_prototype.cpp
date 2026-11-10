@@ -702,7 +702,12 @@ HookAction onExecuteEscapePre(ModContext*, void* args, void*, void*) {
     const f32 dx = passer->current.pos.x - end.x;
     const f32 dz = passer->current.pos.z - end.z;
     const f32 reach = std::max(passer->speedF * 2.0f, 30.0f);
-    if (dx * dx + dz * dz > reach * reach) {
+    // Vanilla's checkPoint() also counts a point as reached once the distance budget it set
+    // when heading for it (mNextPoint, reduced by speedF each frame) runs out, even if the
+    // passer is still far away because obstacle avoidance or a wall slowed him down. On the
+    // last point that deletes him on the spot, so catch that case here too.
+    const bool budgetSpent = passer->m_path.mNextPoint - passer->speedF < 0.0f;
+    if (dx * dx + dz * dz > reach * reach && !budgetSpent) {
         return HOOK_CONTINUE;
     }
     state->cowering = true;
