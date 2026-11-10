@@ -13,6 +13,7 @@
 #include "f_op/f_op_actor_iter.h"
 #include "f_pc/f_pc_name.h"
 #include "m_Do/m_Do_mtx.h"
+#include "SSystem/SComponent/c_math.h"
 #include "mods/service.hpp"
 #include "mods/svc/flow.hpp"
 #include "mods/svc/hook.hpp"
@@ -109,7 +110,16 @@ constexpr f32 kWallCheckHeight = 55.0f;
 constexpr std::array<f32, 3> kBridgeBulblinPos{-11500.0f, -1034.0f, 22400.0f};
 constexpr f32 kTalkTagRadius = 180.0f;
 constexpr int kStartingHealth = 3;
-constexpr int kDeathDuration = 84;
+// Wind Waker style death: the final hit launches him up and away, tumbling head over heels,
+// and he bursts into smoke the moment he lands.
+constexpr int kDeathDuration = 90;          // safety limit if he never finds the ground
+constexpr f32 kLaunchSpeedXZ = 14.0f;       // away from the enemy that landed the hit
+constexpr f32 kLaunchSpeedY = 26.0f;
+constexpr f32 kLaunchGravity = 1.6f;
+constexpr f32 kLaunchDrag = 0.985f;
+constexpr s16 kTumbleSpeed = 0x0900;        // backflip speed, about 1.1 turns in the air
+constexpr f32 kTumblePivotY = 90.0f;        // spin around his middle, not his feet
+constexpr u16 kLaunchAnimation = 0x29;      // the startled flinch, held while he flies
 constexpr u16 kTalkAnimation = 6;
 // The talk marker runs its flow in the stage's message file. Hyrule Field (F_SP121) uses group 8;
 // registering in group 0 left the node unresolved, so the talk opened with no text and never ended.
@@ -130,6 +140,7 @@ struct PasserState {
     f32 knockbackZ = 0.0f;
     bool dead = false;
     bool grounded = false;
+    s16 tumble = 0;  // backflip angle while flying
     bool talking = false;
     bool arrived = false;   // reached the end of the road; waits there until out of view
     bool cowering = false;  // finished running away; waits until it is safe, then walks on
@@ -563,28 +574,36 @@ void beginDeath(daNpcPasser_c* passer, PasserState& state) {
     state.deathFrame = 0;
     state.grounded = false;
     state.talking = false;
-    state.knockbackY = 8.0f;
+    state.tumble = 0;
     passer->health = 0;
     passer->attention_info.flags = 0;
     passer->mCyl.OffTgSetBit();
     passer->speedF = 0.0f;
     passer->speed.set(0.0f, 0.0f, 0.0f);
 
+    // Launch away from the enemy that hit him, facing it, so the backflip carries him away.
+    f32 dirX = -cM_ssin(passer->shape_angle.y);
+    f32 dirZ = -cM_scos(passer->shape_angle.y);
     if (auto* enemy = nearestEnemy(passer, kThreatRadius)) {
-        f32 dx = passer->current.pos.x - enemy->current.pos.x;
-        f32 dz = passer->current.pos.z - enemy->current.pos.z;
+        const f32 dx = passer->current.pos.x - enemy->current.pos.x;
+        const f32 dz = passer->current.pos.z - enemy->current.pos.z;
         const f32 length = std::sqrt(dx * dx + dz * dz);
         if (length > 0.001f) {
-            state.knockbackX = (dx / length) * 9.0f;
-            state.knockbackZ = (dz / length) * 9.0f;
+            dirX = dx / length;
+            dirZ = dz / length;
         }
     }
+    state.knockbackX = dirX * kLaunchSpeedXZ;
+    state.knockbackY = kLaunchSpeedY;
+    state.knockbackZ = dirZ * kLaunchSpeedXZ;
+    const s16 facing = cM_atan2s(-dirX, -dirZ);
+    passer->shape_angle.y = facing;
+    passer->current.angle.y = facing;
 
-    const cXyz scale(1.0f, 1.0f, 1.0f);
-    dComIfGp_particle_set(static_cast<u16>(dPa_RM(ID_ZF_S_PODEATH00SMK)),
-                          &passer->current.pos, &passer->shape_angle, &scale);
-    dComIfGp_particle_set(static_cast<u16>(dPa_RM(ID_ZF_S_PODEATH02SP)),
-                          &passer->current.pos, &passer->shape_angle, &scale);
+    auto* flinch = static_cast<J3DAnmTransformKey*>(passer->getAnmP(kLaunchAnimation, passer->getObjNum()));
+    if (flinch != nullptr) {
+        passer->setAnm(flinch, 1.0f, 3.0f, J3DFrameCtrl::EMode_NONE, 0, -1);
+    }
 }
 
 DEFINE_HOOK(&daNpcPasser_c::create_init, PasserCreateInit);
@@ -780,11 +799,13 @@ void onProfileExecutePost(ModContext*, void* args, void*, void*) {
         return;
     }
 
-    const int progress = state->deathFrame < 32 ? state->deathFrame : 32;
-    const s16 fallAngle = static_cast<s16>(progress * (0x4000 / 32));
-    mDoMtx_stack_c::transS(passer->current.pos.x, passer->current.pos.y, passer->current.pos.z);
+    // Backflip around his middle (head toward where he is flying), with a slight sideways roll.
+    mDoMtx_stack_c::transS(passer->current.pos.x, passer->current.pos.y + kTumblePivotY,
+                           passer->current.pos.z);
     mDoMtx_stack_c::YrotM(passer->shape_angle.y);
-    mDoMtx_stack_c::XrotM(fallAngle);
+    mDoMtx_stack_c::XrotM(static_cast<s16>(-state->tumble));
+    mDoMtx_stack_c::ZrotM(static_cast<s16>(state->tumble / 5));
+    mDoMtx_stack_c::transM(0.0f, -kTumblePivotY, 0.0f);
     passer->mpMorf->getModel()->setBaseTRMtx(mDoMtx_stack_c::get());
     passer->mpMorf->modelCalc();
 }
@@ -800,22 +821,27 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
 
     if (state->dead) {
         ++state->deathFrame;
-        if (!state->grounded) {
-            passer->current.pos.x += state->knockbackX;
-            passer->current.pos.y += state->knockbackY;
-            passer->current.pos.z += state->knockbackZ;
-            state->knockbackX *= 0.94f;
-            state->knockbackZ *= 0.94f;
-            state->knockbackY -= 0.65f;
-            passer->mAcch.CrrPos(dComIfG_Bgsp());
-            if (passer->mAcch.ChkGroundHit()) {
-                state->grounded = true;
-                state->knockbackY = 0.0f;
-            }
+        state->tumble = static_cast<s16>(state->tumble + kTumbleSpeed);
+        passer->current.pos.x += state->knockbackX;
+        passer->current.pos.y += state->knockbackY;
+        passer->current.pos.z += state->knockbackZ;
+        state->knockbackX *= kLaunchDrag;
+        state->knockbackZ *= kLaunchDrag;
+        state->knockbackY -= kLaunchGravity;
+        passer->mAcch.CrrPos(dComIfG_Bgsp());
+        if (passer->mAcch.ChkWallHit()) {
+            // Slammed into a wall or cliff: drop straight down from there.
+            state->knockbackX = 0.0f;
+            state->knockbackZ = 0.0f;
         }
-        if (state->deathFrame >= kDeathDuration) {
-            // The Poe particles live in Poe areas' own particle set and never show in Hyrule
-            // Field. Use the shared "monster defeated" burst (type 0, no item drop) instead.
+        if (passer->mAcch.ChkRoofHit() && state->knockbackY > 0.0f) {
+            state->knockbackY = 0.0f;
+        }
+        const bool landed = state->knockbackY < 0.0f && passer->mAcch.ChkGroundHit();
+        if (landed || state->deathFrame >= kDeathDuration) {
+            // Lands and bursts into smoke, like a Wind Waker Bokoblin. The Poe particles live in
+            // Poe areas' own particle set and never show in Hyrule Field, so use the shared
+            // "monster defeated" burst (type 0, no item drop).
             fopAcM_createDisappear(passer, &passer->current.pos, 10, 0, 0xFF);
             fopAcM_delete(passer);
             state->actor = nullptr;

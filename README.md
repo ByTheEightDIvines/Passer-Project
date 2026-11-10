@@ -13,7 +13,8 @@ A Twilight Princess / Dusklight test mod: one passerby on the road through Hyrul
 - Link can lock onto it and talk to it (one custom line, with its talk animation). The talk marker follows it.
 - Only enemies can hurt it. Nearby enemies make it run away along the road, and enemies that use the common
   player-search helpers aim at the passer when it is within 900 units.
-- After three enemy hits it falls with a short knockback, the Poe smoke and spark effect plays, and it is removed.
+- After three enemy hits it is launched away from the enemy, backflipping through the air like a Wind Waker
+  Bokoblin, and bursts into smoke when it lands.
 
 ## Build
 
@@ -28,6 +29,6 @@ cmake --build build
 
 ## Current limits
 
-- The fall is procedural; the Bulblin animation is not retargeted to the passer rig.
+- The death flight is procedural (a held flinch pose plus a code-driven tumble); there is no hand-made animation.
 - Enemies with special routines that read Link directly may still go after Link.
 - No lantern at night and only one talk line.

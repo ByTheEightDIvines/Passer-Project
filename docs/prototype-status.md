@@ -10,7 +10,7 @@
 | Link lock-on | Implemented; needs in-game check |
 | Only enemies damage it; three hits | Implemented; needs in-game check |
 | Flees from enemies along the road (two code-placed escape markers) | Implemented; needs in-game check |
-| Death fall and Poe effect | Implemented; needs in-game check |
+| Wind Waker style death: launched backflipping away from the enemy, smoke burst on landing | Implemented; needs in-game check |
 | Enemy targeting through shared aim/range helpers | Implemented; enemy-specific routines may still target Link |
 | Bulblin animation retarget | Not implemented |
 | Nighttime lantern | Not implemented |
