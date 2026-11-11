@@ -51,12 +51,13 @@ def two_bone(m, rots, root, upper, lower, end, target, pole, sign, end_rot_world
     Z = sign * h
     Ru = np.stack([e_dir, np.cross(Z, e_dir), Z], 1)
     p = m.rig.parent[iu]
-    rots[iu] = Rot.from_matrix(W[p][:3, :3].T @ Ru)
+    rots[iu] = m.anim_rot(iu, W[p][:3, :3].T @ Ru)
     phi = math.acos(min(1, max(-1, e_dir @ f_dir)))
-    rots[il] = Rot.from_rotvec(np.array([0, 0, sign]) * phi)
-    Rl = Ru @ rots[il].as_matrix()
+    Rh = Rot.from_rotvec(np.array([0, 0, sign]) * phi).as_matrix()
+    rots[il] = m.anim_rot(il, Rh)
+    Rl = Ru @ Rh
     if end_rot_world is not None:
-        rots[ie] = Rot.from_matrix(Rl.T @ end_rot_world)
+        rots[ie] = m.anim_rot(ie, Rl.T @ end_rot_world)
     return rots
 
 
@@ -103,7 +104,7 @@ def pose_body(m, S, E, f, crouch=None, keys=None, override=None):
     hip = Rot.from_euler('yx', [math.radians(ht), math.radians(0.25 * le)]).as_matrix()
     root = root + np.array([0, -cr, 0])
     rots = list(rots)
-    rots[0] = Rot.from_matrix(hip @ rots[0].as_matrix())
+    rots[0] = Rot.from_matrix(hip @ rots[0].as_matrix())   # (centre tweak is applied after; the hip turn is about the world)
     root = hip @ root  # pivot about the ground point under the hips
     chest = Rot.from_euler('yxz', [math.radians(tw - ht), math.radians(0.75 * le), math.radians(sd)]).as_matrix()
     rots = world_rot_on(m, rots, root, 'backbone', chest)
@@ -204,7 +205,7 @@ def shoulder_reach(m, rots, root, side, target, max_deg=16.0):
     Rw = Rot.from_rotvec(norm(ax) * ang).as_matrix()
     rots = list(rots)
     p = m.rig.parent[js]
-    rots[js] = Rot.from_matrix(W[p][:3, :3].T @ Rw @ W[js][:3, :3])
+    rots[js] = m.anim_rot(js, W[p][:3, :3].T @ Rw @ W[js][:3, :3])
     return rots
 
 
@@ -214,7 +215,7 @@ def elbow_pole(m, W, side, bias):
 
 def draw_frames(m, crouch=8.0):
     S = m.pose_from_bck(WAIT, 0)
-    E = m.pose_from_bck(READYB, 0)
+    E = m.compensated(m.pose_from_bck(READYB, 0))
     looped = m.weapon in LOOPED
     m.side = 1.0 if (m.world(*S)[m.ix['waist']] @ m.sheath)[0, 3] > 0 else -1.0
     g = 0.0

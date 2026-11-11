@@ -80,6 +80,14 @@ class Model:
         self.zmin, self.zmax = Pw[:, 2].min(), Pw[:, 2].max()
         C = np.eye(4)
         C[:3, :3] = self.rig.rest_world[self.ix['handR']][:3, :3].T @ MOI.rest_world[MOI.idx['handR']][:3, :3]
+        # stock per-body joint tweaks (daNpcCd2 jntNodeCB): applied after the animation, in game
+        tw = json.load(open('/home/claude/anim/out/cd2_joint_tweaks.json')).get(name, {})
+        self.tw = [np.eye(4) for _ in self.names]
+        for jn, v in tw.items():
+            rx, ry, rz = [math.radians(a) for a in v['r_deg']]
+            R = (Rot.from_euler('y', ry) * Rot.from_euler('x', rx) * Rot.from_euler('z', rz)).as_matrix()
+            M = np.eye(4); M[:3, :3] = R; M[:3, 3] = np.array(v['t']) * 10.0
+            self.tw[self.ix[jn]] = M
         self.grip = C @ G_RUSL  # weapon frame in handR frame (Rusl's fist), replaced by the fitted grip
         import os
         gf = '/home/claude/anim/out/hip/grips_fit.json'
@@ -102,13 +110,31 @@ class Model:
                 root = np.array(tr) * self.ts
         return rots, root
 
-    def locals_(self, rots, root):
+    def locals_(self, rots, root, tweaks=True):
         out = []
         for j, r in enumerate(rots):
             M = np.eye(4); M[:3, :3] = r.as_matrix()
             M[:3, 3] = root if j == 0 else self.rig.rest_loc[j][:3, 3]
-            out.append(M)
+            out.append(M @ self.tw[j] if tweaks else M)
         return out
+
+    COMP = ('shoulderL', 'armL1', 'armL2', 'handL', 'shoulderR', 'armR1', 'armR2', 'handR',
+            'waist', 'legL1', 'legL2', 'footL', 'legR1', 'legR2', 'footR')
+
+    def compensated(self, pose):
+        """a pose authored as the final look (Rusl's combat anims): cancel the body tweaks on
+        limbs and hips so the game's tweak doesn't stack on top; spine/neck/head keep theirs"""
+        rots, root = pose
+        rots = list(rots)
+        for jn in self.COMP:
+            j = self.ix[jn]
+            rots[j] = self.anim_rot(j, rots[j].as_matrix())
+        root = root - self.tw[0][:3, 3]      # the centre drop too
+        return rots, root
+
+    def anim_rot(self, j, R_local_full):
+        """animation rotation that gives this full local rotation once the game adds the tweak"""
+        return Rot.from_matrix(R_local_full @ self.tw[j][:3, :3].T)
 
     def world(self, rots, root):
         return world_mats(self.rig.parent, self.locals_(rots, root))
@@ -126,7 +152,7 @@ def add_world_rot(m, rots, root, joint, R_add):
     Wp = W[p][:3, :3]
     new = R_add @ W[joint][:3, :3]
     rots = list(rots)
-    rots[joint] = Rot.from_matrix(Wp.T @ new)
+    rots[joint] = m.anim_rot(joint, Wp.T @ new)
     return rots
 
 
