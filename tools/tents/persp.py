@@ -69,3 +69,44 @@ def render(scene, textures, eye, target, fov=60.0, W=960, H=600, ss=2, bg=(30, 3
             img[y0:y1 + 1, x0:x1 + 1][m] = px[..., :3][m]
     im = Image.fromarray((np.clip(img, 0, 1) * 255).astype(np.uint8))
     return im.resize((W, H), Image.LANCZOS) if ss > 1 else im
+
+def render_window(scene, textures, eye, rect, W=512, H=512, ss=2, bg=(30, 30, 36)):
+    """Render what a viewer at `eye` sees through an axis-aligned window in a plane of constant z,
+    rect = (x0, x1, y0, y1, zw), viewer on the +z side looking toward -z. The image IS the window:
+    an off-axis projection onto that rectangle, so the picture is correct when shown on a card
+    placed exactly there. Anything between the viewer and the window is clipped away."""
+    x0, x1, y0, y1, zw = rect
+    ex, ey, ez = eye
+    dc = ez - zw
+    Wp, Hp = W * ss, H * ss
+    img = np.zeros((Hp, Wp, 3)); img[:] = np.array(bg) / 255
+    zb = np.full((Hp, Wp), np.inf)
+    for ti, P, UV in scene:
+        P = np.asarray(P, float)
+        Pc = P - np.array([ex, ey, ez])                    # camera looks down -z, no rotation
+        if (-Pc[:, 2]).max() < dc: continue
+        for Q, U in clip_near(Pc, np.asarray(UV, float), dc):
+            zc = -Q[:, 2]
+            wx = ex + Q[:, 0] * dc / zc; wy = ey + Q[:, 1] * dc / zc
+            x = (wx - x0) / (x1 - x0) * Wp; y = (y1 - wy) / (y1 - y0) * Hp
+            bx0, bx1 = int(max(0, math.floor(x.min()))), int(min(Wp - 1, math.ceil(x.max())))
+            by0, by1 = int(max(0, math.floor(y.min()))), int(min(Hp - 1, math.ceil(y.max())))
+            if bx0 > bx1 or by0 > by1: continue
+            den = (y[1] - y[2]) * (x[0] - x[2]) + (x[2] - x[1]) * (y[0] - y[2])
+            if abs(den) < 1e-9: continue
+            gx, gy = np.meshgrid(np.arange(bx0, bx1 + 1) + 0.5, np.arange(by0, by1 + 1) + 0.5)
+            w0 = ((y[1] - y[2]) * (gx - x[2]) + (x[2] - x[1]) * (gy - y[2])) / den
+            w1 = ((y[2] - y[0]) * (gx - x[2]) + (x[0] - x[2]) * (gy - y[2])) / den
+            w2 = 1 - w0 - w1
+            m = (w0 >= -1e-5) & (w1 >= -1e-5) & (w2 >= -1e-5)
+            if not m.any(): continue
+            iz = w0 / zc[0] + w1 / zc[1] + w2 / zc[2]; depth = 1 / iz
+            T = textures[ti]; th, tw = T.shape[:2]
+            u = (w0 * U[0, 0] / zc[0] + w1 * U[1, 0] / zc[1] + w2 * U[2, 0] / zc[2]) * depth
+            v = (w0 * U[0, 1] / zc[0] + w1 * U[1, 1] / zc[1] + w2 * U[2, 1] / zc[2]) * depth
+            px = T[(np.floor(v * th).astype(int)) % th, (np.floor(u * tw).astype(int)) % tw]
+            m &= px[..., 3] > 0.5
+            sub = zb[by0:by1 + 1, bx0:bx1 + 1]; m &= depth < sub; sub[m] = depth[m]
+            img[by0:by1 + 1, bx0:bx1 + 1][m] = px[..., :3][m]
+    im = Image.fromarray((np.clip(img, 0, 1) * 255).astype(np.uint8))
+    return im.resize((W, H), Image.LANCZOS) if ss > 1 else im

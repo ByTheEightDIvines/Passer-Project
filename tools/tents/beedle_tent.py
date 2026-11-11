@@ -231,13 +231,36 @@ for sgn in (-1, 1):     # side walls of the vestibule (inner canvas)
 # rug on the floor
 quad(np.array([-VX + 10, 0.9, ZF - 6]), np.array([VX - 10, 0.9, ZF - 6]), np.array([VX - 10, 0.9, ZV + 4]), np.array([-VX + 10, 0.9, ZV + 4]),
      uvmap('blanket', 0, 1), uvmap('blanket', 1, 1), uvmap('blanket', 1, 0), uvmap('blanket', 0, 0))
-# the warm room seen through the curtain's parting (a plane set back behind the curtain)
 GAP_W = 26.0
-gp = [np.array([-GAP_W * 1.6, 0, ZV - 10]), np.array([GAP_W * 1.6, 0, ZV - 10]),
-      np.array([GAP_W * 1.6, 230, ZV - 10]), np.array([-GAP_W * 1.6, 230, ZV - 10])]
-gu = [(0, 1), (1, 1), (1, 0), (0, 0)]
-quad(*gp, *[uvmap('gap', *x) for x in gu])
-gquad(*[p + np.array([0, 0, 0.5]) for p in gp], *[guv('gap', *x) for x in gu])
+# ---- the room behind the curtain, Rockstar style: real 3D up close, a painted backdrop far back ----
+# Near: the Kakariko rug running back from the curtain, two display tables, a hanging lantern (props
+# drawn from the game's own archives, listed in STAGE). Far: a backdrop card rendered through this exact
+# frame from where the player's camera usually stands, so its perspective lines up with the 3D in front.
+CARD_Z, CARD_X, CARD_H = -110.0, 125.0, 345.0
+for z0, z1 in ((ZV - 2, ZV - 160), (ZV - 162, CARD_Z + 2)):
+    quad(np.array([-62, 0.9, z0]), np.array([62, 0.9, z0]), np.array([62, 0.9, z1]), np.array([-62, 0.9, z1]),
+         uvmap('blanket', 0, 1), uvmap('blanket', 1, 1), uvmap('blanket', 1, 0), uvmap('blanket', 0, 0))
+# the card is cut to the tent's cross-section so it can't poke through the roof
+yc = roof_y_at(CARD_X) - 4
+card_pts = [(-CARD_X, 0), (CARD_X, 0), (CARD_X, yc), (0, Hr - 8), (-CARD_X, yc)]
+cuv = lambda x, y: ((x + CARD_X) / (2 * CARD_X), 1 - y / CARD_H)
+P3 = [np.array([x, y, CARD_Z]) for x, y in card_pts]; c3 = sum(P3) / 5
+for a_, b_ in zip(P3, P3[1:] + P3[:1]):
+    tri_uv = [cuv(q[0], q[1]) for q in (c3, a_, b_)]
+    TRIS.append((np.array([c3, a_, b_]), np.array([uvmap('gap', *t) for t in tri_uv])))
+    GLOW.append((np.array([c3, a_, b_]) + np.array([0, 0, 0.5]), np.array([guv('gap', *t) for t in tri_uv])))
+STAGE = [('HTable', 'ytable.bmd', (-130.0, 0.0, -50.0), 0.0, 0.62), ('HTable', 'ytable.bmd', (130.0, 0.0, -50.0), 0.0, 0.62),
+         ('Obj_kntr', 'ob_kantera.bmd', (0.0, 250.0, 40.0), 0.0, 1.6)]
+tube([np.array([0, Hr - 6, 40.0]), np.array([0, 280, 40.0])], 0.7, 'rope', sides=4, tile=24)
+def cushion(c):
+    for k in range(12):
+        a0, a1 = 2 * math.pi * k / 12, 2 * math.pi * (k + 1) / 12
+        for (y0, r0), (y1, r1) in zip([(0, 18), (3, 19), (6, 15)], [(3, 19), (6, 15), (7, 0)]):
+            p = [c + np.array([r0 * math.cos(a0), y0, r0 * math.sin(a0)]), c + np.array([r0 * math.cos(a1), y0, r0 * math.sin(a1)]),
+                 c + np.array([r1 * math.cos(a1), y1, r1 * math.sin(a1)]), c + np.array([r1 * math.cos(a0), y1, r1 * math.sin(a0)])]
+            quad(*p, uvmap('curtain', k / 12, 0.3), uvmap('curtain', (k + 1) / 12, 0.3), uvmap('curtain', (k + 1) / 12, 0.32), uvmap('curtain', k / 12, 0.32))
+for x in (-130.0, 130.0):
+    cushion(np.array([x, 104 * 0.62 + 0.5, -50.0]))
 # the curtain: two heavy drapes parting in the middle, folds rippling, gathered toward the bottom
 CUR_TOP = roof_y_at(VX) - 8
 def drape(sgn):
@@ -281,7 +304,7 @@ def lantern(c):
     for k in range(0, 6, 2):
         tube([lo[k], hi[k]], 0.9, 'wood', sides=4)
     tube([c + np.array([0, hh / 2 + 7, 0]), c + np.array([0, hh / 2 + 13, 0]) + np.array([0, 0, 0.01])], 1.6, 'rope', sides=4, tile=24)
-lantern(LAMP)
+STAGE.append(('Obj_kntr', 'ob_kantera.bmd', tuple(LAMP), 0.0, 1.6))
 
 # ---------------- poles, banner ----------------
 # back: a single upright. Front: two poles leaning in from either side of the doorway, crossing at
@@ -338,6 +361,7 @@ for z, sg, top in ((ZF + 7, 1, Hr + 14), (ZB + 4, -1, Hr + TIP)):
 print('triangles:', len(TRIS), 'glow:', len(GLOW))
 pickle.dump(TRIS, open(f'{OUT}/beedle_tent_tris.pkl', 'wb'))
 pickle.dump(GLOW, open(f'{OUT}/beedle_tent_glow_tris.pkl', 'wb'))
+pickle.dump(STAGE, open(f'{OUT}/beedle_stage_props.pkl', 'wb'))
 
 # ======================= textures =======================
 exec(open(os.path.join(HERE, 'paint_lib.py')).read().split("A = np.clip(A, 0, 255)")[0])
@@ -537,7 +561,7 @@ def room_glimpse(h, w, bright):
 
 ys, xs, h, w = region_px('gap')
 # the screenshot of the real interior, edited for daylight (see edit_glimpse.py)
-_g = cv2.cvtColor(cv2.imread(os.path.join(HERE, 'interior2/glimpse_day.png')), cv2.COLOR_BGR2RGB).astype(np.float32)
+_g = cv2.cvtColor(cv2.imread(os.path.join(HERE, 'interior2/card_day.png')), cv2.COLOR_BGR2RGB).astype(np.float32)
 A[ys, xs] = cv2.resize(_g, (w, h), interpolation=cv2.INTER_AREA)
 
 # banner: Beedle's own face banner from his pack, cleaned up and scaled into place
@@ -568,7 +592,7 @@ img *= (1 - 0.45 * sil)[..., None]
 img *= (0.85 + 0.15 * duck_weave(h, w, 995, period=3.0))[..., None]
 GL[ys, xs] = img
 ys, xs, h, w = gpx('gap')
-_g = cv2.cvtColor(cv2.imread(os.path.join(HERE, 'interior2/glimpse_night.png')), cv2.COLOR_BGR2RGB).astype(np.float32)
+_g = cv2.cvtColor(cv2.imread(os.path.join(HERE, 'interior2/card_night.png')), cv2.COLOR_BGR2RGB).astype(np.float32)
 GL[ys, xs] = cv2.resize(_g, (w, h), interpolation=cv2.INTER_AREA)
 ys, xs, h, w = gpx('lamp')
 yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)

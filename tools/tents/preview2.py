@@ -5,7 +5,7 @@ from PIL import Image
 sys.path.insert(0, '/home/claude/ptb/Passer_Travellers_Build/tools'); sys.path.insert(0, '/home/claude/work/tent')
 from rarc import rarc
 from bmd import BMD
-from persp import render
+from persp import render, render_window
 D = sys.argv[1]; views = sys.argv[2].split(',') if len(sys.argv) > 2 else ['door', 'counter', 'shelf', 'over']
 TRIS, PROPS, LAY = pickle.load(open(f'{D}/interior2.pkl', 'rb'))
 def load_tex(p): return np.array(Image.open(p).convert('RGBA')).astype(float) / 255
@@ -172,9 +172,23 @@ CAMS = {
     'hook':    (np.array([LAY['W'] / 2 - 68, 185, LAY['ZB'] + 175]), np.array([LAY['W'] / 2 - 82, 155, LAY['ZB'] + 92]), 42),
     'hook2':   (np.array([LAY['W'] / 2 - 175, 190, LAY['ZB'] + 175]), np.array([LAY['W'] / 2 - 80, 150, LAY['ZB'] + 85]), 40),
 }
+import os as _os
+CARD = None
+if 'card' in views:
+    # Backdrop card for the outside of the tent: the room as seen through the curtain from where the
+    # player's camera usually is. Exterior curtain (z=210) lines up with the interior door (z=500).
+    OFF = 290.0
+    eye = np.array([0.0, 170.0, 280.0 + 350.0 + OFF])          # ~3.5 m in front of the tent, camera height
+    zc = -110.0 + OFF                                         # card plane, 320 behind the curtain
+    CARD = ((-125.0, 125.0, 0.0, 345.0, zc), eye)
 for tag in ('day', 'night'):
     TEX[0] = load_tex(f'{D}/interior2_{tag}_HD_2048.png')
+    if CARD is not None:
+        rect, eye = CARD
+        render_window(SCENE, TEX, eye, rect, W=440, H=660, ss=2).save(f'{D}/card_{tag}_raw.png')
+        print('rendered card', tag)
     for v in views:
+        if v == 'card': continue
         if tag == 'night' and v not in ('door', 'glimpse'): continue
         eye, tgt, fov = CAMS[v]
         Wv, Hv = (360, 1000) if v == 'glimpse' else (900, 560)
