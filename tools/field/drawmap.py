@@ -64,8 +64,11 @@ def render(bounds, scale, path, label_nodes=True, title=''):
             d.text((x + 12, y - 6), 'bridge: valley route opens once repaired', fill=(255, 90, 90))
         if n['kind'] == 'road':
             d.ellipse([x - 3, y - 3, x + 3, y + 3], fill=(255, 255, 255))
-            if label_nodes:
+            if label_nodes and k < 900:
                 d.text((x + 4, y - 6), str(k), fill=(255, 255, 255))
+            if n.get('gate'):
+                d.rectangle([x - 7, y - 7, x + 7, y + 7], outline=(120, 255, 160), width=3)
+                d.text((x - 30, y + 10), 'Castle Town gate', fill=(120, 255, 160))
     for c in C:
         p = c['placed']; x, y = P(p['x'], p['z']); r = p['clear_radius'] / scale
         col = (255, 120, 200) if c['kind'] == 'beedle_tent' else (255, 150, 40)

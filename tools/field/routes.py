@@ -256,12 +256,21 @@ if __name__ == '__main__':
     cand = sorted((math.hypot(EAST['x'] - nodes[q]['x'], EAST['z'] - nodes[q]['z']), q) for q in road_ids
                   if nodes[q]['stage'] == 'F_SP121' and q not in ESCORT)[:3]
     edges.append((902, min(cand)[1], 'escort'))
+    # 43 ends at the room 3 camp: drop the stub beyond it
+    edges = [(a, b, k) for a, b, k in edges if {a, b} != {43, 44}]
+    # Castle Town gates: travellers vanish into / appear out of the town here. 64 extends to the south gate.
+    nodes[20]['gate'] = 'castle_west'
+    SG = dict(i=903, kind='road', stage='F_SP122', room=17, x=-45407.0, y=-1908.0, z=10667.0, ang=0, gate='castle_south')
+    SG['cell'] = snap(G['F_SP122'], SG['x'], SG['z'])
+    nodes[903] = SG
+    edges.append((64, 903, 'road'))
     # camps: spur to the nearest road nodes in the same stage
     for s in spots:
         if s['kind'] == 'road':
             continue
-        cand = sorted((math.hypot(s['x'] - nodes[q]['x'], s['z'] - nodes[q]['z']), q) for q in road_ids if nodes[q]['stage'] == s['stage'])
-        edges.append((cand[0][1], s['i'], 'spur'))
+        cand = sorted((math.hypot(s['x'] - nodes[q]['x'], s['z'] - nodes[q]['z']), q) for q in road_ids if nodes[q]['stage'] == s['stage'] and q != 44)
+        src = 43 if s['i'] == 41 else cand[0][1]
+        edges.append((src, s['i'], 'spur'))
     # ---- trace
     SC = scene_changes(rooms)
     out_edges = []
@@ -318,6 +327,10 @@ if __name__ == '__main__':
         out_edges.append(rec)
         print(f"{a:2d}->{b:2d} {kind:7s} {A['stage']} straight {straight:6.0f} "
               + (f"path {rec['length']:6.0f} ({len(rec['points'])} waypoints)" if 'length' in rec else 'NO GROUND PATH -> trusted straight line'))
+    # Beedle never goes near the Castle Town west gate (spots 18-20)
+    for e in out_edges:
+        if {e['a'], e['b']} & {18, 19, 20}:
+            e['no_beedle'] = True
     GATE = dict(ground_at=[34697, -299, -26595], note='Eldin-side bridge repaired: deck present at its middle')
     for e in out_edges:
         if e['kind'] in ('escort', 'bridge'):
