@@ -745,8 +745,9 @@ daNpcPasser_c* nearestActor(const cXyz& pos, f32 maxDist) {
     f32 bestSq = maxDist * maxDist;
     for (auto& t : g_t) {
         if (!t.used || !t.spawned || !t.registered) continue;
-        auto* a = static_cast<daNpcPasser_c*>(fopAcM_SearchByID(t.actor));
-        if (a == nullptr) continue;
+        fopAc_ac_c* found = fopAcM_SearchByID(t.actor);
+        if (found == nullptr || fopAcM_GetName(found) != fpcNm_NPC_PASSER_e) continue;
+        auto* a = static_cast<daNpcPasser_c*>(found);
         const f32 dx = a->current.pos.x - pos.x, dz = a->current.pos.z - pos.z;
         if (dx * dx + dz * dz < bestSq) {
             bestSq = dx * dx + dz * dz;

@@ -150,6 +150,7 @@ struct PasserState {
     int safeFrames = 0;
     int reliefFrames = 0;
     int logFrames = 0;   // frames spent in the vanilla wall-bump pause
+    int unseenFrames = 0;  // frames since created without the game finding it by ID
 };
 
 std::array<PasserState, 32> g_states{};
@@ -182,10 +183,23 @@ void pruneStates() {
         fopAc_ac_c* found = fopAcM_SearchByID(state.id);
         if (found == state.actor) {
             state.registered = true;
-        } else if (state.registered || found != nullptr) {
+            state.unseenFrames = 0;
+        } else if (state.registered || found != nullptr || ++state.unseenFrames > 30) {
+            // Gone (deleted, or its room unloaded). With many travellers coming and going this
+            // can happen before it was ever seen here, so time out instead of keeping a pointer.
             state = PasserState{};
         }
     }
+}
+
+// The live actor for a state, looked up by its ID; nullptr if it's gone. Never dereferences
+// the stored pointer itself.
+daNpcPasser_c* liveActor(const PasserState& state) {
+    if (state.actor == nullptr) {
+        return nullptr;
+    }
+    fopAc_ac_c* found = fopAcM_SearchByID(state.id);
+    return found == state.actor ? state.actor : nullptr;
 }
 
 PasserState* findState(daNpcPasser_c* actor, bool create) {
@@ -243,7 +257,7 @@ daNpcPasser_c* nearestPasser(const daTag_KMsg_c* tag) {
     daNpcPasser_c* result = nullptr;
     f32 nearestDistanceSq = kTalkTagRadius * kTalkTagRadius;
     for (auto& state : g_states) {
-        if (state.actor == nullptr || state.dead || !isPrototypePasser(state.actor)) {
+        if (state.dead || liveActor(state) == nullptr || !isPrototypePasser(state.actor)) {
             continue;
         }
         if (fopAcM_GetRoomNo(state.actor) != fopAcM_GetRoomNo(tag)) {
@@ -443,15 +457,16 @@ daNpcPasser_c* nearestThreatTarget(const fopAc_ac_c* enemy) {
     daNpcPasser_c* result = nullptr;
     f32 nearestDistanceSq = kThreatRadius * kThreatRadius;
     for (auto& state : g_states) {
-        if (state.actor == nullptr || state.dead || !isPrototypePasser(state.actor)) {
+        daNpcPasser_c* actor = state.dead ? nullptr : liveActor(state);
+        if (actor == nullptr || !isPrototypePasser(actor)) {
             continue;
         }
-        const f32 dx = state.actor->current.pos.x - enemy->current.pos.x;
-        const f32 dz = state.actor->current.pos.z - enemy->current.pos.z;
+        const f32 dx = actor->current.pos.x - enemy->current.pos.x;
+        const f32 dz = actor->current.pos.z - enemy->current.pos.z;
         const f32 distanceSq = dx * dx + dz * dz;
         if (distanceSq <= nearestDistanceSq) {
             nearestDistanceSq = distanceSq;
-            result = state.actor;
+            result = actor;
         }
     }
     // A Bulblin that has already gone for the passer keeps reading him as "Link" while he is
