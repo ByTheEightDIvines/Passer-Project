@@ -1,7 +1,7 @@
 {
-  "id": "com.brian.hyrule_field_passer_prototype",
-  "name": "Hyrule Field Passer Prototype",
+  "id": "com.bytheeightdivines.dynamictravelers",
+  "name": "Dynamic Travelers",
   "version": "@PROJECT_VERSION@",
   "author": "ByTheEightDivines",
-  "description": "A test passerby that walks the Hyrule Field room 5 road, can be talked to and locked onto, flees enemies, and leaves once out of view."
+  "description": "Travelers roam Hyrule Field by day and gather at their camps by night, and Beedle has set up shop."
 }

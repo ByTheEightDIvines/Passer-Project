@@ -7,7 +7,7 @@ if (NOT DEFINED CMAKE_BUILD_TYPE AND NOT DEFINED ENV{CMAKE_BUILD_TYPE})
     set(CMAKE_BUILD_TYPE "RelWithDebInfo" CACHE STRING "Build type")
 endif ()
 
-project(hyrule_field_passer_prototype VERSION 0.3.0 LANGUAGES CXX)
+project(dynamic_travelers VERSION 0.3.0 LANGUAGES CXX)
 
 # The Dusklight version to build against: a release tag (e.g. "v2.0.0") or a commit SHA.
 if (NOT DUSKLIGHT_VERSION)
@@ -25,7 +25,7 @@ if (IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/overlay")
     set(PASSER_OVERLAY_ARGS OVERLAY_DIR overlay)
 endif ()
 
-add_mod(hyrule_field_passer_prototype
+add_mod(dynamic_travelers
         FEATURES game
         SOURCES src/passer_prototype.cpp src/spot_picker.cpp src/tent_actor.cpp
         MOD_JSON "${CMAKE_CURRENT_BINARY_DIR}/mod.json"
@@ -35,5 +35,5 @@ add_mod(hyrule_field_passer_prototype
 # MSVC reports __cplusplus as 199711L unless told otherwise, which makes the Dolphin
 # compatibility headers redefine nullptr and breaks the standard library.
 if (MSVC)
-    target_compile_options(hyrule_field_passer_prototype PRIVATE /Zc:__cplusplus)
+    target_compile_options(dynamic_travelers PRIVATE /Zc:__cplusplus)
 endif ()

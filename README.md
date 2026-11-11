@@ -1,4 +1,4 @@
-# Hyrule Field Passer Prototype
+# Dynamic Travelers
 
 A Twilight Princess / Dusklight test mod: one passerby on the road through Hyrule Field stage `F_SP121`, room 5.
 
@@ -41,7 +41,7 @@ and never committed. CI builds the all-platform code bundle on the `dist` branch
 plus the local asset folder:
 
 ```sh
-python3 tools/add_assets.py hyrule_field_passer_prototype.dusk <asset folder> -o Passers.dusk
+python3 tools/add_assets.py dynamic_travelers.dusk <asset folder> -o "Dynamic Travelers.dusk"
 ```
 
 The asset folder holds `overlay/` (e.g. `overlay/res/Object/PsrTent.arc`), and optionally `textures/` and `res/`.
