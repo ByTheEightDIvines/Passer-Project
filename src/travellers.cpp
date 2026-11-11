@@ -228,6 +228,14 @@ std::array<PathStore, kSlots> g_flee{};
 u32 g_rng = 0x2468ACE1u;
 bool g_started = false;
 int g_frame = 0;
+// Loading a save or crossing a loading screen streams in a lot at once. Hold off spawning
+// anything until the field has been running quietly for a few seconds, and then bring
+// people in one at a time instead of all on the same frame.
+constexpr int kSettleFrames = 180;
+constexpr int kSpawnGap = 20;
+int g_settle = 0;
+int g_lastStage = -2;
+int g_spawnCooldown = 0;
 
 u32 rnd() {
     g_rng ^= g_rng << 13; g_rng ^= g_rng >> 17; g_rng ^= g_rng << 5;
@@ -564,6 +572,7 @@ void spawnTent(CampTents& c, u8 kind, const cXyz& at, s16 yaw, s8 room) {
     p.scale.x = p.scale.y = p.scale.z = 1.0f;
     ActorId id{};
     if (svc_actor->create_actor_from_name(mod_ctx, PSR_TENT_NAME, &p, &id) == MOD_OK) c.ids.push_back(id);
+    g_spawnCooldown = kSpawnGap;
 }
 
 void updateCamps(int stage, const cXyz& link) {
@@ -574,7 +583,7 @@ void updateCamps(int stage, const cXyz& link) {
         const bool here = stage == n.stage && dComIfGp_roomControl_checkRoomDisp(n.room);
         const f32 dx = cp.x - link.x, dz = cp.z - link.z;
         const bool near = here && dx * dx + dz * dz < 12000.0f * 12000.0f;
-        if (near && !c.up) {
+        if (near && !c.up && g_spawnCooldown <= 0) {
             c.up = true;
             const s16 face = static_cast<s16>(cp.facing);   // the way you faced when you logged it
             const cXyz mid(cp.x, cp.y, cp.z);
@@ -769,7 +778,15 @@ void update() {
     // No travellers in a province still covered by twilight (they keep travelling virtually).
     const bool inWorld = stage >= 0 && player != nullptr && !dKy_darkworld_check();
     const cXyz link = inWorld ? player->current.pos : cXyz(0.0f, 0.0f, 0.0f);
-    if (inWorld) {
+    if (!inWorld || stage != g_lastStage) {
+        g_settle = 0;
+        g_lastStage = inWorld ? stage : -2;
+    } else if (g_settle < kSettleFrames) {
+        ++g_settle;
+    }
+    if (g_spawnCooldown > 0) --g_spawnCooldown;
+    const bool settled = inWorld && g_settle >= kSettleFrames && !dComIfGp_event_runCheck();
+    if (settled) {
         probeBridge(stage);
         updateCamps(stage, link);
     }
@@ -811,7 +828,8 @@ void update() {
         } else {
             stepRestOrTown(t);
         }
-        if (!inWorld || t.state == ST_TOWN || t.state == ST_GONE) continue;
+        if (!settled || t.state == ST_TOWN || t.state == ST_GONE) continue;
+        if (g_spawnCooldown > 0) continue;
         if ((g_frame + s) % 10 != 0) continue;   // spawn checks a few times a second is plenty
 
         Where w{};
@@ -831,6 +849,7 @@ void update() {
         const bool inFront = std::abs(static_cast<s16>(toIt - facing)) < 0x3000;
         if (inFront && d2 < kSpawnUnseenRadius * kSpawnUnseenRadius) continue;
         spawn(s, w);
+        g_spawnCooldown = kSpawnGap;
     }
 }
 
