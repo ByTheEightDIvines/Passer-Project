@@ -18,11 +18,18 @@ add_subdirectory("${DUSKLIGHT_DIR}/sdk" dusklight-sdk EXCLUDE_FROM_ALL)
 
 configure_file(mod.json.in "${CMAKE_CURRENT_BINARY_DIR}/mod.json" @ONLY NEWLINE_STYLE LF)
 
+# Game-derived archives (tents, passer bodies) live in overlay/, which is kept out of the public repo.
+# Local builds include it when present; CI builds the code-only bundle.
+set(PASSER_OVERLAY_ARGS "")
+if (IS_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/overlay")
+    set(PASSER_OVERLAY_ARGS OVERLAY_DIR overlay)
+endif ()
+
 add_mod(hyrule_field_passer_prototype
         FEATURES game
         SOURCES src/passer_prototype.cpp src/spot_picker.cpp src/tent_actor.cpp
         MOD_JSON "${CMAKE_CURRENT_BINARY_DIR}/mod.json"
-        OVERLAY_DIR overlay
+        ${PASSER_OVERLAY_ARGS}
 )
 
 # MSVC reports __cplusplus as 199711L unless told otherwise, which makes the Dolphin
