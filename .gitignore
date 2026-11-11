@@ -4,6 +4,8 @@
 *.dusk
 *.blend1
 __pycache__/
-# ROM-derived files never belong in this repository.
+# Assets (game-derived archives, HD textures) are kept locally and added to the release dusk
+# with tools/add_assets.py; only code lives on GitHub.
 /overlay/
+/textures/
 /rom_input/

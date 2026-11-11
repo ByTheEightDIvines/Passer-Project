@@ -34,6 +34,18 @@ The camp tents are a custom actor (`PsrTent`) whose models and collision ship in
 has buttons to drop a small tent, a big tent or Beedle's tent in front of Link, and one to remove them again.
 The generator scripts are in `tools/tents/`.
 
+## Code on GitHub, assets local
+
+Only code lives in this repository. The assets (the tent archive, passer archives, HD textures) are kept locally
+and never committed. CI builds the all-platform code bundle on the `dist` branch; the release dusk is that bundle
+plus the local asset folder:
+
+```sh
+python3 tools/add_assets.py hyrule_field_passer_prototype.dusk <asset folder> -o Passers.dusk
+```
+
+The asset folder holds `overlay/` (e.g. `overlay/res/Object/PsrTent.arc`), and optionally `textures/` and `res/`.
+
 ## Build
 
 The mod builds like the other Dusklight mods: CMake fetches the pinned Dusklight version (`DUSKLIGHT_VERSION` in
