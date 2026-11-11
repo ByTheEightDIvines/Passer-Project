@@ -15,3 +15,4 @@
 | Bulblin animation retarget | Not implemented |
 | Nighttime lantern | Not implemented |
 | Spot picker: log camp / Beedle's tent / road spots from the Mods window or L + R + D-pad, saved to `spots.tsv` in the mod's data folder, copy all to clipboard | Implemented; needs in-game check |
+| Camp tents (small A-tent, big wall tent, Beedle's tent with night glow): custom `PsrTent` actor, models + collision in a new `res/Object/PsrTent.arc` overlay; test buttons in the Mods window place one in front of Link | Implemented; needs in-game check |

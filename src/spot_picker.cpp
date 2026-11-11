@@ -15,12 +15,15 @@
 
 #include "d/d_com_inf_game.h"
 #include "d/d_kankyo.h"
+#include "SSystem/SComponent/c_math.h"
 #include "f_op/f_op_actor_mng.h"
 #include "m_Do/m_Do_controller_pad.h"
 #include "mods/service.hpp"
 #include "mods/svc/host.h"
 #include "mods/svc/log.h"
 #include "mods/svc/ui.h"
+#include "mods/svc/actor.h"
+#include "tent_actor.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -290,6 +293,44 @@ void onListPressed(ModContext*, UiListHandle, uint64_t key, void*) {
     }
 }
 
+// --- Test placement: drop a tent in front of Link to see it in the game before camps exist ---
+std::vector<ActorId> g_testTents;
+void spawnTestTent(u8 kind) {
+    auto* player = dComIfGp_getPlayer(0);
+    if (player == nullptr) {
+        toast("Test tent", "Link isn't in the world right now.");
+        return;
+    }
+    const s16 facing = player->shape_angle.y;
+    const f32 dist = kind == PSR_TENT_A ? 320.0f : (kind == PSR_TENT_WALL ? 480.0f : 560.0f);
+    ActorSpawnParams params{};
+    params.parameters = kind;
+    params.argument = -1;
+    params.room_num = static_cast<int8_t>(dComIfGp_roomControl_getStayNo());
+    params.position.x = player->current.pos.x + cM_ssin(facing) * dist;
+    params.position.y = player->current.pos.y;
+    params.position.z = player->current.pos.z + cM_scos(facing) * dist;
+    params.angle.y = static_cast<s16>(facing + 0x8000);   // doorway faces Link
+    params.scale.x = params.scale.y = params.scale.z = 1.0f;
+    ActorId id{};
+    if (svc_actor->create_actor_from_name(mod_ctx, PSR_TENT_NAME, &params, &id) == MOD_OK) {
+        g_testTents.push_back(id);
+        toast("Test tent placed", kind == PSR_TENT_A ? "Small tent" : (kind == PSR_TENT_WALL ? "Big tent" : "Beedle's tent"));
+    } else {
+        toast("Test tent", "Couldn't place it here.");
+    }
+}
+void onTestA(ModContext*, void*) { spawnTestTent(PSR_TENT_A); }
+void onTestWall(ModContext*, void*) { spawnTestTent(PSR_TENT_WALL); }
+void onTestBeedle(ModContext*, void*) { spawnTestTent(PSR_TENT_BEEDLE); }
+void onTestClear(ModContext*, void*) {
+    for (ActorId id : g_testTents) {
+        svc_actor->delete_actor(mod_ctx, id);
+    }
+    g_testTents.clear();
+    toast("Test tents", "Removed.");
+}
+
 ModResult addButton(UiElementHandle pane, const char* label, UiPressedFn fn, const char* help) {
     UiControlDesc desc = UI_CONTROL_DESC_INIT;
     desc.kind = UI_CONTROL_BUTTON;
@@ -323,6 +364,12 @@ ModResult buildPanel(ModContext*, UiElementHandle pane, void*, ModError*) {
     addButton(pane, "Copy all to clipboard", onCopy,
               "Copies every spot as text, ready to paste into chat.");
     addButton(pane, "Clear all", onClear, "Press twice to wipe every spot.");
+
+    svc_ui->pane_add_section(mod_ctx, pane, "Test tents (placed in front of Link)");
+    addButton(pane, "Small tent here", onTestA, nullptr);
+    addButton(pane, "Big tent here", onTestWall, nullptr);
+    addButton(pane, "Beedle's tent here", onTestBeedle, nullptr);
+    addButton(pane, "Remove test tents", onTestClear, nullptr);
 
     svc_ui->pane_add_section(mod_ctx, pane, "Logged spots (press one to copy it)");
     UiListDesc list = UI_LIST_DESC_INIT;

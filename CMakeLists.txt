@@ -20,8 +20,9 @@ configure_file(mod.json.in "${CMAKE_CURRENT_BINARY_DIR}/mod.json" @ONLY NEWLINE_
 
 add_mod(hyrule_field_passer_prototype
         FEATURES game
-        SOURCES src/passer_prototype.cpp src/spot_picker.cpp
+        SOURCES src/passer_prototype.cpp src/spot_picker.cpp src/tent_actor.cpp
         MOD_JSON "${CMAKE_CURRENT_BINARY_DIR}/mod.json"
+        OVERLAY_DIR overlay
 )
 
 # MSVC reports __cplusplus as 199711L unless told otherwise, which makes the Dolphin

@@ -27,6 +27,13 @@ For choosing where camps, Beedle's tent and the road network go. Stand Link on a
 Spots are saved as they are logged to `spots.tsv` in the mod's data folder, one tab-separated line each
 (kind, stage, room, x, y, z, facing, day, time). **Copy all to clipboard** gives the same text to paste into chat.
 
+## Tents (test placement)
+
+The camp tents are a custom actor (`PsrTent`) whose models and collision ship in the dusk as a new archive,
+`overlay/res/Object/PsrTent.arc` (nothing on the disc is replaced). Until camp spots are picked, the Mods window page
+has buttons to drop a small tent, a big tent or Beedle's tent in front of Link, and one to remove them again.
+The generator scripts are in `tools/tents/`.
+
 ## Build
 
 The mod builds like the other Dusklight mods: CMake fetches the pinned Dusklight version (`DUSKLIGHT_VERSION` in
