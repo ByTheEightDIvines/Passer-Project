@@ -77,7 +77,13 @@ class Model:
         self.zmin, self.zmax = Pw[:, 2].min(), Pw[:, 2].max()
         C = np.eye(4)
         C[:3, :3] = self.rig.rest_world[self.ix['handR']][:3, :3].T @ MOI.rest_world[MOI.idx['handR']][:3, :3]
-        self.grip = C @ G_RUSL  # weapon frame in handR frame
+        self.grip = C @ G_RUSL  # weapon frame in handR frame (Rusl's fist), replaced by the fitted grip
+        import os
+        gf = '/home/claude/anim/out/hip/grips_fit.json'
+        if os.path.exists(gf) and not os.environ.get('RUSL_GRIP'):
+            fits = json.load(open(gf))
+            if name in fits:
+                self.grip = np.array(fits[name])
 
     # pose = (rot[n] as Rotation, root translation in game units)
     def pose_from_bck(self, bck, t):
@@ -245,7 +251,10 @@ def draw_frames(m, drop=7.0, lean=14.0, twist=24.0):
             if f >= READY:
                 goal = ready_hand
             wpn = None
-        rr, err = ik(m, rots, root, ARM_R, goal, prev)
+        contact = GRAB - 1 <= f <= CLEAR
+        rr, err = ik(m, rots, root, ARM_R, goal, prev, reg=(1.0 if contact else 6.0))
+        if contact and err > 0.4:  # let the chest help reach
+            rr, err = ik(m, rr, root, ['backbone'] + ARM_R, goal, prev, reg=0.6)
         # left hand steadies the scabbard mouth on swords
         if m.weapon not in LOOPED:
             kL = math.sin(math.pi * min(max((f - 2) / 11.0, 0), 1))
@@ -262,7 +271,7 @@ def draw_frames(m, drop=7.0, lean=14.0, twist=24.0):
             m.slide[f] = g * (1 - smooth((f - CLEAR) / (READY - 1 - CLEAR)))
         elif f <= GRAB:
             m.slide[f] = g
-        if wpn is None:
+        if f >= GRAB:
             Ts = np.eye(4); Ts[2, 3] = -m.slide[f]
             wpn = W2[m.ix['handR']] @ m.grip @ Ts
         weap.append(wpn)
@@ -316,7 +325,7 @@ if __name__ == '__main__':
                 break
         print(f'   crouch {drop} lean {lean}  grab offset {m.grab_offset:.1f}')
         META[name] = {'weapon': m.weapon, 'grab_frame': GRAB, 'draw_frames': NF, 'sheathe_frames': SHEATHE_MAP[-1][0] + 1,
-                      'sheathe_release_frame': 13, 'slide_draw': [round(x, 2) for x in m.slide]}
+                      'sheathe_release_frame': 13, 'crouch': [drop, lean], 'slide_draw': [round(x, 2) for x in m.slide]}
         open('/home/claude/anim/out/hip/psr_draw_%s.bck' % name.lower(), 'wb').write(to_bck(m, frames))
         # sheathe: resample the draw path (weapon returns to the sheath at draw-frame GRAB)
         sh = []
