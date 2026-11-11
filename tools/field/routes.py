@@ -222,6 +222,8 @@ if __name__ == '__main__':
     # the valley (first three spots) is escort-only; join both of its ends to the main loop
     ESCORT = {0, 1, 2}
     edges = [(a, b, 'escort' if a in ESCORT and b in ESCORT else k) for a, b, k in edges]
+    # the stub toward the valley (3 -> 4) is escort-only too: the everyday road ends at camp 5
+    edges = [(a, b, 'escort' if {a, b} == {3, 4} else k) for a, b, k in edges]
     main = [q for q in road_ids if q not in ESCORT]
     for end in (0, 2):
         if end not in nodes:
@@ -246,6 +248,14 @@ if __name__ == '__main__':
     BRIDGE['cell'] = snap(G['F_SP121'], BRIDGE['x'], BRIDGE['z'])
     nodes[900] = BRIDGE
     edges.append((0, 900, 'escort'))
+    # once the bridge is repaired: across it and through the east field back to the loop
+    EAST = dict(i=902, kind='bridge_east', stage='F_SP121', room=0, x=35197.0, y=-299.0, z=-25095.0, ang=0)
+    EAST['cell'] = snap(G['F_SP121'], EAST['x'], EAST['z'])
+    nodes[902] = EAST
+    edges.append((900, 902, 'bridge'))
+    cand = sorted((math.hypot(EAST['x'] - nodes[q]['x'], EAST['z'] - nodes[q]['z']), q) for q in road_ids
+                  if nodes[q]['stage'] == 'F_SP121' and q not in ESCORT)[:3]
+    edges.append((902, min(cand)[1], 'escort'))
     # camps: spur to the nearest road nodes in the same stage
     for s in spots:
         if s['kind'] == 'road':
@@ -272,6 +282,10 @@ if __name__ == '__main__':
                        leg_a=legs[0], leg_b=legs[1][::-1])
             out_edges.append(rec); continue
         g = G[A['stage']]
+        if kind == 'bridge':
+            mid = ((A['x'] + B['x']) / 2, (A['z'] + B['z']) / 2)
+            rec.update(points=[(A['x'], A['z'], A['y']), (B['x'], B['z'], B['y'])])
+            out_edges.append(rec); print(f"{a}->{b} bridge (opens when repaired)"); continue
         path = astar(g, A['cell'], B['cell']) if A['cell'] and B['cell'] else None
         straight = math.hypot(A['x'] - B['x'], A['z'] - B['z'])
         if path is None or len(path) * CELL > 2.6 * straight + 3000:
@@ -304,6 +318,20 @@ if __name__ == '__main__':
         out_edges.append(rec)
         print(f"{a:2d}->{b:2d} {kind:7s} {A['stage']} straight {straight:6.0f} "
               + (f"path {rec['length']:6.0f} ({len(rec['points'])} waypoints)" if 'length' in rec else 'NO GROUND PATH -> trusted straight line'))
+    GATE = dict(ground_at=[34697, -299, -26595], note='Eldin-side bridge repaired: deck present at its middle')
+    for e in out_edges:
+        if e['kind'] in ('escort', 'bridge'):
+            e['requires'] = GATE
+            e['escort_only'] = True
+    # dead ends of the everyday network (escort edges closed): should be camps or loading exits
+    from collections import Counter
+    deg = Counter()
+    for e in out_edges:
+        if e['kind'] not in ('escort', 'bridge'):
+            deg[e['a']] += 1; deg[e['b']] += 1
+    for n, k in sorted(deg.items()):
+        if k == 1:
+            print('dead end:', n, nodes[n]['kind'], nodes[n]['stage'], 'room', nodes[n]['room'], (round(nodes[n]['x']), round(nodes[n]['z'])))
     json.dump(dict(nodes={k: {kk: (list(v) if isinstance(v, tuple) else v) for kk, v in n.items()} for k, n in nodes.items()},
                    edges=out_edges), open('/home/claude/anim/field/routes.json', 'w'), indent=1, default=float)
     print('handoffs:', [(e['a'], e['b'], e['handoff']['from_trigger']) for e in out_edges if e['kind'] == 'handoff'])
