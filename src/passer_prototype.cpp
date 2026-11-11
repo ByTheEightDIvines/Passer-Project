@@ -369,11 +369,24 @@ bool lockedOnPasser(const fopAc_ac_c* enemy, const daNpcPasser_c* passer) {
 void onGetPlaPost(ModContext*, void* args, void* retval, void*) {
     auto* bulblin = mods::arg<fopAc_ac_c*>(args, 0);
     auto** target = static_cast<fopAc_ac_c**>(retval);
-    auto* passer = livePasser();
-    if (target == nullptr || bulblin == nullptr || passer == nullptr || !inPasserArea(bulblin)) {
+    if (target == nullptr || bulblin == nullptr || !inPasserArea(bulblin)) {
+        return;
+    }
+    auto* passer = travellers::nearestActor(bulblin->current.pos, kBulblinChaseRadius);
+    if (passer == nullptr) {
         return;
     }
     const fpc_ProcID id = fopAcM_GetID(bulblin);
+    // Like the escort mission: go for the traveller when he's closer than Link.
+    if (*target == dComIfGp_getPlayer(0)) {
+        const f32 tx = passer->current.pos.x - bulblin->current.pos.x;
+        const f32 tz = passer->current.pos.z - bulblin->current.pos.z;
+        const f32 lx = (*target)->current.pos.x - bulblin->current.pos.x;
+        const f32 lz = (*target)->current.pos.z - bulblin->current.pos.z;
+        if (tx * tx + tz * tz < lx * lx + lz * lz && tx * tx + tz * tz < kBulblinTargetRadius * kBulblinTargetRadius) {
+            *target = passer;
+        }
+    }
     if (*target == passer) {
         if (auto* lock = findLock(id, true)) {
             lock->frames = kBulblinLockFrames;
@@ -427,6 +440,11 @@ void onBulblinExecutePost(ModContext*, void* args, void*, void*) {
 
 // fopAcM_SearchByName(NPC_COACH) is an inline wrapper over fopAcIt_Judge(fpcSch_JudgeForPName).
 void onActorJudgePost(ModContext*, void* args, void* retval, void*) {
+    // Disabled: answering the escort-wagon lookup with a traveller also reached the Bulblin's
+    // death/drop code (rd_disappear asks for the wagon too) and crashed when one was killed.
+    // Targeting is done in get_pla instead (onGetPlaPost).
+    (void)args; (void)retval;
+    return;
     if (g_bulblinNearPasser == nullptr || retval == nullptr) {
         return;
     }
@@ -1086,7 +1104,7 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
         mods::hook::add_pre<PasserProfileExecute>(onExecutePre) != MOD_OK ||
         mods::hook::add_pre<BulblinExecute>(onBulblinExecutePre) != MOD_OK ||
         mods::hook::add_post<BulblinExecute>(onBulblinExecutePost) != MOD_OK ||
-        mods::hook::add_post<ActorJudge>(onActorJudgePost) != MOD_OK ||
+        (static_cast<void>(&onActorJudgePost), false) ||
         mods::hook::add_post<PasserProfileExecute>(onProfileExecutePost) != MOD_OK ||
         mods::hook::add_post<PasserFearCheck>(onFearCheckPost) != MOD_OK ||
         mods::hook::add_post<EnemyTargetAngleY>(onEnemyTargetAngleYPost) != MOD_OK ||
