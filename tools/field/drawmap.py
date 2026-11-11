@@ -52,10 +52,13 @@ def render(bounds, scale, path, label_nodes=True, title=''):
             d.rectangle([P(t[0], t[2])[0] - 6, P(t[0], t[2])[1] - 6, P(t[0], t[2])[0] + 6, P(t[0], t[2])[1] + 6], outline=(255, 255, 255), width=2)
             continue
         pts = [P(p[0], p[1]) for p in e['points']]
-        col = (255, 90, 60) if e.get('trusted_straight') else ((120, 220, 255) if e['kind'] == 'spur' else (255, 235, 120))
+        col = (255, 90, 60) if e.get('trusted_straight') else ((120, 220, 255) if e['kind'] == 'spur' else ((200, 120, 255) if e['kind'] == 'escort' else (255, 235, 120)))
         d.line(pts, fill=col, width=3 if e['kind'] != 'spur' else 2)
     for k, n in nodes.items():
         x, y = P(n['x'], n['z'])
+        if n['kind'] == 'broken_bridge':
+            d.line([x - 9, y - 9, x + 9, y + 9], fill=(255, 40, 40), width=4); d.line([x - 9, y + 9, x + 9, y - 9], fill=(255, 40, 40), width=4)
+            d.text((x + 12, y - 6), 'broken bridge (route ends)', fill=(255, 90, 90))
         if n['kind'] == 'road':
             d.ellipse([x - 3, y - 3, x + 3, y + 3], fill=(255, 255, 255))
             if label_nodes:
@@ -85,4 +88,4 @@ if __name__ == '__main__':
     for g in G.values():
         allx += [g.x0, g.x0 + g.nx * CELL]
     render((-121000, -71000, 59000, 116000), 100.0, '/mnt/user-data/outputs/field_routes_map.png',
-           title='Dynamic Travelers routes: yellow road, blue camp spur, red = trusted straight (bridges/gaps), orange camps, pink Beedle, white boxes stage hand-offs')
+           title='Dynamic Travelers routes: yellow road, purple escort-only valley, blue camp spur, red = trusted straight (bridges/gaps), orange camps, pink Beedle, white boxes stage hand-offs')

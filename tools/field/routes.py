@@ -10,7 +10,7 @@ import sys, pickle, math, json, heapq
 import numpy as np
 sys.path.insert(0, '/home/claude/anim/field')
 from navgrid import Grid, CELL
-from place import load_spots
+from place import load_spots, DROP
 from dzr import actors
 
 MAX_STEP = 55.0          # comfortable height change per 100-unit cell
@@ -109,6 +109,39 @@ def ground_then_gap(g, A, B, max_gap=4500.0):
     return path, best[2]
 
 
+def two_sided(g, A, B, max_gap=3000.0):
+    """follow the ground from both spots toward each other; bridge only the missing piece"""
+    from scipy.spatial import cKDTree
+    ca, cb = A.get('cell'), B.get('cell')
+    if ca is None or cb is None:
+        return None
+    da, pa_, (ia0, ja0) = dijkstra_all(g, tuple(ca), margin=260)
+    db, pb_, (ib0, jb0) = dijkstra_all(g, tuple(cb), margin=260)
+    ka = np.array([(i + ia0, j + ja0) for i, j in da]); va = np.array(list(da.values()))
+    kb = np.array([(i + ib0, j + jb0) for i, j in db]); vb = np.array(list(db.values()))
+    tree = cKDTree(kb)
+    best = None
+    for (pi, pj), cost in zip(ka, va):
+        for k in tree.query_ball_point((pi, pj), max_gap / CELL):
+            gap = math.hypot(pi - kb[k][0], pj - kb[k][1]) * CELL
+            if abs(g.h[pi, pj] - g.h[tuple(kb[k])]) > 300:
+                continue
+            sc = (cost + vb[k]) * CELL + gap * 4.0
+            if best is None or sc < best[0]:
+                best = (sc, (pi, pj), tuple(kb[k]), gap)
+    if best is None:
+        return None
+    _, pa, pb, gap = best
+    def back(prev, p, o):
+        q = (p[0] - o[0], p[1] - o[1]); out = [q]
+        while out[-1] in prev:
+            out.append(prev[out[-1]])
+        return [(i + o[0], j + o[1]) for i, j in reversed(out)]
+    pathA = back(pa_, pa, (ia0, ja0))
+    pathB = back(pb_, pb, (ib0, jb0))[::-1]
+    return pathA, pathB, gap
+
+
 def snap(g, x, z, rad=8):
     """nearest walkable cell, preferring dirt"""
     ci, cj = g.cell(x, z)
@@ -186,6 +219,33 @@ if __name__ == '__main__':
             if src is not None:
                 edges.append((src, sid, 'road'))
         seen.append(sid); prev = sid
+    # the valley (first three spots) is escort-only; join both of its ends to the main loop
+    ESCORT = {0, 1, 2}
+    edges = [(a, b, 'escort' if a in ESCORT and b in ESCORT else k) for a, b, k in edges]
+    main = [q for q in road_ids if q not in ESCORT]
+    for end in (0, 2):
+        if end not in nodes:
+            continue
+        cand = sorted((math.hypot(nodes[end]['x'] - nodes[q]['x'], nodes[end]['z'] - nodes[q]['z']), q) for q in main if nodes[q]['stage'] == nodes[end]['stage'])[:3]
+        best = None
+        for dd, q in cand:
+            g_ = G[nodes[end]['stage']]
+            p = astar(g_, nodes[end]['cell'], nodes[q]['cell'], margin=120)
+            if p:
+                L = len(p) * CELL
+            else:
+                ts = two_sided(g_, nodes[end], nodes[q])
+                L = None if ts is None else (len(ts[0]) + len(ts[1])) * CELL + ts[2]
+            if L is not None and (best is None or L < best[0]):
+                best = (L, q)
+        if best:
+            edges.append((end, best[1], 'escort'))
+            print('valley end', end, 'joins the loop at node', best[1], 'path', round(best[0]))
+    # the valley's east end: dead end at the broken bridge into the east field (never crossed)
+    BRIDGE = dict(i=900, kind='broken_bridge', stage='F_SP121', room=0, x=34197.0, y=-299.0, z=-28095.0, ang=0)
+    BRIDGE['cell'] = snap(G['F_SP121'], BRIDGE['x'], BRIDGE['z'])
+    nodes[900] = BRIDGE
+    edges.append((0, 900, 'escort'))
     # camps: spur to the nearest road nodes in the same stage
     for s in spots:
         if s['kind'] == 'road':
@@ -215,6 +275,15 @@ if __name__ == '__main__':
         path = astar(g, A['cell'], B['cell']) if A['cell'] and B['cell'] else None
         straight = math.hypot(A['x'] - B['x'], A['z'] - B['z'])
         if path is None or len(path) * CELL > 2.6 * straight + 3000:
+            ts = two_sided(g, A, B)
+            if ts is not None and ts[2] > 0:
+                pA, pB, gap = ts
+                pts = simplify([g.world(i, j) for i, j in pA], 120.0) + simplify([g.world(i, j) for i, j in pB], 120.0)
+                rec['points'] = [(x, z, float(g.h[g.cell(x, z)])) for x, z in pts]
+                rec['bridge_gap'] = gap
+                rec['length'] = (len(pA) + len(pB)) * CELL + gap
+                print(f"{a:2d}->{b:2d} {kind:7s} ground both ways, {gap:4.0f}-unit missing piece bridged")
+                out_edges.append(rec); continue
             gg = ground_then_gap(g, A, B) if straight > 4500 else None
             if gg is not None:
                 gpath, gap = gg

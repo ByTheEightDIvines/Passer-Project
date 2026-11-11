@@ -6,14 +6,20 @@ from navgrid import Grid, CELL
 
 SPOTS = '/mnt/user-data/uploads/com.bytheeightdivines.dynamictravelers/spots.tsv'
 SEARCH = 1800.0          # how far from your spot we may move it
+SEARCH_WIDE = 3200.0     # if nothing reachable is that close (the amphitheater rim)
 FOOT = {'camp': 650.0, 'beedle_tent': 420.0}   # clear radius needed (camp = tents + fire + seats)
 ROAD_MAT = 1             # dirt road surface
+
+
+DROP = set()   # (spots 0-2 are the escort-only valley, kept)
 
 
 def load_spots():
     rows = [l.rstrip('\n').split('\t') for l in open(SPOTS) if not l.startswith('#')]
     out = []
     for n, r in enumerate(rows):
+        if n in DROP:
+            continue
         out.append(dict(i=n, kind=r[0], stage=r[1], room=int(r[2]), x=float(r[3]), y=float(r[4]),
                         z=float(r[5]), ang=int(r[6])))
     return out
@@ -28,6 +34,25 @@ def disk(rad):
 
 ROADSEG = []
 FOOT_TRY = {}
+REACH = {}
+
+
+def reachable(g, seeds, step=90.0):
+    from collections import deque
+    ground = (g.h > -1e8) & ~g.bad
+    R = np.zeros(g.h.shape, bool); q = deque()
+    for s in seeds:
+        if s is not None:
+            R[s] = True; q.append(s)
+    while q:
+        i, j = q.popleft()
+        for di in (-1, 0, 1):
+            for dj in (-1, 0, 1):
+                a, b = i + di, j + dj
+                if (di or dj) and 0 <= a < g.nz and 0 <= b < g.nx and not R[a, b] and ground[a, b] \
+                        and abs(g.h[a, b] - g.h[i, j]) <= step * (1.414 if di and dj else 1):
+                    R[a, b] = True; q.append((a, b))
+    return R
 
 
 def road_dist(x, z):
@@ -53,7 +78,7 @@ def place(g, s):
             I, J = i + di, j + dj
             if I.min() < 0 or J.min() < 0 or I.max() >= g.nz or J.max() >= g.nx:
                 continue
-            wk = g.walk[I, J]
+            wk = g.walk[I, J] & REACH[g.stage_name][I, J]
             Hc = g.h[I, J]
             if wk.any():
                 med = np.median(Hc[wk])
@@ -88,6 +113,20 @@ if __name__ == '__main__':
     res = []
     sp = load_spots()
     roads = [q for q in sp if q['kind'] == 'road']
+    for st, g in G.items():
+        g.stage_name = st
+        seeds = []
+        for q in roads:
+            if q['stage'] == st:
+                ci, cj = g.cell(q['x'], q['z'])
+                # nearest ground cell to the logged road spot
+                best = None
+                for i in range(ci - 6, ci + 7):
+                    for j in range(cj - 6, cj + 7):
+                        if g.walk[i, j] and (best is None or (i - ci) ** 2 + (j - cj) ** 2 < best[0]):
+                            best = ((i - ci) ** 2 + (j - cj) ** 2, (i, j))
+                seeds.append(best[1] if best else None)
+        REACH[st] = reachable(g, seeds)
     for a, b in zip(roads, roads[1:]):
         if a['stage'] == b['stage'] and math.hypot(a['x'] - b['x'], a['z'] - b['z']) < 16000:
             ROADSEG.append(((a['x'], a['z']), (b['x'], b['z'])))
@@ -95,7 +134,8 @@ if __name__ == '__main__':
         if s['kind'] == 'road':
             continue
         p = None
-        for r in (FOOT[s['kind']], 520.0, 400.0, 320.0):
+        for r, sr in [(r, sr) for sr in (1800.0, SEARCH_WIDE) for r in (FOOT[s['kind']], 520.0, 400.0, 320.0)]:
+            SEARCH = sr
             FOOT_TRY[s['kind']] = r
             p = place(G[s['stage']], s)
             if p is not None:
