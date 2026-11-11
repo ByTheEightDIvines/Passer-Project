@@ -232,6 +232,9 @@ int g_frame = 0;
 // anything until the field has been running quietly for a few seconds, and then bring
 // people in one at a time instead of all on the same frame.
 constexpr int kSettleFrames = 180;
+// The current tent meshes are far too heavy for Dusklight's per-frame vertex buffer
+// (6k-24k vertices in a single draw each) and overflow it. Off until they're rebuilt lighter.
+constexpr bool kTentsEnabled = false;
 constexpr int kSpawnGap = 20;
 int g_settle = 0;
 int g_lastStage = -2;
@@ -583,7 +586,7 @@ void updateCamps(int stage, const cXyz& link) {
         const bool here = stage == n.stage && dComIfGp_roomControl_checkRoomDisp(n.room);
         const f32 dx = cp.x - link.x, dz = cp.z - link.z;
         const bool near = here && dx * dx + dz * dz < 12000.0f * 12000.0f;
-        if (near && !c.up && g_spawnCooldown <= 0) {
+        if (kTentsEnabled && near && !c.up && g_spawnCooldown <= 0) {
             c.up = true;
             const s16 face = static_cast<s16>(cp.facing);   // the way you faced when you logged it
             const cXyz mid(cp.x, cp.y, cp.z);
