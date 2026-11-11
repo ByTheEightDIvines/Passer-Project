@@ -1,0 +1,836 @@
+#include "global.h"
+
+#include "travellers.hpp"
+#include "travel_network_data.inc"
+#include "tent_actor.hpp"
+
+#include "d/actor/d_a_npc_passer.h"
+#include "d/d_bg_s_gnd_chk.h"
+#include "d/d_com_inf_game.h"
+#include "d/d_kankyo.h"
+#include "d/d_path.h"
+#include "f_op/f_op_actor_mng.h"
+#include "f_pc/f_pc_name.h"
+#include "SSystem/SComponent/c_math.h"
+#include "mods/service.hpp"
+#include "mods/svc/actor.h"
+#include "mods/svc/log.h"
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <queue>
+#include <vector>
+
+namespace travellers {
+namespace {
+
+using namespace travel_data;
+
+constexpr int kNodeCount = sizeof(kNodes) / sizeof(kNodes[0]);
+constexpr int kEdgeCount = sizeof(kEdges) / sizeof(kEdges[0]);
+constexpr int kCampCount = sizeof(kCamps) / sizeof(kCamps[0]);
+
+enum NodeKind : u8 { NK_ROAD = 0, NK_CAMP = 1, NK_BEEDLE = 2, NK_GATE = 3, NK_BRIDGE_END = 4, NK_BRIDGE_EAST = 5 };
+enum EdgeFlag : u8 { EF_ESCORT = 1, EF_NEEDS_BRIDGE = 2, EF_NO_BEEDLE = 4, EF_HANDOFF = 8, EF_SPUR = 16 };
+
+// --- tuning -----------------------------------------------------------------------------------
+constexpr int kPopulation = 18;              // travellers on the network
+constexpr f32 kVirtualSpeed = 4.0f;          // units per frame while not spawned (about a walk)
+constexpr f32 kSpawnRadius = 6500.0f;        // become a real actor within this distance of Link...
+constexpr f32 kSpawnUnseenRadius = 3200.0f;  // ...but never pop in closer than this in front of him
+constexpr f32 kDespawnRadius = 8500.0f;      // back to virtual beyond this, once off screen
+constexpr int kMaxPathPoints = 48;
+constexpr f32 kFleeDistance = 2800.0f;
+constexpr int kCreateTimeout = 150;          // frames to wait for a created actor to show up
+// The passer types from the cast (stock passer type ids).
+constexpr std::array<u8, 14> kCast{3, 4, 6, 7, 8, 9, 11, 13, 14, 15, 20, 27, 28, 29};
+
+// --- network ----------------------------------------------------------------------------------
+struct Adj {
+    int edge;
+    int other;
+};
+std::vector<std::vector<Adj>> g_adj;
+std::vector<std::vector<f32>> g_cum;   // per edge: distance from its first point to each point
+
+f32 edgeLength(int e) { return g_cum[e].back(); }
+
+void buildNetwork() {
+    g_adj.assign(kNodeCount, {});
+    g_cum.assign(kEdgeCount, {});
+    for (int e = 0; e < kEdgeCount; ++e) {
+        const Edge& ed = kEdges[e];
+        g_adj[ed.a].push_back({e, ed.b});
+        g_adj[ed.b].push_back({e, ed.a});
+        auto& cum = g_cum[e];
+        cum.resize(ed.count);
+        f32 d = 0.0f;
+        for (int i = 0; i < ed.count; ++i) {
+            if (i > 0) {
+                const Point& p = kPoints[ed.first + i - 1];
+                const Point& q = kPoints[ed.first + i];
+                // the jump across a loading screen (stage change) takes no walking
+                if (p.stage == q.stage) {
+                    d += std::sqrt((q.x - p.x) * (q.x - p.x) + (q.z - p.z) * (q.z - p.z));
+                }
+            }
+            cum[i] = d;
+        }
+    }
+}
+
+bool g_bridgeRepaired = false;
+
+bool edgeAllowed(int e, bool escort) {
+    const u8 f = kEdges[e].flags;
+    if ((f & EF_ESCORT) && !escort) {
+        return false;
+    }
+    if ((f & EF_NEEDS_BRIDGE) && !g_bridgeRepaired) {
+        return false;
+    }
+    return true;
+}
+
+// Leaves (camps, gates, Beedle's tent) are only ever a start or an end, never walked through.
+bool passThrough(int node) { return kNodes[node].kind == NK_ROAD || kNodes[node].kind >= NK_BRIDGE_END; }
+
+struct Leg {
+    u16 edge;
+    bool fwd;
+};
+
+// Shortest route from a node to a node; empty if none.
+std::vector<Leg> plan(int from, int to, bool escort) {
+    std::vector<f32> dist(kNodeCount, 1e30f);
+    std::vector<int> prevEdge(kNodeCount, -1);
+    using QE = std::pair<f32, int>;
+    std::priority_queue<QE, std::vector<QE>, std::greater<QE>> pq;
+    dist[from] = 0.0f;
+    pq.push({0.0f, from});
+    while (!pq.empty()) {
+        auto [d, n] = pq.top();
+        pq.pop();
+        if (d > dist[n] || n == to) {
+            if (n == to) break;
+            continue;
+        }
+        if (n != from && !passThrough(n)) {
+            continue;
+        }
+        for (const Adj& a : g_adj[n]) {
+            if (!edgeAllowed(a.edge, escort)) continue;
+            const f32 nd = d + edgeLength(a.edge) + 1.0f;
+            if (nd < dist[a.other]) {
+                dist[a.other] = nd;
+                prevEdge[a.other] = a.edge;
+                pq.push({nd, a.other});
+            }
+        }
+    }
+    std::vector<Leg> route;
+    if (prevEdge[to] < 0) return route;
+    for (int n = to; n != from;) {
+        const int e = prevEdge[n];
+        const bool fwd = kEdges[e].b == n;
+        route.push_back({static_cast<u16>(e), fwd});
+        n = fwd ? kEdges[e].a : kEdges[e].b;
+    }
+    std::reverse(route.begin(), route.end());
+    return route;
+}
+
+f32 routeLength(const std::vector<Leg>& r) {
+    f32 s = 0.0f;
+    for (const Leg& l : r) s += edgeLength(l.edge);
+    return s;
+}
+
+int legEnd(const Leg& l) { return l.fwd ? kEdges[l.edge].b : kEdges[l.edge].a; }
+int legStart(const Leg& l) { return l.fwd ? kEdges[l.edge].a : kEdges[l.edge].b; }
+
+// i-th point of a leg in travel direction, and its distance along the leg
+const Point& legPoint(const Leg& l, int i) {
+    const Edge& e = kEdges[l.edge];
+    return kPoints[e.first + (l.fwd ? i : e.count - 1 - i)];
+}
+f32 legPointDist(const Leg& l, int i) {
+    const Edge& e = kEdges[l.edge];
+    return l.fwd ? g_cum[l.edge][i] : edgeLength(l.edge) - g_cum[l.edge][e.count - 1 - i];
+}
+
+struct Where {
+    u8 stage;
+    s8 room;
+    cXyz pos;
+    s16 yaw;
+    int nextPoint;   // index of the next point on the leg
+};
+
+Where locate(const Leg& l, f32 d) {
+    const int n = kEdges[l.edge].count;
+    int i = 1;
+    while (i < n - 1 && legPointDist(l, i) < d) ++i;
+    const Point& a = legPoint(l, i - 1);
+    const Point& b = legPoint(l, i);
+    const f32 da = legPointDist(l, i - 1), db = legPointDist(l, i);
+    Where w{};
+    if (a.stage != b.stage) {   // on a loading screen: you're already on the far side
+        w.stage = b.stage; w.room = b.room; w.pos.set(b.x, b.y, b.z);
+        w.yaw = 0; w.nextPoint = i;
+        return w;
+    }
+    const f32 t = db > da ? std::clamp((d - da) / (db - da), 0.0f, 1.0f) : 0.0f;
+    w.stage = a.stage;
+    w.room = t < 0.5f ? a.room : b.room;
+    w.pos.set(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t);
+    w.yaw = cM_atan2s(b.x - a.x, b.z - a.z);
+    w.nextPoint = i;
+    return w;
+}
+
+// --- travellers -------------------------------------------------------------------------------
+enum State : u8 { ST_WALK, ST_REST, ST_TOWN, ST_GONE };
+enum PathEnd : u8 { PE_CONTINUE, PE_ARRIVE, PE_VANISH };
+
+struct Traveller {
+    bool used = false;
+    u8 type = 8;
+    State state = ST_WALK;
+    std::vector<Leg> route;
+    int leg = 0;
+    f32 dist = 0.0f;       // along route[leg], in travel direction
+    int node = 0;          // where it is resting, or the last node it passed
+    int timer = 0;
+    bool restUntilMorning = false;
+    // real actor
+    bool spawned = false;
+    bool registered = false;
+    int createFrames = 0;
+    fpc_ProcID actor = fpcM_ERROR_PROCESS_ID_e;
+    std::vector<std::pair<int, f32>> pathMap;   // per walk-path point: (leg, dist)
+    PathEnd pathEnd = PE_CONTINUE;
+    std::vector<std::pair<int, f32>> fleeMap;
+    bool idleSet = false;
+    bool dead = false;
+};
+
+std::array<Traveller, kSlots> g_t{};
+struct PathStore {
+    dPath path;
+    std::array<dPnt, kMaxPathPoints> points;
+};
+std::array<PathStore, kSlots> g_walk{};
+std::array<PathStore, kSlots> g_flee{};
+u32 g_rng = 0x2468ACE1u;
+bool g_started = false;
+int g_frame = 0;
+
+u32 rnd() {
+    g_rng ^= g_rng << 13; g_rng ^= g_rng >> 17; g_rng ^= g_rng << 5;
+    return g_rng;
+}
+int rndRange(int lo, int hi) { return lo + static_cast<int>(rnd() % static_cast<u32>(hi - lo + 1)); }
+
+int hour() { return dKy_getdaytime_hour(); }
+bool isNight() { const int h = hour(); return h >= 19 || h < 6; }
+bool isDusk() { const int h = hour(); return h >= 18 || h < 6; }
+
+void fillPath(PathStore& store, const std::vector<cXyz>& pts) {
+    const size_t n = std::min(pts.size(), static_cast<size_t>(kMaxPathPoints));
+    for (size_t i = 0; i < n; ++i) {
+        dPnt& p = store.points[i];
+        p.mArg0 = p.mArg1 = p.mArg2 = p.mArg3 = 0xFF;
+        p.m_position = Vec{pts[i].x, pts[i].y, pts[i].z};
+    }
+    store.path.m_num = static_cast<u16>(n);
+    store.path.m_nextID = 0xFFFF;
+    store.path.field_0x4 = 0;
+    store.path.m_closed = false;
+    store.path.swbit = 0xFF;
+    store.path.field_0x7 = 0;
+    const auto offset = static_cast<s32>(reinterpret_cast<char*>(store.points.data()) -
+                                         reinterpret_cast<char*>(&store.path.m_points));
+    store.path.m_points.value.value = static_cast<s32>(static_cast<u32>(offset) | 0x80000000u);
+}
+
+int nearestCamp(int from, bool escort) {
+    int best = -1;
+    f32 bestLen = 1e30f;
+    for (int c = 0; c < kCampCount; ++c) {
+        const int n = kCamps[c].node;
+        if (kNodes[n].kind != NK_CAMP) continue;
+        if (n == from) return n;
+        auto r = plan(from, n, escort);
+        if (r.empty()) continue;
+        const f32 L = routeLength(r);
+        if (L < bestLen) { bestLen = L; best = n; }
+    }
+    return best;
+}
+
+int randomDestination(int from) {
+    std::vector<int> dests;
+    for (int n = 0; n < kNodeCount; ++n) {
+        if (n == from) continue;
+        const u8 k = kNodes[n].kind;
+        if (k == NK_CAMP || k == NK_GATE) {
+            dests.push_back(n);
+        } else if (k == NK_BEEDLE && rndRange(0, 3) == 0) {
+            dests.push_back(n);   // the odd visit to Beedle's shop
+        }
+    }
+    for (int tries = 0; tries < 8 && !dests.empty(); ++tries) {
+        const int n = dests[rnd() % dests.size()];
+        if (!plan(from, n, false).empty()) return n;
+    }
+    return -1;
+}
+
+void newRoute(Traveller& t, int from) {
+    const int to = isDusk() ? nearestCamp(from, false) : randomDestination(from);
+    t.route = to >= 0 ? plan(from, to, false) : std::vector<Leg>{};
+    t.leg = 0;
+    t.dist = 0.0f;
+    t.node = from;
+    if (t.route.empty()) {
+        t.state = ST_REST;
+        t.timer = rndRange(600, 1800);
+        t.restUntilMorning = false;
+    } else {
+        t.state = ST_WALK;
+    }
+}
+
+void arrive(Traveller& t, int node) {
+    t.node = node;
+    t.route.clear();
+    t.leg = 0;
+    t.dist = 0.0f;
+    t.idleSet = false;
+    switch (kNodes[node].kind) {
+    case NK_GATE:
+        t.state = ST_TOWN;                       // into Castle Town for a while
+        t.timer = rndRange(1800, 5400);
+        break;
+    case NK_CAMP:
+        t.state = ST_REST;
+        t.restUntilMorning = isDusk();
+        t.timer = rndRange(900, 2400);
+        break;
+    default:
+        t.state = ST_REST;
+        t.restUntilMorning = false;
+        t.timer = rndRange(400, 1200);
+        break;
+    }
+}
+
+int currentStage() {
+    const char* s = dComIfGp_getStartStageName();
+    if (s == nullptr) return -1;
+    for (int i = 0; i < 2; ++i) {
+        if (std::strcmp(s, kStages[i]) == 0) return i;
+    }
+    return -1;
+}
+
+int slotOf(const fopAc_ac_c* actor) {
+    if (actor == nullptr || fopAcM_GetName(const_cast<fopAc_ac_c*>(actor)) != fpcNm_NPC_PASSER_e) return -1;
+    const int pathId = (fopAcM_GetParam(actor) >> 16) & 0xFF;
+    if (pathId < kWalkPathBase || pathId >= kWalkPathBase + kSlots) return -1;
+    const int slot = pathId - kWalkPathBase;
+    const Traveller& t = g_t[slot];
+    if (!t.used || !t.spawned || t.actor != fopAcM_GetID(const_cast<fopAc_ac_c*>(actor))) return -1;
+    return slot;
+}
+
+// Walk path for a spawned traveller from where it is now: ahead along its route, stopping at the
+// route's end, a loading screen or kMaxPathPoints.
+void buildWalkPath(int slot, const cXyz& from) {
+    Traveller& t = g_t[slot];
+    std::vector<cXyz> pts{from};
+    t.pathMap.clear();
+    t.pathMap.push_back({t.leg, t.dist});
+    t.pathEnd = PE_CONTINUE;
+    if (t.state != ST_WALK || t.route.empty()) {
+        // resting: a two-point path to its spot by the fire
+        cXyz spot = from;
+        spot.x += 1.0f;
+        pts.push_back(spot);
+        t.pathMap.push_back({t.leg, t.dist});
+        t.pathEnd = PE_ARRIVE;
+        fillPath(g_walk[slot], pts);
+        return;
+    }
+    const Where here = locate(t.route[t.leg], t.dist);
+    int leg = t.leg;
+    int i = here.nextPoint;
+    u8 stage = here.stage;
+    while (static_cast<int>(pts.size()) < kMaxPathPoints) {
+        const Leg& l = t.route[leg];
+        const int n = kEdges[l.edge].count;
+        if (i >= n) {
+            ++leg;
+            if (leg >= static_cast<int>(t.route.size())) {
+                const u8 k = kNodes[legEnd(t.route.back())].kind;
+                t.pathEnd = k == NK_GATE ? PE_VANISH : PE_ARRIVE;
+                break;
+            }
+            i = 1;
+            continue;
+        }
+        const Point& p = legPoint(l, i);
+        if (p.stage != stage) {     // loading screen ahead: walk to it, then vanish
+            t.pathEnd = PE_VANISH;
+            break;
+        }
+        pts.push_back(cXyz(p.x, p.y, p.z));
+        t.pathMap.push_back({leg, legPointDist(l, i)});
+        ++i;
+    }
+    if (pts.size() < 2) {
+        pts.push_back(from);
+        t.pathMap.push_back({t.leg, t.dist});
+    }
+    fillPath(g_walk[slot], pts);
+}
+
+// Flee path: back the way it came, up to kFleeDistance.
+void buildFleePath(int slot, const cXyz& from) {
+    Traveller& t = g_t[slot];
+    std::vector<cXyz> pts{from};
+    t.fleeMap.clear();
+    t.fleeMap.push_back({t.leg, t.dist});
+    if (t.state == ST_WALK && !t.route.empty()) {
+        int leg = t.leg;
+        f32 d = t.dist;
+        f32 run = 0.0f;
+        const Where here = locate(t.route[leg], d);
+        int i = here.nextPoint - 1;
+        cXyz last = from;
+        while (run < kFleeDistance && static_cast<int>(pts.size()) < kMaxPathPoints) {
+            if (i < 0) {
+                if (--leg < 0) break;
+                i = kEdges[t.route[leg].edge].count - 2;
+                continue;
+            }
+            const Point& p = legPoint(t.route[leg], i);
+            if (p.stage != here.stage) break;
+            const cXyz q(p.x, p.y, p.z);
+            run += std::sqrt((q.x - last.x) * (q.x - last.x) + (q.z - last.z) * (q.z - last.z));
+            pts.push_back(q);
+            t.fleeMap.push_back({leg, legPointDist(t.route[leg], i)});
+            last = q;
+            --i;
+        }
+    }
+    if (pts.size() < 2) {
+        // nowhere back to run: just get some distance from Link
+        cXyz away = from;
+        if (auto* pl = dComIfGp_getPlayer(0)) {
+            const s16 a = cLib_targetAngleY(&pl->current.pos, &from);
+            away.x += cM_ssin(a) * 1200.0f;
+            away.z += cM_scos(a) * 1200.0f;
+        }
+        pts.push_back(away);
+        t.fleeMap.push_back({t.leg, t.dist});
+    }
+    fillPath(g_flee[slot], pts);
+}
+
+void spawn(int slot, const Where& w) {
+    Traveller& t = g_t[slot];
+    buildWalkPath(slot, w.pos);
+    const u32 params = static_cast<u32>(t.type) | (0u << 8) |
+                       (static_cast<u32>(kWalkPathBase + slot) << 16) | (1u << 24);
+    const csXyz angle(0xFF, w.yaw, 0);   // angle.x 0xFF: no vanilla leave-at-a-time-of-day timer
+    cXyz pos = w.pos;
+    const fpc_ProcID id = fopAcM_create(fpcNm_NPC_PASSER_e, params, &pos, w.room, &angle, nullptr, -1);
+    if (id == fpcM_ERROR_PROCESS_ID_e) return;
+    t.actor = id;
+    t.spawned = true;
+    t.registered = false;
+    t.createFrames = 0;
+    t.idleSet = false;
+}
+
+void despawn(Traveller& t, fopAc_ac_c* actor) {
+    if (actor != nullptr) fopAcM_delete(actor);
+    t.spawned = false;
+    t.registered = false;
+    t.actor = fpcM_ERROR_PROCESS_ID_e;
+}
+
+void syncFromActor(Traveller& t, daNpcPasser_c* p) {
+    if (t.state != ST_WALK || t.pathMap.empty() || !p->m_path.isPath()) return;
+    const int idx = std::clamp(static_cast<int>(p->m_path.field_0x20) - 1, 0, static_cast<int>(t.pathMap.size()) - 1);
+    if (t.pathMap[idx].first >= t.leg) {
+        t.leg = t.pathMap[idx].first;
+        t.dist = t.pathMap[idx].second;
+    }
+}
+
+void setIdle(daNpcPasser_c* p) {
+    p->speedF = 0.0f;
+    if (auto* idle = static_cast<J3DAnmTransformKey*>(p->getAnmP(0, p->getObjNum()))) {
+        p->setAnm(idle, 1.0f, 12.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
+    }
+}
+
+// Advance a traveller that isn't a real actor right now.
+void stepVirtual(Traveller& t) {
+    if (t.state == ST_WALK) {
+        if (t.route.empty()) { newRoute(t, t.node); return; }
+        t.dist += kVirtualSpeed;
+        while (t.state == ST_WALK && t.dist >= edgeLength(t.route[t.leg].edge)) {
+            t.dist -= edgeLength(t.route[t.leg].edge);
+            t.node = legEnd(t.route[t.leg]);
+            ++t.leg;
+            if (t.leg >= static_cast<int>(t.route.size())) {
+                arrive(t, t.node);
+                break;
+            }
+            // dusk caught it on the road: head for the nearest camp instead
+            if (isDusk() && kNodes[legEnd(t.route.back())].kind != NK_CAMP) {
+                const int camp = nearestCamp(t.node, false);
+                if (camp >= 0) {
+                    t.route = plan(t.node, camp, false);
+                    t.leg = 0;
+                    t.dist = 0.0f;
+                    if (t.route.empty()) arrive(t, t.node);
+                }
+            }
+        }
+    }
+}
+
+void stepRestOrTown(Traveller& t) {
+    if (t.state == ST_REST) {
+        if (t.restUntilMorning) {
+            const int h = hour();
+            if (h >= 6 && h < 18 && rndRange(0, 600) == 0) t.restUntilMorning = false;   // they wake at different times
+            return;
+        }
+        if (--t.timer <= 0) newRoute(t, t.node);
+    } else if (t.state == ST_TOWN) {
+        if (--t.timer > 0) return;
+        // out of Castle Town through one of its gates
+        std::vector<int> gates;
+        for (int n = 0; n < kNodeCount; ++n) if (kNodes[n].kind == NK_GATE) gates.push_back(n);
+        const int g = gates.empty() ? t.node : gates[rnd() % gates.size()];
+        newRoute(t, g);
+    } else if (t.state == ST_GONE) {
+        if (--t.timer <= 0) {
+            // a new traveller arrives on the road out of Castle Town
+            t.type = kCast[rnd() % kCast.size()];
+            t.dead = false;
+            t.state = ST_TOWN;
+            t.timer = 1;
+        }
+    }
+}
+
+Where restWhere(const Traveller& t, int slot) {
+    const Node& n = kNodes[t.node];
+    Where w{};
+    w.stage = n.stage;
+    w.room = n.room;
+    // spread around the camp: a ring about 300 units from its middle
+    const s16 a = static_cast<s16>(slot * 0x2AAA + 0x1555);
+    w.pos.set(n.x + cM_ssin(a) * 300.0f, n.y, n.z + cM_scos(a) * 300.0f);
+    w.yaw = static_cast<s16>(a + 0x8000);   // facing the middle
+    w.nextPoint = 0;
+    return w;
+}
+
+// --- camps: tents appear when their room is loaded and Link is near -------------------------
+struct CampTents {
+    std::vector<ActorId> ids;
+    bool up = false;
+};
+std::array<CampTents, kCampCount> g_camps{};
+
+void spawnTent(CampTents& c, u8 kind, const cXyz& at, s16 yaw, s8 room) {
+    ActorSpawnParams p{};
+    p.parameters = kind;
+    p.argument = -1;
+    p.room_num = room;
+    p.position.x = at.x; p.position.y = at.y; p.position.z = at.z;
+    p.angle.y = yaw;
+    p.scale.x = p.scale.y = p.scale.z = 1.0f;
+    ActorId id{};
+    if (svc_actor->create_actor_from_name(mod_ctx, PSR_TENT_NAME, &p, &id) == MOD_OK) c.ids.push_back(id);
+}
+
+void updateCamps(int stage, const cXyz& link) {
+    for (int i = 0; i < kCampCount; ++i) {
+        const Camp& cp = kCamps[i];
+        const Node& n = kNodes[cp.node];
+        CampTents& c = g_camps[i];
+        const bool here = stage == n.stage && dComIfGp_roomControl_checkRoomDisp(n.room);
+        const f32 dx = cp.x - link.x, dz = cp.z - link.z;
+        const bool near = here && dx * dx + dz * dz < 12000.0f * 12000.0f;
+        if (near && !c.up) {
+            c.up = true;
+            const s16 face = static_cast<s16>(cp.facing);   // the way you faced when you logged it
+            const cXyz mid(cp.x, cp.y, cp.z);
+            if (n.kind == NK_BEEDLE) {
+                spawnTent(c, PSR_TENT_BEEDLE, mid, face, n.room);
+            } else {
+                // the big wall tent behind the fire, a small A-tent off to one side, doors inward
+                const f32 back = std::min(cp.clearRadius - 280.0f, 320.0f);
+                const cXyz wall(mid.x - cM_ssin(face) * back, mid.y, mid.z - cM_scos(face) * back);
+                const s16 side = static_cast<s16>(face + 0x4000);
+                const cXyz small(mid.x + cM_ssin(side) * back, mid.y, mid.z + cM_scos(side) * back);
+                spawnTent(c, PSR_TENT_WALL, wall, face, n.room);
+                spawnTent(c, PSR_TENT_A, small, static_cast<s16>(side + 0x8000), n.room);
+            }
+        } else if (!here && c.up) {
+            c.ids.clear();          // the room unloaded and took the tents with it
+            c.up = false;
+        } else if (here && c.up && dx * dx + dz * dz > 16000.0f * 16000.0f) {
+            for (ActorId id : c.ids) svc_actor->delete_actor(mod_ctx, id);
+            c.ids.clear();
+            c.up = false;
+        }
+    }
+}
+
+void probeBridge(int stage) {
+    if (g_bridgeRepaired || stage != 0 || !dComIfGp_roomControl_checkRoomDisp(0)) return;
+    if ((g_frame % 60) != 0) return;
+    dBgS_ObjGndChk gnd;
+    cXyz probe(kBridgeProbe[0], kBridgeProbe[1] + 300.0f, kBridgeProbe[2]);
+    gnd.SetPos(&probe);
+    const f32 h = dComIfG_Bgsp().GroundCross(&gnd);
+    if (h != -G_CM3D_F_INF && std::fabs(h - kBridgeProbe[1]) < 150.0f) {
+        g_bridgeRepaired = true;
+        svc_log->info(mod_ctx, "travellers: the Eldin-side bridge is repaired; the escort valley is open");
+    }
+}
+
+void populate() {
+    // start them spread over the network: some on the roads, some at camps
+    for (int s = 0; s < kPopulation && s < kSlots; ++s) {
+        Traveller& t = g_t[s];
+        t = Traveller{};
+        t.used = true;
+        t.type = kCast[s % kCast.size()];
+        int start = 0;
+        for (int tries = 0; tries < 20; ++tries) {
+            start = static_cast<int>(rnd() % kNodeCount);
+            if (kNodes[start].kind == NK_ROAD || kNodes[start].kind == NK_CAMP) break;
+        }
+        // keep everyone out of the escort-only valley
+        bool reachable = !plan(start, nearestCamp(start, false) < 0 ? start : nearestCamp(start, false), false).empty();
+        if (!reachable) start = kCamps[0].node;
+        newRoute(t, start);
+        if (t.state == ST_WALK && !t.route.empty()) {
+            t.dist = static_cast<f32>(rnd() % 1000) / 1000.0f * edgeLength(t.route[0].edge);
+        }
+    }
+}
+
+}  // namespace
+
+// --- public -----------------------------------------------------------------------------------
+void initialize() {
+    buildNetwork();
+    char line[160];
+    std::snprintf(line, sizeof(line), "travellers: network %d spots, %d roads, %d camps", kNodeCount, kEdgeCount, kCampCount);
+    svc_log->info(mod_ctx, line);
+}
+
+bool inNetworkStage() { return currentStage() >= 0; }
+
+bool isTraveller(const fopAc_ac_c* actor) { return slotOf(actor) >= 0; }
+
+dPath* pathFor(int pathId) {
+    if (pathId >= kWalkPathBase && pathId < kWalkPathBase + kSlots) return &g_walk[pathId - kWalkPathBase].path;
+    if (pathId >= kFleePathBase && pathId < kFleePathBase + kSlots) return &g_flee[pathId - kFleePathBase].path;
+    return nullptr;
+}
+
+bool onPathEnd(daNpcPasser_c* passer) {
+    const int slot = slotOf(passer);
+    if (slot < 0) return false;
+    Traveller& t = g_t[slot];
+    if (!t.pathMap.empty()) {
+        t.leg = t.pathMap.back().first;
+        t.dist = t.pathMap.back().second;
+    }
+    switch (t.pathEnd) {
+    case PE_CONTINUE:
+        buildWalkPath(slot, passer->current.pos);
+        passer->m_path.setPath(kWalkPathBase + slot, fopAcM_GetRoomNo(passer), 1, &passer->current.pos, true);
+        passer->m_path.setNextPoint(passer->current.pos);
+        return true;
+    case PE_VANISH: {
+        // into Castle Town, or across a loading screen: gone from here, carries on virtually
+        if (t.state == ST_WALK && !t.route.empty()) {
+            const int last = static_cast<int>(t.route.size()) - 1;
+            if (t.leg >= last && kNodes[legEnd(t.route.back())].kind == NK_GATE) {
+                arrive(t, legEnd(t.route.back()));
+            } else if (kEdges[t.route[t.leg].edge].flags & EF_HANDOFF) {
+                // skip to the far side of the loading screen
+                const Leg& l = t.route[t.leg];
+                const int split = kEdges[l.edge].split;
+                const int idx = l.fwd ? split : kEdges[l.edge].count - split;
+                t.dist = legPointDist(l, std::clamp(idx, 0, kEdges[l.edge].count - 1));
+            }
+        }
+        despawn(t, passer);
+        return true;
+    }
+    case PE_ARRIVE:
+    default:
+        if (t.state == ST_WALK && !t.route.empty()) arrive(t, legEnd(t.route.back()));
+        if (!t.idleSet) {
+            setIdle(passer);
+            t.idleSet = true;
+        }
+        passer->speedF = 0.0f;
+        return true;
+    }
+}
+
+bool startFlee(daNpcPasser_c* passer) {
+    const int slot = slotOf(passer);
+    if (slot < 0) return false;
+    buildFleePath(slot, passer->current.pos);
+    passer->m_path.setPath(kFleePathBase + slot, fopAcM_GetRoomNo(passer), 1, &passer->current.pos, true);
+    passer->m_path.setNextPoint(passer->current.pos);
+    if (auto* run = static_cast<J3DAnmTransformKey*>(passer->getAnmP(4, passer->getObjNum()))) {
+        passer->setAnm(run, 1.0f, 12.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
+    }
+    passer->field_0xb1c = 1;   // running
+    return true;
+}
+
+void resumeWalk(daNpcPasser_c* passer) {
+    const int slot = slotOf(passer);
+    if (slot < 0) return;
+    Traveller& t = g_t[slot];
+    // after fleeing it is further back along its road
+    if (!t.fleeMap.empty() && passer->m_path.isPath() && passer->m_path.mPath == &g_flee[slot].path) {
+        t.leg = t.fleeMap.back().first;
+        t.dist = t.fleeMap.back().second;
+    }
+    t.fleeMap.clear();
+    t.idleSet = false;
+    buildWalkPath(slot, passer->current.pos);
+    passer->m_path.setPath(kWalkPathBase + slot, fopAcM_GetRoomNo(passer), 1, &passer->current.pos, true);
+    passer->m_path.setNextPoint(passer->current.pos);
+    passer->setAction(daNpcPasser_c::MODE_0);
+}
+
+void onDeath(daNpcPasser_c* passer) {
+    const int slot = slotOf(passer);
+    if (slot < 0) return;
+    Traveller& t = g_t[slot];
+    t.dead = true;
+    t.spawned = false;
+    t.actor = fpcM_ERROR_PROCESS_ID_e;
+    t.state = ST_GONE;
+    t.route.clear();
+    t.timer = rndRange(9000, 18000);   // someone new comes along later
+}
+
+daNpcPasser_c* nearestActor(const cXyz& pos, f32 maxDist) {
+    daNpcPasser_c* best = nullptr;
+    f32 bestSq = maxDist * maxDist;
+    for (auto& t : g_t) {
+        if (!t.used || !t.spawned || !t.registered) continue;
+        auto* a = static_cast<daNpcPasser_c*>(fopAcM_SearchByID(t.actor));
+        if (a == nullptr) continue;
+        const f32 dx = a->current.pos.x - pos.x, dz = a->current.pos.z - pos.z;
+        if (dx * dx + dz * dz < bestSq) {
+            bestSq = dx * dx + dz * dz;
+            best = a;
+        }
+    }
+    return best;
+}
+
+void update() {
+    ++g_frame;
+    if (!g_started) {
+        g_rng ^= static_cast<u32>(dKy_getdaytime_minute() * 7919 + hour() * 104729);
+        populate();
+        g_started = true;
+    }
+    const int stage = currentStage();
+    auto* player = dComIfGp_getPlayer(0);
+    // No travellers in a province still covered by twilight (they keep travelling virtually).
+    const bool inWorld = stage >= 0 && player != nullptr && !dKy_darkworld_check();
+    const cXyz link = inWorld ? player->current.pos : cXyz(0.0f, 0.0f, 0.0f);
+    if (inWorld) {
+        probeBridge(stage);
+        updateCamps(stage, link);
+    }
+    const s16 facing = inWorld ? player->shape_angle.y : 0;
+
+    for (int s = 0; s < kSlots; ++s) {
+        Traveller& t = g_t[s];
+        if (!t.used) continue;
+
+        if (t.spawned) {
+            auto* actor = static_cast<daNpcPasser_c*>(fopAcM_SearchByID(t.actor));
+            if (actor != nullptr) {
+                t.registered = true;
+            } else if (t.registered || ++t.createFrames > kCreateTimeout) {
+                // the game removed it (room or stage unloaded): carry on virtually
+                t.spawned = false;
+                t.registered = false;
+                t.actor = fpcM_ERROR_PROCESS_ID_e;
+                continue;
+            }
+            if (actor == nullptr) continue;
+            syncFromActor(t, actor);
+            // rest is over while you watch: get up and go
+            if (t.state == ST_REST || t.state == ST_TOWN) {
+                stepRestOrTown(t);
+                if (t.state == ST_WALK) resumeWalk(actor);
+            }
+            const f32 dx = actor->current.pos.x - link.x, dz = actor->current.pos.z - link.z;
+            if (!inWorld || (dx * dx + dz * dz > kDespawnRadius * kDespawnRadius &&
+                             fopAcM_CheckCondition(actor, fopAcCnd_NODRAW_e))) {
+                despawn(t, actor);
+            }
+            continue;
+        }
+
+        // virtual
+        if (t.state == ST_WALK) {
+            stepVirtual(t);
+        } else {
+            stepRestOrTown(t);
+        }
+        if (!inWorld || t.state == ST_TOWN || t.state == ST_GONE) continue;
+        if ((g_frame + s) % 10 != 0) continue;   // spawn checks a few times a second is plenty
+
+        Where w{};
+        if (t.state == ST_WALK && !t.route.empty()) {
+            w = locate(t.route[t.leg], t.dist);
+        } else if (t.state == ST_REST) {
+            w = restWhere(t, s);
+        } else {
+            continue;
+        }
+        if (w.stage != stage || w.room < 0 || !dComIfGp_roomControl_checkRoomDisp(w.room)) continue;
+        const f32 dx = w.pos.x - link.x, dz = w.pos.z - link.z;
+        const f32 d2 = dx * dx + dz * dz;
+        if (d2 > kSpawnRadius * kSpawnRadius) continue;
+        // never pop in right in front of Link
+        const s16 toIt = cM_atan2s(dx, dz);
+        const bool inFront = std::abs(static_cast<s16>(toIt - facing)) < 0x3000;
+        if (inFront && d2 < kSpawnUnseenRadius * kSpawnUnseenRadius) continue;
+        spawn(s, w);
+    }
+}
+
+}  // namespace travellers

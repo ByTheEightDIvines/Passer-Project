@@ -21,6 +21,7 @@
 #include "mods/svc/stage.h"
 #include "spot_picker.hpp"
 #include "tent_actor.hpp"
+#include "travellers.hpp"
 
 #include <algorithm>
 #include <array>
@@ -151,7 +152,7 @@ struct PasserState {
     int logFrames = 0;   // frames spent in the vanilla wall-bump pause
 };
 
-std::array<PasserState, 16> g_states{};
+std::array<PasserState, 32> g_states{};
 mods::flow::RegisteredMessage g_greeting;
 mods::flow::Graph g_talkGraph;
 uint16_t g_talkNode = 0xFFFF;
@@ -159,11 +160,7 @@ uint16_t g_talkNode = 0xFFFF;
 // Rooms 0 (the field past the bridge), 4 and 5 are loaded together, and the passer walks
 // through them, so enemies from any of them count.
 bool inPasserArea(const fopAc_ac_c* actor) {
-    if (actor == nullptr || !inFieldStage()) {
-        return false;
-    }
-    const int room = fopAcM_GetRoomNo(actor);
-    return room == 0 || room == 4 || room == kFieldRoom;
+    return actor != nullptr && travellers::inNetworkStage();
 }
 
 bool inFieldRoom(const fopAc_ac_c* actor) {
@@ -172,10 +169,7 @@ bool inFieldRoom(const fopAc_ac_c* actor) {
 
 // Only the passer this mod spawns: the right model type and our walking route.
 bool isPrototypePasser(const fopAc_ac_c* actor) {
-    return inFieldRoom(actor) &&
-           fopAcM_GetName(const_cast<fopAc_ac_c*>(actor)) == fpcNm_NPC_PASSER_e &&
-           (fopAcM_GetParam(actor) & 0xFF) == kPasserType &&
-           ((fopAcM_GetParam(actor) >> 16) & 0xFF) == kRoutePathId;
+    return travellers::isTraveller(actor);
 }
 
 // Drop state for passers that were unloaded (room change, stage load) without dying, so a
@@ -272,9 +266,7 @@ void resumeRoute(daNpcPasser_c* passer, PasserState& state) {
     state.cowering = false;
     state.safeFrames = 0;
     state.reliefFrames = 0;
-    passer->m_path.setPath(kRoutePathId, fopAcM_GetRoomNo(passer), 1, &passer->current.pos, true);
-    passer->m_path.setNextPoint(passer->current.pos);
-    passer->setAction(daNpcPasser_c::MODE_0);
+    travellers::resumeWalk(passer);
 }
 
 // Test logging: once a second, where the passer is and what it is doing.
@@ -300,6 +292,7 @@ bool lockedOnPasser(const fopAc_ac_c* enemy, const daNpcPasser_c* passer);
 
 // The Bulblin currently running its update, while a live passer is close enough to target.
 fopAc_ac_c* g_bulblinNearPasser = nullptr;
+daNpcPasser_c* g_bulblinTarget = nullptr;   // the traveller nearest the Bulblin updating right now
 int g_coachSwaps = 0;  // wagon lookups answered with the passer during this Bulblin update
 constexpr f32 kBulblinTargetRadius = 1500.0f;
 
@@ -309,7 +302,8 @@ HookAction onBulblinExecutePre(ModContext*, void* args, void*, void*) {
     if (!inPasserArea(bulblin) || fopAcM_SearchByName(fpcNm_NPC_COACH_e) != nullptr) {
         return HOOK_CONTINUE;  // the real escort wagon (if any) keeps priority
     }
-    if (auto* passer = livePasser()) {
+    g_bulblinTarget = travellers::nearestActor(bulblin->current.pos, 3000.0f);
+    if (auto* passer = g_bulblinTarget) {
         const f32 dx = passer->current.pos.x - bulblin->current.pos.x;
         const f32 dz = passer->current.pos.z - bulblin->current.pos.z;
         if (dx * dx + dz * dz <= kBulblinTargetRadius * kBulblinTargetRadius ||
@@ -413,6 +407,7 @@ void onBulblinExecutePost(ModContext*, void* args, void*, void*) {
         }
     }
     g_bulblinNearPasser = nullptr;
+    g_bulblinTarget = nullptr;
     g_coachSwaps = 0;
 }
 
@@ -433,15 +428,9 @@ void onActorJudgePost(ModContext*, void* args, void* retval, void*) {
     }
 }
 
-// The talk marker follows the one live test passer around the room.
+// The traveller the Bulblin being updated is dealing with (set in its pre-update).
 daNpcPasser_c* livePasser() {
-    pruneStates();
-    for (auto& state : g_states) {
-        if (state.actor != nullptr && !state.dead && isPrototypePasser(state.actor)) {
-            return state.actor;
-        }
-    }
-    return nullptr;
+    return g_bulblinTarget;
 }
 
 bool lockedOnPasser(const fopAc_ac_c* enemy, const daNpcPasser_c* passer);
@@ -468,7 +457,8 @@ daNpcPasser_c* nearestThreatTarget(const fopAc_ac_c* enemy) {
     // A Bulblin that has already gone for the passer keeps reading him as "Link" while he is
     // within chase range, so get_pla's closer-of-the-two check keeps picking him when he runs.
     if (result == nullptr) {
-        if (auto* passer = livePasser(); passer != nullptr && lockedOnPasser(enemy, passer)) {
+        if (auto* passer = travellers::nearestActor(enemy->current.pos, kBulblinChaseRadius);
+            passer != nullptr && lockedOnPasser(enemy, passer)) {
             result = passer;
         }
     }
@@ -618,6 +608,7 @@ DEFINE_HOOK(&daNpcPasser_c::executePath, PasserExecutePath);
 DEFINE_HOOK(&daNpcPasser_c::executeEscape, PasserExecuteEscape);
 DEFINE_HOOK(&daNpcPasser_c::executeFear, PasserExecuteFear);
 DEFINE_HOOK(&daNpcPasser_c::executeRelief, PasserExecuteRelief);
+DEFINE_HOOK(&daNpcPasser_c::initEscape, PasserInitEscape);
 DEFINE_HOOK(&dPath_GetRoomPath, RoomPathLookup);
 // Bulblins (E_rd) already know how to fight something other than Link: in the escort mission
 // get_pla() targets the wagon (NPC_COACH) whenever it is closer than Link. While a Bulblin is
@@ -685,17 +676,14 @@ HookAction onExecutePathPre(ModContext*, void* args, void*, void*) {
     if (passer->m_path.field_0x20 < last) {
         return HOOK_CONTINUE;
     }
-    auto* state = findState(passer, false);
-    if (state == nullptr) {
-        return HOOK_CONTINUE;
-    }
-    state->arrived = true;
-    passer->speedF = 0.0f;
-    auto* idle = static_cast<J3DAnmTransformKey*>(passer->getAnmP(0, passer->getObjNum()));
-    if (idle != nullptr) {
-        passer->setAnm(idle, 1.0f, 12.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
-    }
-    return HOOK_SKIP_ORIGINAL;
+    // End of the stretch of road it was given: the traveller system decides what's next
+    // (keep walking, rest at camp, or walk through a gate / loading screen and vanish).
+    return travellers::onPathEnd(passer) ? HOOK_SKIP_ORIGINAL : HOOK_CONTINUE;
+}
+
+HookAction onInitEscapePre(ModContext*, void* args, void*, void*) {
+    auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
+    return travellers::startFlee(passer) ? HOOK_SKIP_ORIGINAL : HOOK_CONTINUE;
 }
 
 // Vanilla deletes a fleeing passer when it reaches the end of its escape path or leaves the
@@ -770,18 +758,12 @@ HookAction onReliefPre(ModContext*, void* args, void*, void*) {
 }
 
 void onRoomPathPost(ModContext*, void* args, void* retval, void*) {
-    if (retval == nullptr || !inFieldStage()) {
+    if (retval == nullptr || !travellers::inNetworkStage()) {
         return;
     }
     const int pathId = mods::arg<int>(args, 0);
-    const int room = mods::arg<int>(args, 1);
-    if (room != kFieldRoom) {
-        return;
-    }
-    if (pathId == kRoutePathId) {
-        *static_cast<dPath**>(retval) = &g_route.path;
-    } else if (pathId == kReversePathId) {
-        *static_cast<dPath**>(retval) = &g_reverseRoute.path;
+    if (dPath* path = travellers::pathFor(pathId)) {
+        *static_cast<dPath**>(retval) = path;
     }
 }
 
@@ -819,7 +801,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         return HOOK_CONTINUE;
     }
 
-    logProgress(passer, *state);
+    (void)&logProgress;   // per-traveller logging off (too chatty with many travellers)
 
     if (state->dead) {
         ++state->deathFrame;
@@ -845,6 +827,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
             // Poe areas' own particle set and never show in Hyrule Field, so use the shared
             // "monster defeated" burst (type 0, no item drop).
             fopAcM_createDisappear(passer, &passer->current.pos, 10, 0, 0xFF);
+            travellers::onDeath(passer);
             fopAcM_delete(passer);
             state->actor = nullptr;
             return HOOK_SKIP_ORIGINAL;
@@ -862,15 +845,6 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         }
     }
 
-    if (state->arrived && !state->talking) {
-        passer->speedF = 0.0f;
-        if (fopAcM_CheckCondition(passer, fopAcCnd_NODRAW_e)) {
-            // Out of the camera's view at the end of the road: leave quietly.
-            fopAcM_delete(passer);
-            state->actor = nullptr;
-            return HOOK_SKIP_ORIGINAL;
-        }
-    }
 
     if (passer->mCyl.ChkTgHit()) {
         // Only enemies may hurt the passer. Link's sword, arrows, bombs, boomerang and
@@ -1080,22 +1054,19 @@ ModResult addRoomActors() {
 
 extern "C" {
 MOD_EXPORT ModResult mod_initialize(ModError* error) {
-    const ModResult flowResult = registerGreetingFlow();
-    if (flowResult != MOD_OK) {
-        return mods::set_error(error, flowResult, "failed to register the passer dialogue flow");
-    }
-
-    buildRoute(g_route, true);
-    buildRoute(g_reverseRoute, false);
-    if (const ModResult stageResult = addRoomActors(); stageResult != MOD_OK) {
-        return mods::set_error(error, stageResult, "failed to add the passer to Hyrule Field room 5");
-    }
+    // The single room-5 test passer (and its talk marker and test Bulblin) is replaced by the
+    // traveller system. Talking comes back per traveller later.
+    (void)&registerGreetingFlow;
+    (void)&addRoomActors;
+    (void)&buildRoute;
+    travellers::initialize();
 
     if (mods::hook::add_post<RoomPathLookup>(onRoomPathPost) != MOD_OK ||
         mods::hook::add_pre<PasserExecutePath>(onExecutePathPre) != MOD_OK ||
         mods::hook::add_pre<PasserExecuteEscape>(onExecuteEscapePre) != MOD_OK ||
         mods::hook::add_pre<PasserExecuteFear>(onKeepWhenOffscreenPre) != MOD_OK ||
         mods::hook::add_pre<PasserExecuteRelief>(onReliefPre) != MOD_OK ||
+        mods::hook::add_pre<PasserInitEscape>(onInitEscapePre) != MOD_OK ||
         mods::hook::add_post<PasserCreateInit>(onCreateInitPost) != MOD_OK ||
         mods::hook::add_pre<PasserProfileExecute>(onExecutePre) != MOD_OK ||
         mods::hook::add_pre<BulblinExecute>(onBulblinExecutePre) != MOD_OK ||
@@ -1103,8 +1074,6 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
         mods::hook::add_post<ActorJudge>(onActorJudgePost) != MOD_OK ||
         mods::hook::add_post<PasserProfileExecute>(onProfileExecutePost) != MOD_OK ||
         mods::hook::add_post<PasserFearCheck>(onFearCheckPost) != MOD_OK ||
-        mods::hook::add_pre<TalkTagExecute>(onTalkTagExecutePre) != MOD_OK ||
-        mods::hook::add_post<TalkTagExecute>(onTalkTagExecutePost) != MOD_OK ||
         mods::hook::add_post<EnemyTargetAngleY>(onEnemyTargetAngleYPost) != MOD_OK ||
         mods::hook::add_post<EnemyTargetAngleX>(onEnemyTargetAngleXPost) != MOD_OK ||
         mods::hook::add_post<EnemyTargetSeenAngle>(onEnemyTargetSeenAnglePost) != MOD_OK ||
@@ -1124,13 +1093,13 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
         return mods::set_error(error, MOD_ERROR, "failed to register the tent actor");
     }
     spot_picker::initialize();
-    svc_log->info(mod_ctx,
-        "Hyrule Field room 5 test passer ready: spawned by code on a code-built road route");
+    svc_log->info(mod_ctx, "Dynamic Travelers ready: travellers walk the Hyrule Field road network");
     return MOD_OK;
 }
 
 MOD_EXPORT ModResult mod_update(ModError*) {
     spot_picker::update();
+    travellers::update();
     return MOD_OK;
 }
 
