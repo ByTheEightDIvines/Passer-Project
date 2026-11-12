@@ -782,6 +782,7 @@ HookAction onKeepWhenOffscreenPre(ModContext*, void* args, void*, void*) {
         return HOOK_SKIP_ORIGINAL;
     }
     // Off screen, vanilla deletes a cowering passer; let it (the roster keeps the traveller).
+    travellers::noteAct(passer, "scared");
     return HOOK_CONTINUE;
 }
 
@@ -797,6 +798,7 @@ HookAction onReliefPre(ModContext*, void* args, void*, void*) {
         return HOOK_CONTINUE;
     }
     // Off screen, vanilla deletes it from the wall-bump pause; let it (the roster keeps the traveller).
+    travellers::noteAct(passer, "stuck on a wall");
     if (++state->reliefFrames >= kSafeFramesToResume && !passer->checkFearSituation()) {
         state->reliefFrames = 0;
         resumeRoute(passer, *state);

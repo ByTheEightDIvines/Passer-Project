@@ -54,6 +54,11 @@ constexpr f32 kFleeDistance = 2800.0f;
 constexpr int kCreateTimeout = 150;
 constexpr int kMaxReal = 16;                 // safety cap on real travellers at once
 constexpr int kCampSeats = 5;                // seats around each camp fire
+constexpr int kAmphiSeats = 10;              // the amphitheater by Castle Town is big
+constexpr int kMaxSeats = 10;
+constexpr int kGoneCooldown = 600;           // frames before a traveller the game deleted can reappear
+constexpr f32 kGoneSkip = 800.0f;            // ...and how far down the road it has walked by then
+constexpr f32 kNoArrivalRadius = 3000.0f;    // late arrivals never appear this close to Link
 constexpr int kArrivalGap = 30;              // frames between late arrivals in one room
 // The passer types from the cast (stock passer type ids).
 constexpr std::array<u8, 14> kCast{3, 4, 6, 7, 8, 9, 11, 13, 14, 15, 20, 27, 28, 29};
@@ -230,6 +235,8 @@ struct Traveller {
     int seat = -1;         // which seat around that camp's fire
     bool leaving = false;  // walked into a gate / loading line / unloaded room; the game deletes it
     std::pair<int, f32> beyond{-1, 0.0f};   // first road point past the end of its walk path
+    int cooldown = 0;      // frames until its room's spawner may bring it back
+    const char* lastAct = "walk";   // what it was last doing (for the log)
 };
 
 std::array<Traveller, kSlots> g_t{};
@@ -376,6 +383,17 @@ void fillPath(PathStore& store, const std::vector<cXyz>& pts) {
 }
 
 // --- camp seats ---------------------------------------------------------------------------------
+// The amphitheater camp just outside Castle Town (the one camp in the Castle Town field area).
+int amphitheaterNode() {
+    for (int c = 0; c < kCampCount; ++c) {
+        const int n = kCamps[c].node;
+        if (kNodes[n].kind == NK_CAMP && kNodes[n].stage == 1) return n;
+    }
+    return -1;
+}
+
+int campSeats(int campNode) { return campNode == amphitheaterNode() ? kAmphiSeats : kCampSeats; }
+
 int seatsTaken(int campNode) {
     int n = 0;
     for (const Traveller& t : g_t) if (t.used && t.campNode == campNode) ++n;
@@ -390,11 +408,11 @@ void releaseSeat(Traveller& t) {
 // Reserve a seat at a camp for t; false if the fire is full.
 bool takeSeat(Traveller& t, int campNode) {
     if (t.campNode == campNode) return true;
-    bool used[kCampSeats] = {};
+    bool used[kMaxSeats] = {};
     for (const Traveller& o : g_t) {
-        if (o.used && o.campNode == campNode && o.seat >= 0 && o.seat < kCampSeats) used[o.seat] = true;
+        if (o.used && o.campNode == campNode && o.seat >= 0 && o.seat < kMaxSeats) used[o.seat] = true;
     }
-    for (int i = 0; i < kCampSeats; ++i) {
+    for (int i = 0; i < campSeats(campNode); ++i) {
         if (!used[i]) {
             t.campNode = campNode;
             t.seat = i;
@@ -411,7 +429,7 @@ int nearestCamp(const Traveller& t, int from, bool escort) {
     for (int c = 0; c < kCampCount; ++c) {
         const int n = kCamps[c].node;
         if (kNodes[n].kind != NK_CAMP) continue;
-        if (t.campNode != n && seatsTaken(n) >= kCampSeats) continue;
+        if (t.campNode != n && seatsTaken(n) >= campSeats(n)) continue;
         if (n == from) return n;
         auto r = plan(from, n, escort);
         if (r.empty()) continue;
@@ -443,7 +461,7 @@ int randomDestination(const Traveller& t, int from) {
         const u8 k = kNodes[n].kind;
         if (k == NK_GATE) {
             dests.push_back(n);
-        } else if (k == NK_CAMP && (t.campNode == n || seatsTaken(n) < kCampSeats)) {
+        } else if (k == NK_CAMP && (t.campNode == n || seatsTaken(n) < campSeats(n))) {
             dests.push_back(n);
         } else if (k == NK_BEEDLE && rndRange(0, 3) == 0) {
             dests.push_back(n);   // the odd visit to Beedle's shop
@@ -456,10 +474,15 @@ int randomDestination(const Traveller& t, int from) {
     return -1;
 }
 
-// Where to spend the night from here: near Castle Town (its field area) they go into town for the
-// night; everyone else heads for the nearest camp with a free seat (into town if every camp is full).
+// Where to spend the night from here: in the Castle Town field area always the amphitheater (into
+// town if it's full); everyone else the nearest camp with a free seat (into town if every camp is full).
 int nightDestination(Traveller& t, int from) {
     if (kNodes[from].stage == 1) {
+        const int amphi = amphitheaterNode();
+        if (amphi >= 0 && (t.campNode == amphi || seatsTaken(amphi) < campSeats(amphi)) &&
+            (amphi == from || !plan(from, amphi, false).empty())) {
+            return amphi;
+        }
         const int g = nearestGate(from);
         if (g >= 0) return g;
     }
@@ -761,8 +784,10 @@ Where restWhere(const Traveller& t, int slot) {
     // its seat on a ring about 300 units around the camp's middle (5 seats; anyone without a seat,
     // e.g. resting at a road junction, just uses its slot to spread out)
     const int place = t.seat >= 0 ? t.seat : slot;
-    const s16 a = static_cast<s16>(place * (0x10000 / kCampSeats) + 0x1555);
-    w.pos.set(n.x + cM_ssin(a) * 300.0f, n.y, n.z + cM_scos(a) * 300.0f);
+    const int seats = t.seat >= 0 ? campSeats(t.node) : kCampSeats;
+    const f32 ring = seats > kCampSeats ? 420.0f : 300.0f;
+    const s16 a = static_cast<s16>(place * (0x10000 / seats) + 0x1555);
+    w.pos.set(n.x + cM_ssin(a) * ring, n.y, n.z + cM_scos(a) * ring);
     w.yaw = static_cast<s16>(a + 0x8000);   // facing the middle
     w.nextPoint = 0;
     return w;
@@ -873,6 +898,11 @@ bool inNetworkStage() { return currentStage() >= 0; }
 
 void noteEnemyRedirect() { ++g_redirects; }
 
+void noteAct(fopAc_ac_c* passer, const char* what) {
+    const int slot = slotOf(passer);
+    if (slot >= 0) g_t[slot].lastAct = what;
+}
+
 bool isTraveller(const fopAc_ac_c* actor) { return slotOf(actor) >= 0; }
 
 dPath* pathFor(int pathId) {
@@ -928,6 +958,13 @@ bool onPathEnd(daNpcPasser_c* passer) {
     case PE_ARRIVE:
     default:
         if (t.state == ST_WALK && !t.route.empty()) arrive(t, legEnd(t.route.back()));
+        // Resting at camp skips vanilla's walking code, and with it the fear check: do it here, so
+        // campers run from enemies too.
+        if (passer->checkFearSituation()) {
+            t.idleSet = false;
+            passer->setAction(daNpcPasser_c::MODE_1);   // flee (our initEscape takes it from there)
+            return true;
+        }
         if (!t.idleSet) {
             setIdle(passer);
             t.idleSet = true;
@@ -940,6 +977,7 @@ bool onPathEnd(daNpcPasser_c* passer) {
 bool startFlee(daNpcPasser_c* passer) {
     const int slot = slotOf(passer);
     if (slot < 0) return false;
+    g_t[slot].lastAct = "fled";
     buildFleePath(slot, passer->current.pos);
     setOwnPath(passer, kFleePathBase + slot);
     if (auto* run = static_cast<J3DAnmTransformKey*>(passer->getAnmP(4, passer->getObjNum()))) {
@@ -960,6 +998,7 @@ void resumeWalk(daNpcPasser_c* passer) {
     }
     t.fleeMap.clear();
     t.idleSet = false;
+    t.lastAct = "walk";
     buildWalkPath(slot, passer->current.pos);
     setOwnPath(passer, kWalkPathBase + slot);
     passer->setAction(daNpcPasser_c::MODE_0);
@@ -1090,7 +1129,17 @@ void update() {
             } else if (t.registered) {
                 // Gone: deleted by the game at an exit or off screen, or its room unloaded. It carries
                 // on virtually from where the roster last had it.
-                diag("gone    slot %d%s", s, t.leaving ? " (left)" : "");
+                diag("gone    slot %d (%s)", s, t.leaving ? "left" : t.lastAct);
+                if (!t.leaving) {
+                    // The game deleted it (scared or stuck off screen). Give it time to get further
+                    // down the road before its spawner may bring it back, so it doesn't reappear in
+                    // the same spot and get deleted again.
+                    t.cooldown = kGoneCooldown;
+                    for (int k = 0; k < static_cast<int>(kGoneSkip / kVirtualSpeed) && t.state == ST_WALK; ++k) {
+                        stepVirtual(t);
+                    }
+                }
+                t.lastAct = "walk";
                 t.spawned = false;
                 t.registered = false;
                 t.leaving = false;
@@ -1126,6 +1175,7 @@ void update() {
         }
 
         // virtual: the roster moves it along; its room's spawner brings it in when that room is loaded
+        if (t.cooldown > 0) --t.cooldown;
         if (t.state == ST_WALK) {
             stepVirtual(t);
         } else {
@@ -1174,7 +1224,7 @@ bool spawnerTick(fopAc_ac_c* spawner, bool firstTick) {
     int made = 0;
     for (int s = 0; s < kSlots; ++s) {
         Traveller& t = g_t[s];
-        if (!t.used || t.spawned || t.dead) continue;
+        if (!t.used || t.spawned || t.dead || t.cooldown > 0) continue;
         Where w{};
         if (t.state == ST_WALK && !t.route.empty()) {
             w = locate(t.route[t.leg], t.dist);
@@ -1186,11 +1236,13 @@ bool spawnerTick(fopAc_ac_c* spawner, bool firstTick) {
         if (w.stage != stage || w.room != room) continue;
         if (live >= kMaxReal) break;
         if (!firstTick) {
-            // a late arrival (walked in from somewhere not loaded): not in plain view up close
+            // a late arrival (walked in from somewhere not loaded): never right next to Link, and
+            // not in front of him until further out
             const f32 dx = w.pos.x - link.x, dz = w.pos.z - link.z;
             const f32 d2 = dx * dx + dz * dz;
+            if (d2 < kNoArrivalRadius * kNoArrivalRadius) continue;
             const bool inFront = std::abs(static_cast<s16>(cM_atan2s(dx, dz) - facing)) < 0x3000;
-            if (inFront && d2 < kViewGuardRadius * kViewGuardRadius) continue;
+            if (inFront && d2 < (kNoArrivalRadius + kViewGuardRadius) * (kNoArrivalRadius + kViewGuardRadius)) continue;
         }
         spawn(s, w);
         ++live;

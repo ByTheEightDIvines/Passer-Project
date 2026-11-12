@@ -39,6 +39,8 @@ daNpcPasser_c* nearestActor(const cXyz& pos, f32 maxDist);
 bool inNetworkStage();
 // Diagnostics: an enemy's targeting answer was swapped from Link to a traveller.
 void noteEnemyRedirect();
+// Diagnostics: what a traveller is doing (logged if the game deletes it).
+void noteAct(fopAc_ac_c* passer, const char* what);
 
 // --- room spawners (spawner_actor.cpp) ---
 struct SpawnerSpot { const char* stage; int room; f32 x, y, z; };
