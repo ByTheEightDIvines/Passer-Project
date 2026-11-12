@@ -841,10 +841,10 @@ bool isOldWoman(const daNpcPasser_c* passer) {
     return passer->m_type == 20 || passer->m_type == 27;   // WON_a, WON_a2
 }
 
-// Off screen, vanilla deletes a scared traveller. Keep it while an enemy is on it.
+// Off screen, vanilla deletes a scared passer. Travellers never vanish just because the camera
+// looked away: they only leave through a gate or loading zone, when their room unloads, or by dying.
 void keepIfChased(daNpcPasser_c* passer) {
-    if (fopAcM_CheckCondition(passer, fopAcCnd_NODRAW_e) &&
-        (isHunted(passer) || nearestEnemy(passer, kChasedRadius) != nullptr)) {
+    if (isPrototypePasser(passer) && fopAcM_CheckCondition(passer, fopAcCnd_NODRAW_e)) {
         fopAcM_OffCondition(passer, fopAcCnd_NODRAW_e);
     }
 }
