@@ -41,20 +41,20 @@ enum NodeKind : u8 { NK_ROAD = 0, NK_CAMP = 1, NK_BEEDLE = 2, NK_GATE = 3, NK_BR
 enum EdgeFlag : u8 { EF_ESCORT = 1, EF_NEEDS_BRIDGE = 2, EF_NO_BEEDLE = 4, EF_HANDOFF = 8, EF_SPUR = 16 };
 
 // --- tuning -----------------------------------------------------------------------------------
-constexpr int kPopulation = 18;              // travellers on the network
+constexpr int kPopulation = 30;              // travellers on the network
 constexpr f32 kVirtualSpeed = 4.0f;          // units per frame while not spawned (about a walk)
-constexpr f32 kSpawnRadius = 6500.0f;        // become a real actor within this distance of Link...
-constexpr f32 kSpawnUnseenRadius = 3200.0f;  // ...but never pop in closer than this in front of him
-constexpr f32 kDespawnRadius = 8500.0f;      // back to virtual beyond this, once off screen
+// A traveller only ever appears from its room's spawner: everyone in a room when it loads, and
+// after that whoever walks in from somewhere that isn't loaded. Those late arrivals wait (walking on
+// "virtually") while their spot is on screen close by, so nobody pops in in front of Link.
+constexpr f32 kViewGuardRadius = 2500.0f;
 constexpr int kMaxPathPoints = 48;
 constexpr f32 kFleeDistance = 2800.0f;
 // Frames to wait for a created actor that the game is no longer creating but that never showed up.
 // While the game is still creating it (fpcM_IsCreating), we keep waiting however long it takes.
 constexpr int kCreateTimeout = 150;
-// Never more than this many real travellers at once (fewer in the Castle Town field). Everyone else
-// keeps walking the network "virtually" and swaps in as the nearest ones leave.
-constexpr int kMaxLive = 6;
-constexpr int kMaxLiveCastleField = 4;
+constexpr int kMaxReal = 16;                 // safety cap on real travellers at once
+constexpr int kCampSeats = 5;                // seats around each camp fire
+constexpr int kArrivalGap = 30;              // frames between late arrivals in one room
 // The passer types from the cast (stock passer type ids).
 constexpr std::array<u8, 14> kCast{3, 4, 6, 7, 8, 9, 11, 13, 14, 15, 20, 27, 28, 29};
 
@@ -226,6 +226,10 @@ struct Traveller {
     std::vector<std::pair<int, f32>> fleeMap;
     bool idleSet = false;
     bool dead = false;
+    int campNode = -1;     // camp it has a seat at (reserved on the way there), or -1
+    int seat = -1;         // which seat around that camp's fire
+    bool leaving = false;  // walked into a gate / loading line / unloaded room; the game deletes it
+    std::pair<int, f32> beyond{-1, 0.0f};   // first road point past the end of its walk path
 };
 
 std::array<Traveller, kSlots> g_t{};
@@ -238,15 +242,11 @@ std::array<PathStore, kSlots> g_flee{};
 u32 g_rng = 0x2468ACE1u;
 bool g_started = false;
 int g_frame = 0;
-// Loading a save or crossing a loading screen streams in a lot at once. Hold off spawning
-// anything until the field has been running quietly for a few seconds, and then bring
-// people in one at a time instead of all on the same frame.
-constexpr int kSettleFrames = 180;
 // The current tent meshes are far too heavy for Dusklight's per-frame vertex buffer
-// (6k-24k vertices in a single draw each) and overflow it. Off until they're rebuilt lighter.
+// (6k-24k vertices in a single draw each). Off until they're rebuilt lighter.
 constexpr bool kTentsEnabled = false;
-constexpr int kSpawnGap = 105;          // ~3.5 s between new travellers appearing (game runs at 30 fps)
-int g_settle = 0;
+constexpr int kSpawnGap = 105;          // tents only: frames between tent spawns
+bool g_pathLookupOpen = false;
 
 // ---- crash-proof diagnostic log ----
 // Dusklight's own log loses its last chunk when the game crashes, so we keep our own: one line
@@ -375,12 +375,43 @@ void fillPath(PathStore& store, const std::vector<cXyz>& pts) {
     store.path.m_points.value.value = static_cast<s32>(static_cast<u32>(offset) | 0x80000000u);
 }
 
-int nearestCamp(int from, bool escort) {
+// --- camp seats ---------------------------------------------------------------------------------
+int seatsTaken(int campNode) {
+    int n = 0;
+    for (const Traveller& t : g_t) if (t.used && t.campNode == campNode) ++n;
+    return n;
+}
+
+void releaseSeat(Traveller& t) {
+    t.campNode = -1;
+    t.seat = -1;
+}
+
+// Reserve a seat at a camp for t; false if the fire is full.
+bool takeSeat(Traveller& t, int campNode) {
+    if (t.campNode == campNode) return true;
+    bool used[kCampSeats] = {};
+    for (const Traveller& o : g_t) {
+        if (o.used && o.campNode == campNode && o.seat >= 0 && o.seat < kCampSeats) used[o.seat] = true;
+    }
+    for (int i = 0; i < kCampSeats; ++i) {
+        if (!used[i]) {
+            t.campNode = campNode;
+            t.seat = i;
+            return true;
+        }
+    }
+    return false;
+}
+
+// Nearest camp (by road) that still has a free seat for t; -1 if none can be reached.
+int nearestCamp(const Traveller& t, int from, bool escort) {
     int best = -1;
     f32 bestLen = 1e30f;
     for (int c = 0; c < kCampCount; ++c) {
         const int n = kCamps[c].node;
         if (kNodes[n].kind != NK_CAMP) continue;
+        if (t.campNode != n && seatsTaken(n) >= kCampSeats) continue;
         if (n == from) return n;
         auto r = plan(from, n, escort);
         if (r.empty()) continue;
@@ -390,12 +421,29 @@ int nearestCamp(int from, bool escort) {
     return best;
 }
 
-int randomDestination(int from) {
+// Nearest Castle Town gate by road, or -1.
+int nearestGate(int from) {
+    int best = -1;
+    f32 bestLen = 1e30f;
+    for (int n = 0; n < kNodeCount; ++n) {
+        if (kNodes[n].kind != NK_GATE) continue;
+        if (n == from) return n;
+        auto r = plan(from, n, false);
+        if (r.empty()) continue;
+        const f32 L = routeLength(r);
+        if (L < bestLen) { bestLen = L; best = n; }
+    }
+    return best;
+}
+
+int randomDestination(const Traveller& t, int from) {
     std::vector<int> dests;
     for (int n = 0; n < kNodeCount; ++n) {
         if (n == from) continue;
         const u8 k = kNodes[n].kind;
-        if (k == NK_CAMP || k == NK_GATE) {
+        if (k == NK_GATE) {
+            dests.push_back(n);
+        } else if (k == NK_CAMP && (t.campNode == n || seatsTaken(n) < kCampSeats)) {
             dests.push_back(n);
         } else if (k == NK_BEEDLE && rndRange(0, 3) == 0) {
             dests.push_back(n);   // the odd visit to Beedle's shop
@@ -408,9 +456,36 @@ int randomDestination(int from) {
     return -1;
 }
 
+// Where to spend the night from here: near Castle Town (its field area) they go into town for the
+// night; everyone else heads for the nearest camp with a free seat (into town if every camp is full).
+int nightDestination(Traveller& t, int from) {
+    if (kNodes[from].stage == 1) {
+        const int g = nearestGate(from);
+        if (g >= 0) return g;
+    }
+    const int camp = nearestCamp(t, from, false);
+    if (camp >= 0) return camp;
+    return nearestGate(from);
+}
+
+void arrive(Traveller& t, int node);
+
 void newRoute(Traveller& t, int from) {
-    const int to = isDusk() ? nearestCamp(from, false) : randomDestination(from);
+    const int to = isDusk() ? nightDestination(t, from) : randomDestination(t, from);
+    if (to >= 0 && to == from) {   // already where it wants to be (a camp at dusk)
+        arrive(t, from);
+        return;
+    }
     t.route = to >= 0 ? plan(from, to, false) : std::vector<Leg>{};
+    // Seats: hold one only at the camp it is heading for (or still sitting at).
+    if (!t.route.empty() && kNodes[to].kind == NK_CAMP) {
+        if (t.campNode != to) {
+            releaseSeat(t);
+            if (!takeSeat(t, to)) t.route.clear();
+        }
+    } else if (!t.route.empty()) {
+        releaseSeat(t);
+    }
     t.leg = 0;
     t.dist = 0.0f;
     t.node = from;
@@ -431,10 +506,18 @@ void arrive(Traveller& t, int node) {
     t.idleSet = false;
     switch (kNodes[node].kind) {
     case NK_GATE:
-        t.state = ST_TOWN;                       // into Castle Town for a while
+        releaseSeat(t);
+        t.state = ST_TOWN;                       // into Castle Town for a while (all night at dusk)
         t.timer = rndRange(1800, 5400);
         break;
     case NK_CAMP:
+        if (!takeSeat(t, node)) {
+            // the fire is full: a short breather, then on to somewhere else
+            t.state = ST_REST;
+            t.restUntilMorning = false;
+            t.timer = rndRange(200, 500);
+            break;
+        }
         t.state = ST_REST;
         t.restUntilMorning = isDusk();
         t.timer = rndRange(900, 2400);
@@ -474,6 +557,8 @@ void buildWalkPath(int slot, const cXyz& from) {
     t.pathMap.clear();
     t.pathMap.push_back({t.leg, t.dist});
     t.pathEnd = PE_CONTINUE;
+    t.beyond = {-1, 0.0f};
+    t.leaving = false;
     if (t.state != ST_WALK || t.route.empty()) {
         // resting: a two-point path to its spot by the fire
         cXyz spot = from;
@@ -504,6 +589,14 @@ void buildWalkPath(int slot, const cXyz& from) {
         const Point& p = legPoint(l, i);
         if (p.stage != stage) {     // loading screen ahead: walk to it, then vanish
             t.pathEnd = PE_VANISH;
+            t.beyond = {leg, legPointDist(l, i)};
+            break;
+        }
+        if (p.room < 0 || !dComIfGp_roomControl_checkRoomDisp(p.room)) {
+            // walking into a room that isn't loaded: vanish at its edge and carry on virtually
+            // from just inside it (so this room's spawner doesn't bring it straight back)
+            t.pathEnd = PE_VANISH;
+            t.beyond = {leg, legPointDist(l, i)};
             break;
         }
         pts.push_back(cXyz(p.x, p.y, p.z));
@@ -538,6 +631,7 @@ void buildFleePath(int slot, const cXyz& from) {
             }
             const Point& p = legPoint(t.route[leg], i);
             if (p.stage != here.stage) break;
+            if (p.room < 0 || !dComIfGp_roomControl_checkRoomDisp(p.room)) break;
             const cXyz q(p.x, p.y, p.z);
             run += std::sqrt((q.x - last.x) * (q.x - last.x) + (q.z - last.z) * (q.z - last.z));
             pts.push_back(q);
@@ -615,10 +709,11 @@ void stepVirtual(Traveller& t) {
                 break;
             }
             // dusk caught it on the road: head for the nearest camp instead
-            if (isDusk() && kNodes[legEnd(t.route.back())].kind != NK_CAMP) {
-                const int camp = nearestCamp(t.node, false);
-                if (camp >= 0) {
-                    t.route = plan(t.node, camp, false);
+            const int dest = legEnd(t.route.back());
+            if (isDusk() && kNodes[dest].kind != NK_CAMP && kNodes[dest].kind != NK_GATE) {
+                const int night = nightDestination(t, t.node);
+                if (night >= 0) {
+                    t.route = plan(t.node, night, false);
                     t.leg = 0;
                     t.dist = 0.0f;
                     if (t.route.empty()) arrive(t, t.node);
@@ -638,6 +733,10 @@ void stepRestOrTown(Traveller& t) {
         if (--t.timer <= 0) newRoute(t, t.node);
     } else if (t.state == ST_TOWN) {
         if (--t.timer > 0) return;
+        if (isDusk()) {              // stays in town overnight, out again in the morning
+            t.timer = rndRange(300, 900);
+            return;
+        }
         // out of Castle Town through one of its gates
         std::vector<int> gates;
         for (int n = 0; n < kNodeCount; ++n) if (kNodes[n].kind == NK_GATE) gates.push_back(n);
@@ -659,8 +758,10 @@ Where restWhere(const Traveller& t, int slot) {
     Where w{};
     w.stage = n.stage;
     w.room = n.room;
-    // spread around the camp: a ring about 300 units from its middle
-    const s16 a = static_cast<s16>(slot * 0x2AAA + 0x1555);
+    // its seat on a ring about 300 units around the camp's middle (5 seats; anyone without a seat,
+    // e.g. resting at a road junction, just uses its slot to spread out)
+    const int place = t.seat >= 0 ? t.seat : slot;
+    const s16 a = static_cast<s16>(place * (0x10000 / kCampSeats) + 0x1555);
     w.pos.set(n.x + cM_ssin(a) * 300.0f, n.y, n.z + cM_scos(a) * 300.0f);
     w.yaw = static_cast<s16>(a + 0x8000);   // facing the middle
     w.nextPoint = 0;
@@ -748,7 +849,8 @@ void populate() {
             if (kNodes[start].kind == NK_ROAD || kNodes[start].kind == NK_CAMP) break;
         }
         // keep everyone out of the escort-only valley
-        bool reachable = !plan(start, nearestCamp(start, false) < 0 ? start : nearestCamp(start, false), false).empty();
+        const int camp0 = nearestCamp(t, start, false);
+        bool reachable = camp0 >= 0 && !plan(start, camp0, false).empty();
         if (!reachable) start = kCamps[0].node;
         newRoute(t, start);
         if (t.state == ST_WALK && !t.route.empty()) {
@@ -779,10 +881,19 @@ dPath* pathFor(int pathId) {
     return nullptr;
 }
 
+// Sets a traveller's path through the game's own path lookup, which answers only while this is open.
+void setOwnPath(daNpcPasser_c* passer, int pathId) {
+    g_pathLookupOpen = true;
+    passer->m_path.setPath(pathId, fopAcM_GetRoomNo(passer), 1, &passer->current.pos, true);
+    g_pathLookupOpen = false;
+    passer->m_path.setNextPoint(passer->current.pos);
+}
+
 bool onPathEnd(daNpcPasser_c* passer) {
     const int slot = slotOf(passer);
     if (slot < 0) return false;
     Traveller& t = g_t[slot];
+    if (t.leaving) return false;   // already on its way out; vanilla deletes it at the path's end
     if (!t.pathMap.empty()) {
         t.leg = t.pathMap.back().first;
         t.dist = t.pathMap.back().second;
@@ -790,11 +901,13 @@ bool onPathEnd(daNpcPasser_c* passer) {
     switch (t.pathEnd) {
     case PE_CONTINUE:
         buildWalkPath(slot, passer->current.pos);
-        passer->m_path.setPath(kWalkPathBase + slot, fopAcM_GetRoomNo(passer), 1, &passer->current.pos, true);
-        passer->m_path.setNextPoint(passer->current.pos);
+        setOwnPath(passer, kWalkPathBase + slot);
         return true;
     case PE_VANISH: {
-        // into Castle Town, or across a loading screen: gone from here, carries on virtually
+        // Into Castle Town, across a loading line or into a room that isn't loaded: the game deletes
+        // it at the end of its path like any vanilla walker, and the roster carries it on from there.
+        t.leaving = true;
+        diag("leave   slot %d", slot);
         if (t.state == ST_WALK && !t.route.empty()) {
             const int last = static_cast<int>(t.route.size()) - 1;
             if (t.leg >= last && kNodes[legEnd(t.route.back())].kind == NK_GATE) {
@@ -805,10 +918,12 @@ bool onPathEnd(daNpcPasser_c* passer) {
                 const int split = kEdges[l.edge].split;
                 const int idx = l.fwd ? split : kEdges[l.edge].count - split;
                 t.dist = legPointDist(l, std::clamp(idx, 0, kEdges[l.edge].count - 1));
+            } else if (t.beyond.first >= 0) {
+                t.leg = t.beyond.first;
+                t.dist = t.beyond.second;
             }
         }
-        despawn(t, passer);
-        return true;
+        return false;
     }
     case PE_ARRIVE:
     default:
@@ -826,8 +941,7 @@ bool startFlee(daNpcPasser_c* passer) {
     const int slot = slotOf(passer);
     if (slot < 0) return false;
     buildFleePath(slot, passer->current.pos);
-    passer->m_path.setPath(kFleePathBase + slot, fopAcM_GetRoomNo(passer), 1, &passer->current.pos, true);
-    passer->m_path.setNextPoint(passer->current.pos);
+    setOwnPath(passer, kFleePathBase + slot);
     if (auto* run = static_cast<J3DAnmTransformKey*>(passer->getAnmP(4, passer->getObjNum()))) {
         passer->setAnm(run, 1.0f, 12.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
     }
@@ -847,8 +961,7 @@ void resumeWalk(daNpcPasser_c* passer) {
     t.fleeMap.clear();
     t.idleSet = false;
     buildWalkPath(slot, passer->current.pos);
-    passer->m_path.setPath(kWalkPathBase + slot, fopAcM_GetRoomNo(passer), 1, &passer->current.pos, true);
-    passer->m_path.setNextPoint(passer->current.pos);
+    setOwnPath(passer, kWalkPathBase + slot);
     passer->setAction(daNpcPasser_c::MODE_0);
 }
 
@@ -858,6 +971,7 @@ void onDeath(daNpcPasser_c* passer) {
     Traveller& t = g_t[slot];
     diag("death   slot %d", slot);
     t.dead = true;
+    releaseSeat(t);
     t.spawned = false;
     t.actor = fpcM_ERROR_PROCESS_ID_e;
     t.state = ST_GONE;
@@ -913,20 +1027,14 @@ void update() {
         diag("world   %s stage %s (net %d) room %d darkworld %d", inWorld ? "IN" : "OUT", sn ? sn : "?", stage,
              dComIfGp_roomControl_getStayNo(), static_cast<int>(dKy_darkworld_check()));
     }
-    if (!inWorld || stage != g_lastStage) {
-        g_settle = 0;
-        g_lastStage = inWorld ? stage : -2;
-    } else if (g_settle < kSettleFrames) {
-        ++g_settle;
-    }
+    g_lastStage = inWorld ? stage : -2;
     if (g_spawnCooldown > 0) --g_spawnCooldown;
-    const bool settled = inWorld && g_settle >= kSettleFrames && !dComIfGp_event_runCheck();
+    const bool settled = inWorld && !dComIfGp_event_runCheck();
     if (settled) {
         probeBridge(stage);
         updateCamps(stage, link);
     }
-    const s16 facing = inWorld ? player->shape_angle.y : 0;
-    const int maxLive = (stage >= 0 && std::strcmp(kStages[stage], "F_SP122") == 0) ? kMaxLiveCastleField : kMaxLive;
+    const int maxLive = kMaxReal;
     int live = 0;
     for (const Traveller& t : g_t) if (t.used && t.spawned) ++live;
     sweepOrphans();
@@ -980,20 +1088,20 @@ void update() {
             if (actor != nullptr) {
                 t.registered = true;
             } else if (t.registered) {
-                // the game removed it (room or stage unloaded): carry on virtually
-                diag("lost    slot %d (removed by game)", s);
+                // Gone: deleted by the game at an exit or off screen, or its room unloaded. It carries
+                // on virtually from where the roster last had it.
+                diag("gone    slot %d%s", s, t.leaving ? " (left)" : "");
                 t.spawned = false;
                 t.registered = false;
+                t.leaving = false;
                 t.actor = fpcM_ERROR_PROCESS_ID_e;
                 continue;
             } else if (fpcM_IsCreating(t.actor)) {
-                // Still being created (loading its files): keep waiting. Giving up here used to
-                // leave the create running, so the NPC could turn up later with nobody tracking it.
+                // Still being created (loading its files): keep waiting.
                 if (++t.createFrames == kCreateTimeout * 4) {
                     diag("slow    slot %d still being created after %d frames", s, t.createFrames);
                 }
                 if (!inWorld) {
-                    // left the field while it was loading: stop waiting, delete it if it turns up
                     diag("orphan  slot %d left while still being created (proc %u)", s, static_cast<unsigned>(t.actor));
                     addOrphan(t.actor);
                     t.spawned = false;
@@ -1001,7 +1109,6 @@ void update() {
                 }
                 continue;
             } else if (++t.createFrames > kCreateTimeout) {
-                // not being created and never showed up: the create failed
                 diag("failed  slot %d create never appeared", s);
                 addOrphan(t.actor);
                 t.spawned = false;
@@ -1009,51 +1116,95 @@ void update() {
                 continue;
             }
             if (actor == nullptr) continue;
-            syncFromActor(t, actor);
+            if (!t.leaving) syncFromActor(t, actor);
             // rest is over while you watch: get up and go
-            if (t.state == ST_REST || t.state == ST_TOWN) {
+            if (!t.leaving && (t.state == ST_REST || t.state == ST_TOWN)) {
                 stepRestOrTown(t);
                 if (t.state == ST_WALK) resumeWalk(actor);
-            }
-            const f32 dx = actor->current.pos.x - link.x, dz = actor->current.pos.z - link.z;
-            if (!inWorld || (dx * dx + dz * dz > kDespawnRadius * kDespawnRadius &&
-                             fopAcM_CheckCondition(actor, fopAcCnd_NODRAW_e))) {
-                despawn(t, actor);
             }
             continue;
         }
 
-        // virtual
+        // virtual: the roster moves it along; its room's spawner brings it in when that room is loaded
         if (t.state == ST_WALK) {
             stepVirtual(t);
         } else {
             stepRestOrTown(t);
         }
-        if (!settled || t.state == ST_TOWN || t.state == ST_GONE) continue;
-        if (g_spawnCooldown > 0) continue;
-        if ((g_frame + s) % 10 != 0) continue;   // spawn checks a few times a second is plenty
+    }
+}
 
+// --- room spawners ------------------------------------------------------------------------------
+bool spawnerSpot(int i, SpawnerSpot* out) {
+    // every (stage, room) the road points pass through, in order of first appearance
+    static std::vector<SpawnerSpot> s_spots;
+    if (s_spots.empty()) {
+        constexpr int kPointCount = sizeof(kPoints) / sizeof(kPoints[0]);
+        for (int k = 0; k < kPointCount; ++k) {
+            const Point& p = kPoints[k];
+            if (p.room < 0) continue;
+            bool seen = false;
+            for (const SpawnerSpot& sp : s_spots) {
+                if (sp.room == p.room && std::strcmp(sp.stage, kStages[p.stage]) == 0) { seen = true; break; }
+            }
+            if (!seen) s_spots.push_back({kStages[p.stage], p.room, p.x, p.y, p.z});
+        }
+    }
+    if (i < 0 || i >= static_cast<int>(s_spots.size())) return false;
+    *out = s_spots[i];
+    return true;
+}
+
+bool spawnerTick(fopAc_ac_c* spawner, bool firstTick) {
+    const int stage = currentStage();
+    auto* player = dComIfGp_getPlayer(0);
+    if (stage < 0 || player == nullptr || dKy_darkworld_check() || dComIfGp_event_runCheck()) {
+        return false;   // no travellers in twilight; nothing appears during events
+    }
+    const int room = fopAcM_GetRoomNo(spawner);
+    static std::array<int, 64> s_lastArrival{};   // per room: frame of its last late arrival
+    if (!firstTick) {
+        if ((g_frame + room) % 10 != 0) return true;              // a few checks a second is plenty
+        if (room >= 0 && room < 64 && g_frame - s_lastArrival[room] < kArrivalGap) return true;
+    }
+    int live = 0;
+    for (const Traveller& t : g_t) if (t.used && t.spawned) ++live;
+    const cXyz& link = player->current.pos;
+    const s16 facing = player->shape_angle.y;
+    int made = 0;
+    for (int s = 0; s < kSlots; ++s) {
+        Traveller& t = g_t[s];
+        if (!t.used || t.spawned || t.dead) continue;
         Where w{};
         if (t.state == ST_WALK && !t.route.empty()) {
             w = locate(t.route[t.leg], t.dist);
         } else if (t.state == ST_REST) {
             w = restWhere(t, s);
         } else {
-            continue;
+            continue;   // in Castle Town or gone
         }
-        if (w.stage != stage || w.room < 0 || !dComIfGp_roomControl_checkRoomDisp(w.room)) continue;
-        const f32 dx = w.pos.x - link.x, dz = w.pos.z - link.z;
-        const f32 d2 = dx * dx + dz * dz;
-        if (d2 > kSpawnRadius * kSpawnRadius) continue;
-        // never pop in right in front of Link
-        const s16 toIt = cM_atan2s(dx, dz);
-        const bool inFront = std::abs(static_cast<s16>(toIt - facing)) < 0x3000;
-        if (inFront && d2 < kSpawnUnseenRadius * kSpawnUnseenRadius) continue;
-        if (live >= maxLive) continue;
+        if (w.stage != stage || w.room != room) continue;
+        if (live >= kMaxReal) break;
+        if (!firstTick) {
+            // a late arrival (walked in from somewhere not loaded): not in plain view up close
+            const f32 dx = w.pos.x - link.x, dz = w.pos.z - link.z;
+            const f32 d2 = dx * dx + dz * dz;
+            const bool inFront = std::abs(static_cast<s16>(cM_atan2s(dx, dz) - facing)) < 0x3000;
+            if (inFront && d2 < kViewGuardRadius * kViewGuardRadius) continue;
+        }
         spawn(s, w);
         ++live;
-        g_spawnCooldown = kSpawnGap;
+        ++made;
+        if (!firstTick) {
+            if (room >= 0 && room < 64) s_lastArrival[room] = g_frame;
+            break;   // one late arrival at a time
+        }
     }
+    if (firstTick) diag("scatter room %d: %d travellers", room, made);
+    return true;
 }
+
+bool pathLookupOpen() { return g_pathLookupOpen; }
+void setPathLookupOpen(bool open) { g_pathLookupOpen = open; }
 
 }  // namespace travellers

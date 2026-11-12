@@ -12,9 +12,9 @@
 
 namespace travellers {
 
-constexpr int kSlots = 24;               // travellers (and real actors at most)
-constexpr int kWalkPathBase = 0x40;       // path IDs 0x40..0x57: each slot's walking path
-constexpr int kFleePathBase = 0x60;       // path IDs 0x60..0x77: each slot's flee path
+constexpr int kSlots = 32;               // travellers (and real actors at most)
+constexpr int kWalkPathBase = 0x40;       // path IDs 0x40..0x5F: each slot's walking path
+constexpr int kFleePathBase = 0x60;       // path IDs 0x60..0x7F: each slot's flee path
 
 void initialize();
 void update();                            // once per frame (mod_update)
@@ -39,5 +39,17 @@ daNpcPasser_c* nearestActor(const cXyz& pos, f32 maxDist);
 bool inNetworkStage();
 // Diagnostics: an enemy's targeting answer was swapped from Link to a traveller.
 void noteEnemyRedirect();
+
+// --- room spawners (spawner_actor.cpp) ---
+struct SpawnerSpot { const char* stage; int room; f32 x, y, z; };
+// i-th room the network passes through, with a point in it; false past the last one.
+bool spawnerSpot(int i, SpawnerSpot* out);
+// A room's spawner, once per tick. firstTick is true until the room-load scatter has been done;
+// returns true once it has (it waits through events and twilight).
+bool spawnerTick(fopAc_ac_c* spawner, bool firstTick);
+
+// The path lookup only answers our own walkers: true while one of them is setting its path up.
+bool pathLookupOpen();
+void setPathLookupOpen(bool open);
 
 }  // namespace travellers

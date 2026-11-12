@@ -19,6 +19,7 @@
 #include "mods/svc/hook.hpp"
 #include "mods/svc/log.h"
 #include "mods/svc/stage.h"
+#include "spawner_actor.hpp"
 #include "spot_picker.hpp"
 #include "tent_actor.hpp"
 #include "travellers.hpp"
@@ -662,7 +663,17 @@ DEFINE_HOOK(&fopAcM_searchActorDistance2, EnemyTargetDistanceSquared);
 DEFINE_HOOK(&fopAcM_searchActorDistanceXZ, EnemyTargetDistanceXZ);
 DEFINE_HOOK(&fopAcM_searchActorDistanceXZ2, EnemyTargetDistanceXZSquared);
 
+// A traveller sets its walk path up inside create_init: open the path lookup just for that.
+HookAction onCreateInitPre(ModContext*, void* args, void*, void*) {
+    auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
+    if (isPrototypePasser(passer)) {
+        travellers::setPathLookupOpen(true);
+    }
+    return HOOK_CONTINUE;
+}
+
 void onCreateInitPost(ModContext*, void* args, void*, void*) {
+    travellers::setPathLookupOpen(false);
     auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
     if (!isPrototypePasser(passer)) {
         return;
@@ -734,7 +745,10 @@ HookAction onExecuteEscapePre(ModContext*, void* args, void*, void*) {
     if (!isPrototypePasser(passer) || state == nullptr) {
         return HOOK_CONTINUE;
     }
-    fopAcM_OffCondition(passer, fopAcCnd_NODRAW_e);
+    // Off screen, vanilla deletes a fleeing passer; let it (the roster keeps the traveller).
+    if (fopAcM_CheckCondition(passer, fopAcCnd_NODRAW_e)) {
+        return HOOK_CONTINUE;
+    }
     if (passer->field_0xb1c != 1 || !passer->m_path.isPath()) {
         return HOOK_CONTINUE;
     }
@@ -767,9 +781,7 @@ HookAction onKeepWhenOffscreenPre(ModContext*, void* args, void*, void*) {
     if (gateAction(passer)) {
         return HOOK_SKIP_ORIGINAL;
     }
-    if (isPrototypePasser(passer)) {
-        fopAcM_OffCondition(passer, fopAcCnd_NODRAW_e);
-    }
+    // Off screen, vanilla deletes a cowering passer; let it (the roster keeps the traveller).
     return HOOK_CONTINUE;
 }
 
@@ -784,7 +796,7 @@ HookAction onReliefPre(ModContext*, void* args, void*, void*) {
     if (!isPrototypePasser(passer) || state == nullptr) {
         return HOOK_CONTINUE;
     }
-    fopAcM_OffCondition(passer, fopAcCnd_NODRAW_e);
+    // Off screen, vanilla deletes it from the wall-bump pause; let it (the roster keeps the traveller).
     if (++state->reliefFrames >= kSafeFramesToResume && !passer->checkFearSituation()) {
         state->reliefFrames = 0;
         resumeRoute(passer, *state);
@@ -794,7 +806,9 @@ HookAction onReliefPre(ModContext*, void* args, void*, void*) {
 }
 
 void onRoomPathPost(ModContext*, void* args, void* retval, void*) {
-    if (retval == nullptr || !travellers::inNetworkStage()) {
+    // Only our own walkers get a traveller path: the lookup is opened just while one of them sets
+    // its path up. Every other actor gets the game's normal answer.
+    if (retval == nullptr || !travellers::pathLookupOpen() || !travellers::inNetworkStage()) {
         return;
     }
     const int pathId = mods::arg<int>(args, 0);
@@ -1103,6 +1117,7 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
         mods::hook::add_pre<PasserExecuteFear>(onKeepWhenOffscreenPre) != MOD_OK ||
         mods::hook::add_pre<PasserExecuteRelief>(onReliefPre) != MOD_OK ||
         mods::hook::add_pre<PasserInitEscape>(onInitEscapePre) != MOD_OK ||
+        mods::hook::add_pre<PasserCreateInit>(onCreateInitPre) != MOD_OK ||
         mods::hook::add_post<PasserCreateInit>(onCreateInitPost) != MOD_OK ||
         mods::hook::add_pre<PasserProfileExecute>(onExecutePre) != MOD_OK ||
         mods::hook::add_pre<BulblinExecute>(onBulblinExecutePre) != MOD_OK ||
@@ -1127,6 +1142,9 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     }
     if (psr_tent::registerActor() != MOD_OK) {
         return mods::set_error(error, MOD_ERROR, "failed to register the tent actor");
+    }
+    if (psr_spawner::registerAndPlace() != MOD_OK) {
+        return mods::set_error(error, MOD_ERROR, "failed to register or place the traveller spawners");
     }
     spot_picker::initialize();
     svc_log->info(mod_ctx, "Dynamic Travelers ready: travellers walk the Hyrule Field road network");
