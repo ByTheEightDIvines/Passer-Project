@@ -54,6 +54,8 @@ constexpr f32 kFleeDistance = 2800.0f;
 constexpr int kCreateTimeout = 150;
 constexpr int kMaxReal = 16;                 // safety cap on real travellers at once
 constexpr int kCampSeats = 5;                // seats around each camp fire
+constexpr int kMaxCampFighters = 2;         // at most this many fighters sit at one fire
+constexpr int kBowman = 8;                   // passer 8 (bow and sword): only one out in a room at a time
 constexpr int kAmphiSeats = 6;               // the amphitheater by Castle Town is a bit bigger
 constexpr int kMaxSeats = 10;
 constexpr int kGoneCooldownMin = 1800;       // frames (30-90 s) before a traveller the game deleted
@@ -239,7 +241,8 @@ struct Traveller {
     fpc_ProcID actor = fpcM_ERROR_PROCESS_ID_e;
     std::vector<std::pair<int, f32>> pathMap;   // per walk-path point: (leg, dist)
     PathEnd pathEnd = PE_CONTINUE;
-    std::vector<std::pair<int, f32>> fleeMap;
+    std::vector<std::pair<int, f32>> fleeMap;   // flee path point -> (index into fleeLegs, distance)
+    std::vector<Leg> fleeLegs;                  // the roads it is running along
     bool idleSet = false;
     bool dead = false;
     int campNode = -1;     // camp it has a seat at (reserved on the way there), or -1
@@ -399,6 +402,8 @@ void fillPath(PathStore& store, const std::vector<cXyz>& pts) {
     store.path.m_points.value.value = static_cast<s32>(static_cast<u32>(offset) | 0x80000000u);
 }
 
+bool fighterType(int type);
+
 // --- camp seats ---------------------------------------------------------------------------------
 // The amphitheater camp just outside Castle Town (the one camp in the Castle Town field area).
 int amphitheaterNode() {
@@ -417,6 +422,20 @@ int seatsTaken(int campNode) {
     return n;
 }
 
+int fightersAt(int campNode) {
+    int n = 0;
+    for (const Traveller& t : g_t) if (t.used && t.campNode == campNode && fighterType(t.type)) ++n;
+    return n;
+}
+
+// Can t sit at this camp: it already has a seat there, or there's a free one (and, for a fighter,
+// the fire doesn't already have its two fighters).
+bool canSit(const Traveller& t, int campNode) {
+    if (t.campNode == campNode) return true;
+    if (seatsTaken(campNode) >= campSeats(campNode)) return false;
+    return !fighterType(t.type) || fightersAt(campNode) < kMaxCampFighters;
+}
+
 void releaseSeat(Traveller& t) {
     t.campNode = -1;
     t.seat = -1;
@@ -425,6 +444,7 @@ void releaseSeat(Traveller& t) {
 // Reserve a seat at a camp for t; false if the fire is full.
 bool takeSeat(Traveller& t, int campNode) {
     if (t.campNode == campNode) return true;
+    if (!canSit(t, campNode)) return false;
     bool used[kMaxSeats] = {};
     for (const Traveller& o : g_t) {
         if (o.used && o.campNode == campNode && o.seat >= 0 && o.seat < kMaxSeats) used[o.seat] = true;
@@ -446,7 +466,7 @@ int nearestCamp(const Traveller& t, int from, bool escort) {
     for (int c = 0; c < kCampCount; ++c) {
         const int n = kCamps[c].node;
         if (kNodes[n].kind != NK_CAMP) continue;
-        if (t.campNode != n && seatsTaken(n) >= campSeats(n)) continue;
+        if (!canSit(t, n)) continue;
         if (n == from) return n;
         auto r = plan(from, n, escort);
         if (r.empty()) continue;
@@ -478,7 +498,7 @@ int randomDestination(const Traveller& t, int from) {
         const u8 k = kNodes[n].kind;
         if (k == NK_GATE) {
             dests.push_back(n);
-        } else if (k == NK_CAMP && (t.campNode == n || seatsTaken(n) < campSeats(n))) {
+        } else if (k == NK_CAMP && canSit(t, n)) {
             dests.push_back(n);
         } else if (k == NK_BEEDLE && rndRange(0, 3) == 0) {
             dests.push_back(n);   // the odd visit to Beedle's shop
@@ -496,7 +516,7 @@ int randomDestination(const Traveller& t, int from) {
 int nightDestination(Traveller& t, int from) {
     if (kNodes[from].stage == 1) {
         const int amphi = amphitheaterNode();
-        if (amphi >= 0 && (t.campNode == amphi || seatsTaken(amphi) < campSeats(amphi)) &&
+        if (amphi >= 0 && canSit(t, amphi) &&
             (amphi == from || !plan(from, amphi, false).empty())) {
             return amphi;
         }
@@ -667,46 +687,98 @@ void buildWalkPath(int slot, const cXyz& from) {
     fillPath(g_walk[slot], pts);
 }
 
-// Flee path: back the way it came, up to kFleeDistance.
-void buildFleePath(int slot, const cXyz& from) {
+// How directly a stretch of road heads away from a threat: +1 straight away, -1 straight at it.
+// Looks ~500 units down the leg from distance d.
+f32 awayScore(const Leg& l, f32 d, const cXyz& here, const cXyz& threat) {
+    const Where ahead = locate(l, std::min(d + 500.0f, edgeLength(l.edge)));
+    f32 rx = ahead.pos.x - here.x, rz = ahead.pos.z - here.z;
+    f32 ax = here.x - threat.x, az = here.z - threat.z;
+    const f32 rl = std::sqrt(rx * rx + rz * rz), al = std::sqrt(ax * ax + az * az);
+    if (rl < 1.0f) return -2.0f;
+    if (al < 1.0f) return 0.0f;
+    return (rx * ax + rz * az) / (rl * al);
+}
+
+// Flee path: along whichever road leads most directly away from the threat, choosing again at
+// every fork, up to kFleeDistance (stopping at a camp, gate, loading zone or unloaded room).
+void buildFleePath(int slot, const cXyz& from, const cXyz& threat) {
     Traveller& t = g_t[slot];
     std::vector<cXyz> pts{from};
     t.fleeMap.clear();
-    t.fleeMap.push_back({t.leg, t.dist});
+    t.fleeLegs.clear();
+    // Where on the roads it is, and which ways it could run from there.
+    std::vector<std::pair<Leg, f32>> options;
+    int startNode = -1;
     if (t.state == ST_WALK && !t.route.empty()) {
-        int leg = t.leg;
-        f32 d = t.dist;
+        const Leg l = t.route[t.leg];
+        options.push_back({l, t.dist});
+        options.push_back({Leg{l.edge, !l.fwd}, edgeLength(l.edge) - t.dist});
+    } else {
+        startNode = t.node;
+        for (const Adj& a : g_adj[t.node]) {
+            if (!edgeAllowed(a.edge, false)) continue;
+            options.push_back({Leg{static_cast<u16>(a.edge), kEdges[a.edge].a == t.node}, 0.0f});
+        }
+    }
+    int best = -1;
+    f32 bestScore = -10.0f;
+    for (int i = 0; i < static_cast<int>(options.size()); ++i) {
+        const f32 sc = awayScore(options[i].first, options[i].second, from, threat);
+        if (sc > bestScore) { bestScore = sc; best = i; }
+    }
+    if (best >= 0) {
+        Leg leg = options[best].first;
+        f32 d = options[best].second;
+        const u8 stage0 = startNode >= 0 ? kNodes[startNode].stage : locate(leg, d).stage;
+        t.fleeLegs.push_back(leg);
+        t.fleeMap.push_back({0, d});
         f32 run = 0.0f;
-        const Where here = locate(t.route[leg], d);
-        int i = here.nextPoint - 1;
         cXyz last = from;
-        while (run < kFleeDistance && static_cast<int>(pts.size()) < kMaxPathPoints) {
-            if (i < 0) {
-                if (--leg < 0) break;
-                i = kEdges[t.route[leg].edge].count - 2;
-                continue;
+        bool done = false;
+        while (!done && static_cast<int>(pts.size()) < kMaxPathPoints) {
+            const int n = kEdges[leg.edge].count;
+            int i = 1;
+            while (i < n && legPointDist(leg, i) <= d) ++i;   // next point ahead
+            for (; i < n && run < kFleeDistance && static_cast<int>(pts.size()) < kMaxPathPoints; ++i) {
+                const Point& p = legPoint(leg, i);
+                if (p.stage != stage0 || p.room < 0 || !dComIfGp_roomControl_checkRoomDisp(p.room)) {
+                    done = true;
+                    break;
+                }
+                const cXyz q(p.x, p.y, p.z);
+                run += std::sqrt((q.x - last.x) * (q.x - last.x) + (q.z - last.z) * (q.z - last.z));
+                pts.push_back(q);
+                t.fleeMap.push_back({static_cast<int>(t.fleeLegs.size()) - 1, legPointDist(leg, i)});
+                last = q;
             }
-            const Point& p = legPoint(t.route[leg], i);
-            if (p.stage != here.stage) break;
-            if (p.room < 0 || !dComIfGp_roomControl_checkRoomDisp(p.room)) break;
-            const cXyz q(p.x, p.y, p.z);
-            run += std::sqrt((q.x - last.x) * (q.x - last.x) + (q.z - last.z) * (q.z - last.z));
-            pts.push_back(q);
-            t.fleeMap.push_back({leg, legPointDist(t.route[leg], i)});
-            last = q;
-            --i;
+            if (done || run >= kFleeDistance || i < n) break;
+            // reached a junction: pick the next road that heads away (never straight back)
+            const int node = legEnd(leg);
+            if (!passThrough(node)) break;
+            int nextBest = -1;
+            f32 nextScore = -10.0f;
+            Leg next{};
+            for (const Adj& a : g_adj[node]) {
+                if (a.edge == leg.edge || !edgeAllowed(a.edge, false)) continue;
+                const Leg cand{static_cast<u16>(a.edge), kEdges[a.edge].a == node};
+                const f32 sc = awayScore(cand, 0.0f, last, threat);
+                if (sc > nextScore) { nextScore = sc; nextBest = a.edge; next = cand; }
+            }
+            if (nextBest < 0) break;
+            leg = next;
+            d = 0.0f;
+            t.fleeLegs.push_back(leg);
         }
     }
     if (pts.size() < 2) {
-        // nowhere back to run: just get some distance from Link
+        // no road to run along: just get some distance from the threat
         cXyz away = from;
-        if (auto* pl = dComIfGp_getPlayer(0)) {
-            const s16 a = cLib_targetAngleY(&pl->current.pos, &from);
-            away.x += cM_ssin(a) * 1200.0f;
-            away.z += cM_scos(a) * 1200.0f;
-        }
+        const s16 a = cLib_targetAngleY(&threat, &from);
+        away.x += cM_ssin(a) * 1200.0f;
+        away.z += cM_scos(a) * 1200.0f;
         pts.push_back(away);
-        t.fleeMap.push_back({t.leg, t.dist});
+        t.fleeMap.clear();
+        t.fleeLegs.clear();
     }
     fillPath(g_flee[slot], pts);
 }
@@ -795,7 +867,7 @@ void stepRestOrTown(Traveller& t) {
     if (t.state == ST_REST) {
         if (t.restUntilMorning) {
             const int h = hour();
-            if (h >= 6 && h < 16 && rndRange(0, 3600) == 0) t.restUntilMorning = false;   // they wake at different times
+            if (h >= 6 && h < 16 && rndRange(0, h >= 8 ? 60 : 900) == 0) t.restUntilMorning = false;   // they wake between 6 and 8
             return;
         }
         if (--t.timer <= 0) newRoute(t, t.node);
@@ -1005,9 +1077,10 @@ bool onPathEnd(daNpcPasser_c* passer) {
     case PE_ARRIVE:
     default:
         if (t.state == ST_WALK && !t.route.empty()) arrive(t, legEnd(t.route.back()));
-        // Resting at camp skips vanilla's walking code, and with it the fear check: do it here, so
-        // campers run from enemies too.
-        if (passer->checkFearSituation()) {
+        // Resting skips vanilla's walking code, and with it the fear check: do it here, so people
+        // waiting at a junction run too. Settled campers don't run: fighters defend the fire and
+        // the rest cower (passer_prototype's camp guard).
+        if (!campInfo(passer, nullptr, nullptr, nullptr) && passer->checkFearSituation()) {
             t.idleSet = false;
             passer->setAction(daNpcPasser_c::MODE_1);   // flee (our initEscape takes it from there)
             return true;
@@ -1021,11 +1094,11 @@ bool onPathEnd(daNpcPasser_c* passer) {
     }
 }
 
-bool startFlee(daNpcPasser_c* passer) {
+bool startFlee(daNpcPasser_c* passer, const cXyz& threat) {
     const int slot = slotOf(passer);
     if (slot < 0) return false;
     g_t[slot].lastAct = "fled";
-    buildFleePath(slot, passer->current.pos);
+    buildFleePath(slot, passer->current.pos, threat);
     setOwnPath(passer, kFleePathBase + slot);
     if (auto* run = static_cast<J3DAnmTransformKey*>(passer->getAnmP(4, passer->getObjNum()))) {
         passer->setAnm(run, 1.0f, 12.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
@@ -1038,12 +1111,36 @@ void resumeWalk(daNpcPasser_c* passer) {
     const int slot = slotOf(passer);
     if (slot < 0) return;
     Traveller& t = g_t[slot];
-    // after fleeing it is further back along its road
-    if (!t.fleeMap.empty() && passer->m_path.isPath() && passer->m_path.mPath == &g_flee[slot].path) {
-        t.leg = t.fleeMap.back().first;
-        t.dist = t.fleeMap.back().second;
+    // After running away it is somewhere else on the roads: plan a fresh trip from there.
+    if (!t.fleeMap.empty() && !t.fleeLegs.empty() && passer->m_path.isPath() &&
+        passer->m_path.mPath == &g_flee[slot].path) {
+        const int pi = std::clamp(static_cast<int>(passer->m_path.field_0x20) - 1, 0,
+                                  static_cast<int>(t.fleeMap.size()) - 1);
+        const auto [li, d] = t.fleeMap[pi];
+        const Leg leg = t.fleeLegs[li];
+        const int end = legEnd(leg);
+        const int to = isEvening() ? nightDestination(t, end) : randomDestination(t, end);
+        std::vector<Leg> route{leg};
+        if (to >= 0 && to != end) {
+            const auto rest = plan(end, to, false);
+            route.insert(route.end(), rest.begin(), rest.end());
+        }
+        const int dest = legEnd(route.back());
+        if (kNodes[dest].kind == NK_CAMP) {
+            if (t.campNode != dest) { releaseSeat(t); takeSeat(t, dest); }
+        } else {
+            releaseSeat(t);
+        }
+        t.route = route;
+        t.leg = 0;
+        t.dist = d;
+        t.node = legStart(leg);
+        t.state = ST_WALK;
+        t.restUntilMorning = false;
+        diag("replan  slot %d after fleeing: heading for node %d", slot, dest);
     }
     t.fleeMap.clear();
+    t.fleeLegs.clear();
     t.idleSet = false;
     t.lastAct = "walk";
     buildWalkPath(slot, passer->current.pos);
@@ -1081,6 +1178,30 @@ void noteStand(const fopAc_ac_c* passer, const fopAc_ac_c* enemy) {
     if (slot >= 0) diag("stand   slot %d faces enemy %u (%s)", slot,
                         static_cast<unsigned>(fopAcM_GetID(const_cast<fopAc_ac_c*>(enemy))),
                         fopAcM_getProcNameString(const_cast<fopAc_ac_c*>(enemy)));
+}
+
+bool campInfo(const fopAc_ac_c* passer, cXyz* center, cXyz* seat, s16* seatYaw) {
+    const int slot = slotOf(passer);
+    if (slot < 0) return false;
+    const Traveller& t = g_t[slot];
+    if (t.state != ST_REST || t.seat < 0 || t.campNode < 0 || t.campNode != t.node) return false;
+    if (center) center->set(kNodes[t.node].x, kNodes[t.node].y, kNodes[t.node].z);
+    const Where w = restWhere(t, slot);
+    if (seat) *seat = w.pos;
+    if (seatYaw) *seatYaw = w.yaw;
+    return true;
+}
+
+void refreshIdle(const fopAc_ac_c* passer) {
+    const int slot = slotOf(passer);
+    if (slot >= 0) g_t[slot].idleSet = false;
+}
+
+void noteCamp(const fopAc_ac_c* passer, const char* what, const fopAc_ac_c* enemy) {
+    const int slot = slotOf(passer);
+    if (slot < 0) return;
+    diag("camp    slot %d %s %s", slot, what,
+         enemy ? fopAcM_getProcNameString(const_cast<fopAc_ac_c*>(enemy)) : "");
 }
 
 int life(const fopAc_ac_c* passer) {
@@ -1308,6 +1429,15 @@ bool spawnerSpot(int i, SpawnerSpot* out) {
     return true;
 }
 
+// Is passer 8 (the bow-and-sword fighter) already out in this room?
+bool bowmanIn(int room) {
+    for (const Traveller& o : g_t) {
+        if (!o.used || !o.spawned || o.type != kBowman) continue;
+        if (auto* a = fopAcM_SearchByID(o.actor); a != nullptr && fopAcM_GetRoomNo(a) == room) return true;
+    }
+    return false;
+}
+
 bool spawnerTick(fopAc_ac_c* spawner, bool firstTick) {
     const int stage = currentStage();
     auto* player = dComIfGp_getPlayer(0);
@@ -1339,6 +1469,7 @@ bool spawnerTick(fopAc_ac_c* spawner, bool firstTick) {
         }
         if (w.stage != stage || w.room != room) continue;
         if (live >= kMaxReal) break;
+        if (t.type == kBowman && bowmanIn(room)) continue;   // bow and sword: one per room
         if (!firstTick) {
             // a late arrival (walked in from somewhere not loaded): never right next to Link, and
             // not in front of him until further out

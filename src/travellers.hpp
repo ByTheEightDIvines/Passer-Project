@@ -28,7 +28,7 @@ dPath* pathFor(int pathId);
 bool onPathEnd(daNpcPasser_c* passer);
 // Vanilla flee needs an escape marker actor; travellers run back along their own road instead.
 // Returns true when handled.
-bool startFlee(daNpcPasser_c* passer);
+bool startFlee(daNpcPasser_c* passer, const cXyz& threat);
 // Back to walking toward its destination from wherever it is now (after cowering or talking).
 void resumeWalk(daNpcPasser_c* passer);
 // The actor is about to be removed because it died (Wind Waker launch finished).
@@ -41,6 +41,11 @@ void setLife(const fopAc_ac_c* passer, int quarters);
 bool isFighter(const fopAc_ac_c* passer);
 // Diagnostics: a traveller was hit; an enemy started or ended a hunt for one.
 void noteHit(const fopAc_ac_c* passer, int damage, int lifeLeft);
+// Settled at a camp for the night (seated): camp centre, its seat and the way it faces.
+bool campInfo(const fopAc_ac_c* passer, cXyz* center, cXyz* seat, s16* seatYaw);
+// Put its resting (sitting) animation back next frame.
+void refreshIdle(const fopAc_ac_c* passer);
+void noteCamp(const fopAc_ac_c* passer, const char* what, const fopAc_ac_c* enemy);
 void noteStand(const fopAc_ac_c* passer, const fopAc_ac_c* enemy);
 void noteHunt(const fopAc_ac_c* enemy, const fopAc_ac_c* prey, bool start);
 // Nearest live traveller actor to a point, within maxDist (xz), or nullptr.

@@ -159,6 +159,11 @@ struct PasserState {
     int logFrames = 0;   // frames spent in the vanilla wall-bump pause
     int unseenFrames = 0;  // frames since created without the game finding it by ID
     bool standing = false;  // a fighter holding its ground against a nearby enemy
+    bool defending = false; // a camp fighter up and going after an enemy near the fire
+    bool campCower = false; // a camper cowering in place while an enemy is near the fire
+    int calmFrames = 0;
+    int strikeTimer = 0;
+    u8 anim = 0xFF;         // animation the camp guard last set (so it isn't restarted every frame)
 };
 
 std::array<PasserState, 32> g_states{};
@@ -230,13 +235,19 @@ PasserState* findState(daNpcPasser_c* actor, bool create) {
     return nullptr;
 }
 
-fopAc_ac_c* nearestEnemy(const daNpcPasser_c* passer, f32 maxDistance) {
+// Projectiles count as enemies to the game; to a traveller they're not someone to face or chase.
+bool isProjectile(fopAc_ac_c* actor) {
+    const s16 name = fopAcM_GetName(actor);
+    return name == fpcNm_E_ARROW_e || name == fpcNm_E_TK_BALL_e || name == fpcNm_E_TH_BALL_e;
+}
+
+fopAc_ac_c* nearestEnemyAt(const cXyz& at, f32 maxDistance) {
     struct Search {
-        const daNpcPasser_c* passer;
+        const cXyz* at;
         f32 maxDistanceSq;
         f32 nearestDistanceSq;
         fopAc_ac_c* result;
-    } search{passer, maxDistance * maxDistance, maxDistance * maxDistance, nullptr};
+    } search{&at, maxDistance * maxDistance, maxDistance * maxDistance, nullptr};
 
     auto findEnemy = [](void* candidate, void* context) -> void* {
         auto* data = static_cast<Search*>(context);
@@ -244,11 +255,11 @@ fopAc_ac_c* nearestEnemy(const daNpcPasser_c* passer, f32 maxDistance) {
             return nullptr;
         }
         auto* enemy = static_cast<fopAc_ac_c*>(candidate);
-        if (fopAcM_GetGroup(enemy) != fopAc_ENEMY_e || !inPasserArea(enemy)) {
+        if (fopAcM_GetGroup(enemy) != fopAc_ENEMY_e || !inPasserArea(enemy) || isProjectile(enemy)) {
             return nullptr;
         }
-        const f32 dx = enemy->current.pos.x - data->passer->current.pos.x;
-        const f32 dz = enemy->current.pos.z - data->passer->current.pos.z;
+        const f32 dx = enemy->current.pos.x - data->at->x;
+        const f32 dz = enemy->current.pos.z - data->at->z;
         const f32 distanceSq = dx * dx + dz * dz;
         if (distanceSq <= data->nearestDistanceSq) {
             data->nearestDistanceSq = distanceSq;
@@ -258,6 +269,10 @@ fopAc_ac_c* nearestEnemy(const daNpcPasser_c* passer, f32 maxDistance) {
     };
     fpcM_Search(findEnemy, &search);
     return search.result;
+}
+
+fopAc_ac_c* nearestEnemy(const daNpcPasser_c* passer, f32 maxDistance) {
+    return nearestEnemyAt(passer->current.pos, maxDistance);
 }
 
 daNpcPasser_c* nearestPasser(const daTag_KMsg_c* tag) {
@@ -501,9 +516,16 @@ Hunt* findHunt(fpc_ProcID enemy) {
     return nullptr;
 }
 
+// Settled campers are left alone by enemies (a fighter who gets up to defend the fire is fair game).
+bool passiveCamper(daNpcPasser_c* actor) {
+    auto* state = findState(actor, false);
+    return (state == nullptr || !state->defending) &&
+           travellers::campInfo(actor, nullptr, nullptr, nullptr);
+}
+
 daNpcPasser_c* livePrey(fpc_ProcID id) {
     auto* actor = static_cast<daNpcPasser_c*>(fopAcM_SearchByID(id));
-    if (actor == nullptr || !isPrototypePasser(actor)) return nullptr;
+    if (actor == nullptr || !isPrototypePasser(actor) || passiveCamper(actor)) return nullptr;
     auto* state = findState(actor, false);
     return state != nullptr && state->dead ? nullptr : actor;
 }
@@ -574,7 +596,7 @@ daNpcPasser_c* nearestThreatTarget(const fopAc_ac_c* enemy) {
     f32 nearestDistanceSq = kNoticeRadius * kNoticeRadius;
     for (auto& state : g_states) {
         daNpcPasser_c* actor = state.dead ? nullptr : liveActor(state);
-        if (actor == nullptr || !isPrototypePasser(actor)) {
+        if (actor == nullptr || !isPrototypePasser(actor) || passiveCamper(actor)) {
             continue;
         }
         const f32 dx = actor->current.pos.x - enemy->current.pos.x;
@@ -851,7 +873,14 @@ HookAction onExecutePathPre(ModContext*, void* args, void*, void*) {
 
 HookAction onInitEscapePre(ModContext*, void* args, void*, void*) {
     auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
-    return travellers::startFlee(passer) ? HOOK_SKIP_ORIGINAL : HOOK_CONTINUE;
+    // Run from the nearest enemy (or from Link, if it's him it's scared of).
+    cXyz threat = passer->current.pos;
+    if (auto* enemy = nearestEnemy(passer, kChasedRadius)) {
+        threat = enemy->current.pos;
+    } else if (auto* player = dComIfGp_getPlayer(0)) {
+        threat = player->current.pos;
+    }
+    return travellers::startFlee(passer, threat) ? HOOK_SKIP_ORIGINAL : HOOK_CONTINUE;
 }
 
 // Vanilla deletes a fleeing passer when it reaches the end of its escape path or leaves the
@@ -984,6 +1013,148 @@ void onProfileExecutePost(ModContext*, void* args, void*, void*) {
     passer->mpMorf->modelCalc();
 }
 
+// --- camp guard --------------------------------------------------------------------------------
+// Only for travellers settled at a camp for the night. Enemies leave them alone; when an enemy
+// comes near the fire, fighters get up and go after it (and come back to their seat once it's
+// dead or gone), everyone else cowers where they sit until it's been quiet for a few seconds.
+constexpr f32 kCampGuardRadius = 1500.0f;   // an enemy this close to the fire wakes the camp
+constexpr f32 kCampLeashRadius = 2200.0f;   // a defender chases it this far from the fire
+constexpr f32 kStrikeReach = 150.0f;
+constexpr int kStrikeEvery = 45;            // frames between strikes
+constexpr u8 kStrikePower = 2;              // a sword hit (10 damage to an enemy: a Bokoblin takes 4)
+constexpr u8 kAnmIdle = 0, kAnmWalk = 2, kAnmRun = 4, kAnmCower = 0x26;
+
+std::array<dCcD_Sph, 32> g_strike{};
+const dCcD_SrcSph kStrikeSrc = {
+    {
+        {0x0, {{AT_TYPE_NORMAL_SWORD, kStrikePower, 0x3}, {0x0, 0x0}, 0x0}},   // hits enemies only
+        {dCcD_SE_SWORD, 0x0, 0x0, 0x0, 0x0},
+        {0x0, 0x0, 0x0, 0x0, 0x0},
+        {0x0},
+    },
+    {{{0.0f, 0.0f, 0.0f}, 70.0f}},
+};
+
+void guardAnim(daNpcPasser_c* passer, PasserState& state, u8 anm, f32 morf = 8.0f) {
+    if (state.anim == anm) return;
+    state.anim = anm;
+    if (auto* a = static_cast<J3DAnmTransformKey*>(passer->getAnmP(anm, passer->getObjNum()))) {
+        passer->setAnm(a, 1.0f, morf, J3DFrameCtrl::EMode_LOOP, 0, -1);
+    }
+}
+
+void stepToward(daNpcPasser_c* passer, const cXyz& to, f32 speed) {
+    const s16 yaw = cLib_targetAngleY(&passer->current.pos, &to);
+    cLib_addCalcAngleS2(&passer->current.angle.y, yaw, 4, 0x1000);
+    passer->shape_angle.y = passer->current.angle.y;
+    passer->current.pos.x += cM_ssin(passer->current.angle.y) * speed;
+    passer->current.pos.z += cM_scos(passer->current.angle.y) * speed;
+    passer->mAcch.CrrPos(dComIfG_Bgsp());
+}
+
+void strike(daNpcPasser_c* passer, PasserState& state) {
+    dCcD_Sph& sph = g_strike[&state - g_states.data()];
+    sph.Set(kStrikeSrc);
+    sph.SetStts(&passer->mStts);
+    cXyz at = passer->current.pos;
+    at.x += cM_ssin(passer->shape_angle.y) * 90.0f;
+    at.y += 80.0f;
+    at.z += cM_scos(passer->shape_angle.y) * 90.0f;
+    sph.SetC(at);
+    dComIfG_Ccsp()->Set(&sph);
+}
+
+bool campGuard(daNpcPasser_c* passer, PasserState& state) {
+    cXyz center, seat;
+    s16 seatYaw = 0;
+    if (!travellers::campInfo(passer, &center, &seat, &seatYaw)) {
+        state.defending = false;
+        state.campCower = false;
+        return false;
+    }
+    auto* enemy = nearestEnemyAt(center, state.defending ? kCampLeashRadius : kCampGuardRadius);
+    const bool fighter = travellers::isFighter(passer);
+
+    if (fighter && !holdsGround(passer)) {
+        // down to its last heart: it runs (like anywhere else)
+        if (enemy != nullptr && passer->mActionIdx != daNpcPasser_c::MODE_1) {
+            state.defending = false;
+            state.anim = 0xFF;
+            travellers::noteCamp(passer, "runs from the fire, hurt, from", enemy);
+            passer->setAction(daNpcPasser_c::MODE_1);
+        }
+        return enemy != nullptr;
+    }
+
+    if (fighter) {
+        if (enemy != nullptr) {
+            if (!state.defending) {
+                state.defending = true;
+                state.strikeTimer = 20;
+                travellers::noteCamp(passer, "gets up to fight", enemy);
+            }
+            passer->speedF = 0.0f;
+            const f32 dx = enemy->current.pos.x - passer->current.pos.x;
+            const f32 dz = enemy->current.pos.z - passer->current.pos.z;
+            const f32 dist = std::sqrt(dx * dx + dz * dz);
+            if (dist > kStrikeReach) {
+                guardAnim(passer, state, kAnmRun);
+                stepToward(passer, enemy->current.pos, Cd2_HIO_maxSpeed(passer->m_type) * 1.5f);
+            } else {
+                guardAnim(passer, state, kAnmIdle);
+                const s16 yaw = cLib_targetAngleY(&passer->current.pos, &enemy->current.pos);
+                cLib_addCalcAngleS2(&passer->current.angle.y, yaw, 4, 0x1000);
+                passer->shape_angle.y = passer->current.angle.y;
+                if (--state.strikeTimer <= 0) {
+                    strike(passer, state);
+                    state.strikeTimer = kStrikeEvery;
+                }
+            }
+            return true;
+        }
+        if (state.defending) {
+            // all clear: walk back to its seat and sit down again
+            passer->speedF = 0.0f;
+            const f32 dx = seat.x - passer->current.pos.x;
+            const f32 dz = seat.z - passer->current.pos.z;
+            if (dx * dx + dz * dz > 40.0f * 40.0f) {
+                guardAnim(passer, state, kAnmWalk);
+                stepToward(passer, seat, Cd2_HIO_walkMaxSpeed(passer->m_type));
+                return true;
+            }
+            passer->current.pos.x = seat.x;
+            passer->current.pos.z = seat.z;
+            passer->current.angle.y = passer->shape_angle.y = seatYaw;
+            state.defending = false;
+            state.anim = 0xFF;
+            travellers::refreshIdle(passer);
+            travellers::noteCamp(passer, "is back at the fire", nullptr);
+        }
+        return false;
+    }
+
+    // everyone else cowers where they sit until it's been quiet for a few seconds
+    if (enemy != nullptr && enemy->current.pos.abs(center) <= kCampGuardRadius) {
+        if (!state.campCower) {
+            state.campCower = true;
+            travellers::noteCamp(passer, "cowers from", enemy);
+        }
+        state.calmFrames = 0;
+        passer->speedF = 0.0f;
+        guardAnim(passer, state, kAnmCower);
+        return true;
+    }
+    if (state.campCower) {
+        passer->speedF = 0.0f;
+        if (++state.calmFrames < kSafeFramesToResume) return true;
+        state.campCower = false;
+        state.anim = 0xFF;
+        travellers::refreshIdle(passer);
+        travellers::noteCamp(passer, "calms down", nullptr);
+    }
+    return false;
+}
+
 HookAction onExecutePre(ModContext*, void* args, void*, void*) {
     auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
     auto* state = findState(passer, false);
@@ -1036,8 +1207,15 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
     }
 
 
-    // Fighters stop, face the enemy and stand their ground while they're healthy.
+    // Settled at a camp for the night: the camp guard decides (defend the fire / cower / sit).
+    bool campHandled = false;
     if (!state->talking && !state->cowering) {
+        campHandled = campGuard(passer, *state);
+    }
+
+    // Fighters stop, face the enemy and stand their ground while they're healthy.
+    if (!campHandled && !state->talking && !state->cowering &&
+        !travellers::campInfo(passer, nullptr, nullptr, nullptr)) {
         auto* enemy = holdsGround(passer) ? nearestEnemy(passer, kThreatRadius) : nullptr;
         if (enemy != nullptr) {
             passer->speedF = 0.0f;
@@ -1070,7 +1248,8 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
             return HOOK_CONTINUE;
         }
         // Damage in quarter hearts, the same amount the attack would take from Link.
-        const int damage = std::max<int>(1, passer->mStts.GetDmg());
+        cCcD_Obj* hitBy = passer->mCyl.GetTgHitObj();
+        const int damage = std::max<int>(1, hitBy != nullptr ? hitBy->GetAtAtp() : 1);
         int life = travellers::life(passer);
         if (life < 0) {
             life = state->health * kQuartersPerHeart;   // not on the roster (old prototype walker)
@@ -1084,6 +1263,9 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
             beginDeath(passer, *state);
         } else if (holdsGround(passer)) {
             // a fighter takes it and stays put
+        } else if (!travellers::isFighter(passer) &&
+                   travellers::campInfo(passer, nullptr, nullptr, nullptr)) {
+            // a camper who can't fight keeps cowering by the fire (the camp guard)
         } else if (nearestEnemy(passer, kThreatRadius) != nullptr) {
             state->standing = false;
             state->arrived = false;  // running away replaces waiting at the end of the road
