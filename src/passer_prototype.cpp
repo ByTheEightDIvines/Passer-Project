@@ -680,9 +680,11 @@ void redirectEnemySeenAngle(void* args, void* retval) {
 void setDamageable(daNpcPasser_c* passer) {
     // Accept ordinary weapon target hits on the NPC's existing collision cylinder.
     passer->mCyl.SetTgType(0xD8FBFDFF);
-    // Target group 0x10 (plus the "set" bit), the same as the escort wagon. A hit only lands when
-    // the attack's groups overlap the target's; group 0 meant no attack could ever hit him.
-    passer->mCyl.SetTgSPrm(0x11);
+    // Target group 0x4 (plus the "set" bit), the same group as Link's own body. A hit only lands
+    // when the attack's groups overlap the target's. Enemy attacks aim at group 0x4 (melee 0xD,
+    // arrows 0x1D), so they all land; Link's attacks aim at 0x1A, so his never do. (Group 0x10,
+    // the escort wagon's, only caught Bulblin arrows and Link's own sword.)
+    passer->mCyl.SetTgSPrm(0x5);
     passer->mCyl.SetTgHitMark(CcG_Tg_UNK_MARK_1);
     passer->mCyl.SetTgSe(dCcD_SE_SOFT_BODY);
 }
@@ -1045,6 +1047,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
             if (!state->standing) {
                 state->standing = true;
                 travellers::noteAct(passer, "standing its ground");
+                travellers::noteStand(passer, enemy);
                 if (auto* idle = static_cast<J3DAnmTransformKey*>(passer->getAnmP(0, passer->getObjNum()))) {
                     passer->setAnm(idle, 1.0f, 6.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
                 }

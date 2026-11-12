@@ -41,6 +41,7 @@ void setLife(const fopAc_ac_c* passer, int quarters);
 bool isFighter(const fopAc_ac_c* passer);
 // Diagnostics: a traveller was hit; an enemy started or ended a hunt for one.
 void noteHit(const fopAc_ac_c* passer, int damage, int lifeLeft);
+void noteStand(const fopAc_ac_c* passer, const fopAc_ac_c* enemy);
 void noteHunt(const fopAc_ac_c* enemy, const fopAc_ac_c* prey, bool start);
 // Nearest live traveller actor to a point, within maxDist (xz), or nullptr.
 daNpcPasser_c* nearestActor(const cXyz& pos, f32 maxDist);

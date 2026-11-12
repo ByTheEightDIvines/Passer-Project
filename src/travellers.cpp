@@ -1076,6 +1076,13 @@ void noteHunt(const fopAc_ac_c* enemy, const fopAc_ac_c* prey, bool start) {
          fopAcM_getProcNameString(const_cast<fopAc_ac_c*>(enemy)), start ? "after" : "gave up on", slot);
 }
 
+void noteStand(const fopAc_ac_c* passer, const fopAc_ac_c* enemy) {
+    const int slot = slotOf(passer);
+    if (slot >= 0) diag("stand   slot %d faces enemy %u (%s)", slot,
+                        static_cast<unsigned>(fopAcM_GetID(const_cast<fopAc_ac_c*>(enemy))),
+                        fopAcM_getProcNameString(const_cast<fopAc_ac_c*>(enemy)));
+}
+
 int life(const fopAc_ac_c* passer) {
     const int slot = slotOf(passer);
     return slot < 0 ? -1 : lifeOf(g_t[slot]);
