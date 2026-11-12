@@ -402,6 +402,12 @@ ModResult updatePanel(ModContext*, void*, ModError*) {
 
 }  // namespace
 
+std::FILE* openDataFile(const char* name, const char* mode) {
+    const char* dir = nullptr;
+    if (svc_host->data_dir(mod_ctx, &dir) != MOD_OK || dir == nullptr) return nullptr;
+    return openFile(std::string(dir) + "/" + name, mode);
+}
+
 void initialize() {
     const char* dir = nullptr;
     if (svc_host->data_dir(mod_ctx, &dir) == MOD_OK && dir != nullptr) {

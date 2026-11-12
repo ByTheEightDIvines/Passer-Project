@@ -3,6 +3,7 @@
 #include "travellers.hpp"
 #include "travel_network_data.inc"
 #include "tent_actor.hpp"
+#include "spot_picker.hpp"
 
 #include "d/actor/d_a_npc_passer.h"
 #include "d/d_bg_s_gnd_chk.h"
@@ -19,6 +20,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <queue>
@@ -243,6 +245,19 @@ constexpr int kSettleFrames = 180;
 constexpr bool kTentsEnabled = false;
 constexpr int kSpawnGap = 105;          // ~3.5 s between new travellers appearing (game runs at 30 fps)
 int g_settle = 0;
+
+// ---- crash-proof diagnostic log ----
+// Dusklight's own log loses its last chunk when the game crashes, so we keep our own: one line
+// per event plus a status line every second, each flushed straight to disk. Lives in the mod's
+// data folder as travellers_diag.log and is rewritten fresh each launch.
+std::FILE* g_diag = nullptr;
+void diag(const char* fmt, ...) {
+    if (g_diag == nullptr) return;
+    std::fprintf(g_diag, "%6d ", g_frame);
+    va_list ap; va_start(ap, fmt); std::vfprintf(g_diag, fmt, ap); va_end(ap);
+    std::fputc('\n', g_diag);
+    std::fflush(g_diag);
+}
 int g_lastStage = -2;
 int g_spawnCooldown = 0;
 
@@ -466,8 +481,9 @@ void spawn(int slot, const Where& w) {
                        (static_cast<u32>(kWalkPathBase + slot) << 16) | (1u << 24);
     const csXyz angle(0xFF, w.yaw, 0);   // angle.x 0xFF: no vanilla leave-at-a-time-of-day timer
     cXyz pos = w.pos;
+    diag("spawn   slot %d type %d room %d at (%.0f %.0f %.0f)", slot, t.type, w.room, pos.x, pos.y, pos.z);
     const fpc_ProcID id = fopAcM_create(fpcNm_NPC_PASSER_e, params, &pos, w.room, &angle, nullptr, -1);
-    if (id == fpcM_ERROR_PROCESS_ID_e) return;
+    if (id == fpcM_ERROR_PROCESS_ID_e) { diag("spawn   slot %d FAILED", slot); return; }
     t.actor = id;
     t.spawned = true;
     t.registered = false;
@@ -476,6 +492,7 @@ void spawn(int slot, const Where& w) {
 }
 
 void despawn(Traveller& t, fopAc_ac_c* actor) {
+    diag("despawn slot %d", static_cast<int>(&t - g_t.data()));
     if (actor != nullptr) fopAcM_delete(actor);
     t.spawned = false;
     t.registered = false;
@@ -572,6 +589,7 @@ struct CampTents {
 std::array<CampTents, kCampCount> g_camps{};
 
 void spawnTent(CampTents& c, u8 kind, const cXyz& at, s16 yaw, s8 room) {
+    diag("tent    kind %d room %d", kind, room);
     ActorSpawnParams p{};
     p.parameters = kind;
     p.argument = -1;
@@ -750,6 +768,7 @@ void onDeath(daNpcPasser_c* passer) {
     const int slot = slotOf(passer);
     if (slot < 0) return;
     Traveller& t = g_t[slot];
+    diag("death   slot %d", slot);
     t.dead = true;
     t.spawned = false;
     t.actor = fpcM_ERROR_PROCESS_ID_e;
@@ -777,6 +796,10 @@ daNpcPasser_c* nearestActor(const cXyz& pos, f32 maxDist) {
 
 void update() {
     ++g_frame;
+    if (g_diag == nullptr && g_frame == 1) {
+        g_diag = spot_picker::openDataFile("travellers_diag.log", "w");
+        diag("diag log open");
+    }
     if (!g_started) {
         g_rng ^= static_cast<u32>(dKy_getdaytime_minute() * 7919 + hour() * 104729);
         populate();
@@ -788,6 +811,11 @@ void update() {
     const bool inWorld = stage >= 0 && player != nullptr && !dKy_darkworld_check();
     const cXyz link = inWorld ? player->current.pos : cXyz(0.0f, 0.0f, 0.0f);
     if (!inWorld || stage != g_lastStage) {
+        if (stage != g_lastStage || (g_settle != 0)) {
+            const char* sn = dComIfGp_getStartStageName();
+            diag("world   %s stage %s (net %d) room %d darkworld %d", inWorld ? "IN" : "OUT", sn ? sn : "?", stage,
+                 dComIfGp_roomControl_getStayNo(), static_cast<int>(dKy_darkworld_check()));
+        }
         g_settle = 0;
         g_lastStage = inWorld ? stage : -2;
     } else if (g_settle < kSettleFrames) {
@@ -800,9 +828,19 @@ void update() {
         updateCamps(stage, link);
     }
     const s16 facing = inWorld ? player->shape_angle.y : 0;
+    const int maxLive = (stage >= 0 && std::strcmp(kStages[stage], "F_SP122") == 0) ? kMaxLiveCastleField : kMaxLive;
     int live = 0;
     for (const Traveller& t : g_t) if (t.used && t.spawned) ++live;
-    const int maxLive = (stage >= 0 && std::strcmp(kStages[stage], "F_SP122") == 0) ? kMaxLiveCastleField : kMaxLive;
+    if (g_frame % 30 == 0) {
+        int virt = 0, rest = 0, town = 0, gone = 0;
+        for (const Traveller& t : g_t) {
+            if (!t.used) continue;
+            if (t.state == ST_REST) ++rest; else if (t.state == ST_TOWN) ++town; else if (t.state == ST_GONE) ++gone; else ++virt;
+        }
+        diag("status  live %d/%d settled %d event %d room %d link (%.0f %.0f %.0f) walk %d rest %d town %d gone %d",
+             live, maxLive, static_cast<int>(settled), static_cast<int>(dComIfGp_event_runCheck() != 0),
+             dComIfGp_roomControl_getStayNo(), link.x, link.y, link.z, virt, rest, town, gone);
+    }
 
     for (int s = 0; s < kSlots; ++s) {
         Traveller& t = g_t[s];
@@ -814,6 +852,7 @@ void update() {
                 t.registered = true;
             } else if (t.registered || ++t.createFrames > kCreateTimeout) {
                 // the game removed it (room or stage unloaded): carry on virtually
+                diag("lost    slot %d (removed by game)", s);
                 t.spawned = false;
                 t.registered = false;
                 t.actor = fpcM_ERROR_PROCESS_ID_e;
