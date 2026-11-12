@@ -4,14 +4,16 @@
 #include "f_op/f_op_actor.h"
 #include "SSystem/SComponent/c_phase.h"
 #include "d/d_bg_w.h"
+#include "d/d_kankyo.h"
 
 // The camp tents: one actor, the tent kind is the low byte of its parameters.
-//   0 = small A-tent, 1 = big wall tent, 2 = Beedle's tent (with its night glow).
+//   0 = small A-tent, 1 = big wall tent, 2 = Beedle's tent (with its night glow),
+//   3 = the camp fire (stone ring, log teepee, the Good Soup pot on its tripod; burns from dusk to dawn).
 // Models and collision come from PsrTent.arc, which ships in the dusk's overlay (a new archive;
 // nothing on the disc is replaced).
 #define PSR_TENT_NAME "PsrTent"
 
-enum PsrTentKind : u8 { PSR_TENT_A = 0, PSR_TENT_WALL = 1, PSR_TENT_BEEDLE = 2, PSR_TENT_KIND_NUM };
+enum PsrTentKind : u8 { PSR_TENT_A = 0, PSR_TENT_WALL = 1, PSR_TENT_BEEDLE = 2, PSR_TENT_FIRE = 3, PSR_TENT_KIND_NUM };
 
 class psrTent_c : public fopAc_ac_c {
 public:
@@ -27,6 +29,12 @@ public:
     dBgW* mpCollider;
     u8 mKind;
     bool mGrounded;
+    // the camp fire
+    bool mLit = false;
+    cXyz mFlamePos;
+    u32 mFlame[3];
+    LIGHT_INFLUENCE mLight;
+    void updateFire();
 
     virtual ~psrTent_c();
     cPhs_Step create();

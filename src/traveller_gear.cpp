@@ -27,6 +27,7 @@
 
 #include <array>
 #include <cstdio>
+#include <cstring>
 
 
 
@@ -34,6 +35,7 @@ namespace {
 
 constexpr const char* kPackArc = "PsrPack";
 constexpr int kBackbone = 1;   // joint 1 on every townsfolk skeleton (center, backbone, neck, head, ...)
+constexpr int kWaist = 12;     // joint 12 on both the men's and the women's skeleton
 
 // Per type (stock passer type id): retextured body archive, its model and eye-animation files,
 // and the pack model. nullptr = not in the cast (vanilla).
@@ -43,6 +45,25 @@ struct Look {
     const char* btp;   // nullptr: this body has no eye animation
     const char* pack;
 };
+
+// Fighters: belt (glued to the waist) and the weapon in its scabbard. The sheath matrix places the
+// weapon's grip frame relative to the waist joint (fitted on the bind pose, approved renders).
+struct Kit {
+    const char* model;
+    const char* belt;
+    const char* weapon;
+    Mtx sheath;
+};
+const Kit kKits[] = {
+#include "traveller_kits.inc"
+};
+const Kit* kitFor(const Look* look) {
+    if (look == nullptr) return nullptr;
+    for (const Kit& k : kKits) {
+        if (std::strcmp(k.model, look->arc + 2) == 0) return &k;   // "P_MON_a" -> "MON_a"
+    }
+    return nullptr;
+}
 const Look* lookFor(int type) {
     static const Look kLooks[30] = {
         {}, {}, {},
@@ -84,6 +105,10 @@ struct Gear {
     request_of_phase_process_class packPhase{};
     bool packLoaded = false;
     J3DModel* pack = nullptr;
+    J3DModel* belt = nullptr;
+    J3DModel* weapon = nullptr;
+    J3DModel* seat = nullptr;     // a log round, drawn under it while it sits at a camp fire
+    bool sitting = false;
 };
 std::array<Gear, 32> g_gear{};
 
@@ -161,8 +186,18 @@ void onCreateHeapPost(ModContext*, void* args, void* retval, void*) {
     const Look* look = travellerLook(passer);
     Gear* g = look != nullptr ? gearFor(passer) : nullptr;
     if (g == nullptr || !g->packLoaded) return;
-    auto* data = static_cast<J3DModelData*>(dComIfG_getObjectRes(kPackArc, look->pack));
-    g->pack = data != nullptr ? mDoExt_J3DModel__create(data, 0x80000, 0x11000084) : nullptr;
+    auto make = [](const char* file) -> J3DModel* {
+        if (file == nullptr) return nullptr;
+        auto* data = static_cast<J3DModelData*>(dComIfG_getObjectRes(kPackArc, file));
+        return data != nullptr ? mDoExt_J3DModel__create(data, 0x80000, 0x11000084) : nullptr;
+    };
+    g->pack = make(look->pack);
+    g->seat = make("psr_seat.bmd");
+    g->sitting = false;
+    if (const Kit* kit = kitFor(look)) {
+        g->belt = make(kit->belt);
+        g->weapon = make(kit->weapon);
+    }
     g->owner = fopAcM_GetID(passer);
 }
 
@@ -170,16 +205,50 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
     auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
     if (travellerLook(passer) == nullptr || passer->mpMorf == nullptr) return;
     Gear* g = gearFor(passer);
-    if (g == nullptr || g->pack == nullptr || g->owner != fopAcM_GetID(passer)) return;
-    g_env_light.setLightTevColorType_MAJI(g->pack, &passer->tevStr);
-    mDoMtx_copy(passer->mpMorf->getModel()->getAnmMtx(kBackbone), mDoMtx_stack_c::now);
-    g->pack->setBaseTRMtx(mDoMtx_stack_c::now);
-    mDoExt_modelUpdateDL(g->pack);
+    if (g == nullptr || g->owner != fopAcM_GetID(passer)) return;
+    J3DModel* body = passer->mpMorf->getModel();
+    auto drawOn = [&](J3DModel* m, int joint, const Mtx* offset) {
+        if (m == nullptr) return;
+        g_env_light.setLightTevColorType_MAJI(m, &passer->tevStr);
+        mDoMtx_copy(body->getAnmMtx(joint), mDoMtx_stack_c::now);
+        if (offset != nullptr) mDoMtx_stack_c::concat(*offset);
+        m->setBaseTRMtx(mDoMtx_stack_c::now);
+        mDoExt_modelUpdateDL(m);
+    };
+    if (g->seat != nullptr && g->sitting && travellers::campInfo(passer, nullptr, nullptr, nullptr)) {
+        // the vanilla stools put the seat 37.2 (men) / 55.9 (women) up, scaled like the person
+        const f32 scale = Cd2_HIO_objScale(passer->m_type);
+        const f32 height = (passer->m_type < 16 ? 37.2f : 55.9f) * scale;
+        mDoMtx_stack_c::transS(passer->current.pos.x, passer->current.pos.y, passer->current.pos.z);
+        mDoMtx_stack_c::YrotM(passer->shape_angle.y);
+        mDoMtx_stack_c::scaleM(scale * 1.1f, height, scale * 1.1f);
+        g->seat->setBaseTRMtx(mDoMtx_stack_c::now);
+        g_env_light.setLightTevColorType_MAJI(g->seat, &passer->tevStr);
+        mDoExt_modelUpdateDL(g->seat);
+    }
+    drawOn(g->pack, kBackbone, nullptr);
+    drawOn(g->belt, kWaist, nullptr);
+    if (const Kit* kit = kitFor(travellerLook(passer))) drawOn(g->weapon, kWaist, &kit->sheath);
 }
 
 }  // namespace
 
 namespace traveller_gear {
+
+bool sit(daNpcPasser_c* passer, bool on) {
+    Gear* g = travellerLook(passer) != nullptr ? gearFor(passer) : nullptr;
+    if (g == nullptr || g->owner != fopAcM_GetID(passer)) on = false;
+    if (on) {
+        // the townsfolk "sit and wait" loop (the stocky men have their own); asked for with no
+        // held object so the game doesn't swap in its standing fallback
+        const bool stocky = passer->m_type == 7 || passer->m_type == 15;
+        auto* anm = static_cast<J3DAnmTransformKey*>(passer->getAnmP(stocky ? 17 : 14, 0));
+        if (anm == nullptr) on = false;
+        else passer->setAnm(anm, 1.0f, 12.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
+    }
+    if (g != nullptr) g->sitting = on;
+    return on;
+}
 
 bool install() {
     return mods::hook::add_pre<Cd2LoadResrc>(onLoadResrcPre) == MOD_OK &&

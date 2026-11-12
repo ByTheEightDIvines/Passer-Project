@@ -7,6 +7,7 @@
 #include "d/d_kankyo.h"
 #include "f_op/f_op_actor_mng.h"
 #include "f_pc/f_pc_draw_priority.h"
+#include "m_Do/m_Do_audio.h"
 #include "m_Do/m_Do_ext.h"
 #include "m_Do/m_Do_mtx.h"
 #include "mods/service.hpp"
@@ -16,8 +17,9 @@ IMPORT_SERVICE(ActorService, svc_actor);
 
 namespace {
 const char* kArcName = "PsrTent";
-const char* kModel[PSR_TENT_KIND_NUM] = {"a_tent.bmd", "wall_tent.bmd", "beedle_tent.bmd"};
-const char* kCollision[PSR_TENT_KIND_NUM] = {"a_tent.dzb", "wall_tent.dzb", "beedle_tent.dzb"};
+const char* kModel[PSR_TENT_KIND_NUM] = {"a_tent.bmd", "wall_tent.bmd", "beedle_tent.bmd", "camp_fire.bmd"};
+const char* kCollision[PSR_TENT_KIND_NUM] = {"a_tent.dzb", "wall_tent.dzb", "beedle_tent.dzb", nullptr};  // walk-through fire
+const char* kPot = "camp_pot.bmd";
 const char* kGlow = "beedle_glow.bmd";
 // Room for the model instance, its display lists and the collider (the tents are big meshes).
 constexpr u32 kHeapSize = 0x80000;
@@ -41,9 +43,18 @@ bool isNight() {
     const int hour = dKy_getdaytime_hour();
     return hour >= 19 || hour < 6;
 }
+
+// The camp fires burn from late afternoon until morning.
+bool fireTime() {
+    const int hour = dKy_getdaytime_hour();
+    return hour >= 17 || hour < 7;
+}
 }  // namespace
 
 psrTent_c::~psrTent_c() {
+    if (mLit) {
+        dKy_plight_cut(&mLight);
+    }
     if (mpCollider != NULL) {
         dComIfG_Bgsp().Release(mpCollider);
     }
@@ -53,6 +64,7 @@ psrTent_c::~psrTent_c() {
         dComIfG_resDelete(&mPhaseLamp, "Obj_kntr");
     }
 }
+
 
 cPhs_Step psrTent_c::create() {
     fopAcM_ct(this, psrTent_c);
@@ -76,6 +88,8 @@ cPhs_Step psrTent_c::create() {
     mpCollider = NULL;
     mGrounded = false;
     mStageNum = 0;
+    mLit = false;
+    mFlame[0] = mFlame[1] = mFlame[2] = 0;
     mKind = static_cast<u8>(fopAcM_GetParam(this) & 0xFF);
     if (mKind >= PSR_TENT_KIND_NUM) {
         mKind = PSR_TENT_A;
@@ -137,6 +151,19 @@ int psrTent_c::CreateHeap() {
             mpGlow = mDoExt_J3DModel__create(glow, 0x80000, 0x11000084);
         }
     }
+    if (mKind == PSR_TENT_FIRE) {
+        auto* pot = static_cast<J3DModelData*>(dComIfG_getObjectRes(kArcName, kPot));
+        if (pot != NULL) {
+            J3DModel* m = mDoExt_J3DModel__create(pot, 0x80000, 0x11000084);
+            if (m != NULL) {
+                mpStage[mStageNum++] = m;
+            }
+        }
+    }
+    if (kCollision[mKind] == nullptr) {
+        mpCollider = NULL;
+        return 1;
+    }
     mpCollider = JKR_NEW dBgW();
     if (mpCollider == NULL) {
         return 0;
@@ -168,13 +195,19 @@ int psrTent_c::Execute() {
     if (mpGlow != NULL) {
         mpGlow->setBaseTRMtx(mDoMtx_stack_c::get());
     }
-    for (int i = 0; i < mStageNum; i++) {
+    for (int i = 0; i < mStageNum && mKind == PSR_TENT_BEEDLE; i++) {
         const StageProp& prop = kStage[i];
         mDoMtx_stack_c::transS(current.pos.x, current.pos.y, current.pos.z);
         mDoMtx_stack_c::YrotM(shape_angle.y);
         mDoMtx_stack_c::transM(prop.x, prop.y, prop.z);
         mDoMtx_stack_c::scaleM(prop.scale, prop.scale, prop.scale);
         mpStage[i]->setBaseTRMtx(mDoMtx_stack_c::get());
+    }
+    if (mKind == PSR_TENT_FIRE) {
+        for (int i = 0; i < mStageNum; i++) {
+            mpStage[i]->setBaseTRMtx(mpModel->getBaseTRMtx());
+        }
+        updateFire();
     }
     if (mpCollider != NULL) {
         PSMTXCopy(mpModel->getBaseTRMtx(), mColliderMtx);
@@ -183,6 +216,33 @@ int psrTent_c::Execute() {
     eyePos = attention_info.position = current.pos;
     attention_info.flags = 0;
     return 1;
+}
+
+// Same flame, light and crackle as the game's own camp fires (Obj_FireWood).
+void psrTent_c::updateFire() {
+    mFlamePos = current.pos;
+    mFlamePos.y += 12.0f;
+    const bool want = fireTime();
+    if (want && !mLit) {
+        mLight.mPosition = mFlamePos;
+        mLight.mPosition.y += 10.0f;
+        mLight.mColor.r = 0xBC;
+        mLight.mColor.g = 0x66;
+        mLight.mColor.b = 0x42;
+        mLight.mPow = 500.0f;
+        mLight.mFluctuation = 1.0f;
+        dKy_plight_set(&mLight);
+        mLit = true;
+    } else if (!want && mLit) {
+        dKy_plight_cut(&mLight);
+        mLit = false;
+    }
+    if (mLit) {
+        mFlame[0] = dComIfGp_particle_set(mFlame[0], 0x3AD, &mFlamePos, NULL, NULL);
+        mFlame[1] = dComIfGp_particle_set(mFlame[1], 0x3AF, &mFlamePos, NULL, NULL);
+        mFlame[2] = dComIfGp_particle_set(mFlame[2], 0x3AE, &mFlamePos, NULL, NULL);
+        mDoAud_seStartLevel(Z2SE_OBJ_FIRE_BURNING, &mFlamePos, 0, dComIfGp_getReverb(fopAcM_GetRoomNo(this)));
+    }
 }
 
 int psrTent_c::Draw() {
@@ -194,6 +254,9 @@ int psrTent_c::Draw() {
     for (int i = 0; i < mStageNum; i++) {
         g_env_light.setLightTevColorType_MAJI(mpStage[i], &tevStr);
         mDoExt_modelUpdateDL(mpStage[i]);
+    }
+    if (mKind == PSR_TENT_FIRE) {
+        return 1;
     }
     if (mpGlow != NULL && isNight()) {
         // Lit from inside: drawn without the scene's lighting so it stays bright in the dark.

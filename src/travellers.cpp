@@ -4,6 +4,7 @@
 #include "travel_network_data.inc"
 #include "tent_actor.hpp"
 #include "spot_picker.hpp"
+#include "traveller_gear.hpp"
 
 #include "d/actor/d_a_npc_passer.h"
 #include "d/d_bg_s_gnd_chk.h"
@@ -267,7 +268,7 @@ bool g_started = false;
 int g_frame = 0;
 // The current tent meshes are far too heavy for Dusklight's per-frame vertex buffer
 // (6k-24k vertices in a single draw each). Off until they're rebuilt lighter.
-constexpr bool kTentsEnabled = false;
+constexpr bool kTentsEnabled = true;
 constexpr int kSpawnGap = 105;          // tents only: frames between tent spawns
 bool g_pathLookupOpen = false;
 
@@ -819,6 +820,9 @@ void syncFromActor(Traveller& t, daNpcPasser_c* p) {
 
 void setIdle(daNpcPasser_c* p) {
     p->speedF = 0.0f;
+    // at its own seat by a camp fire: sit down on its log
+    if (campInfo(p, nullptr, nullptr, nullptr) && traveller_gear::sit(p, true)) return;
+    traveller_gear::sit(p, false);
     if (auto* idle = static_cast<J3DAnmTransformKey*>(p->getAnmP(0, p->getObjNum()))) {
         p->setAnm(idle, 1.0f, 12.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
     }
@@ -899,12 +903,22 @@ Where restWhere(const Traveller& t, int slot) {
     Where w{};
     w.stage = n.stage;
     w.room = n.room;
-    // its seat on a ring about 300 units around the camp's middle (5 seats; anyone without a seat,
-    // e.g. resting at a road junction, just uses its slot to spread out)
-    const int place = t.seat >= 0 ? t.seat : slot;
-    const int seats = t.seat >= 0 ? campSeats(t.node) : kCampSeats;
-    const f32 ring = seats > kCampSeats ? 420.0f : 300.0f;
-    const s16 a = static_cast<s16>(place * (0x10000 / seats) + 0x1555);
+    // A camp seat: on a half-ring in front of the fire, away from the big tent behind it and the
+    // small tent at its side. Anyone without a seat (resting at a road junction, say) just spreads
+    // out around the spot by its slot.
+    s16 a;
+    f32 ring;
+    if (t.seat >= 0) {
+        const int seats = campSeats(t.node);
+        ring = seats > kCampSeats ? 260.0f : 230.0f;
+        // from 135 deg left of the camp's facing round to 45 deg right of it
+        const int span = 0x8000;                      // 180 deg
+        const int step = seats > 1 ? span / (seats - 1) : 0;
+        a = static_cast<s16>(n.facing - 0x6000 + t.seat * step);
+    } else {
+        ring = 300.0f;
+        a = static_cast<s16>(slot * (0x10000 / kCampSeats) + 0x1555);
+    }
     w.pos.set(n.x + cM_ssin(a) * ring, n.y, n.z + cM_scos(a) * ring);
     w.yaw = static_cast<s16>(a + 0x8000);   // facing the middle
     w.nextPoint = 0;
@@ -948,10 +962,12 @@ void updateCamps(int stage, const cXyz& link) {
                 spawnTent(c, PSR_TENT_BEEDLE, mid, face, n.room);
             } else {
                 // the big wall tent behind the fire, a small A-tent off to one side, doors inward
-                const f32 back = std::min(cp.clearRadius - 280.0f, 320.0f);
+                // (the seats sit on a half-ring 230 out in front, so the tents stand clear of them)
+                const f32 back = 470.0f, aside = 400.0f;
                 const cXyz wall(mid.x - cM_ssin(face) * back, mid.y, mid.z - cM_scos(face) * back);
                 const s16 side = static_cast<s16>(face + 0x4000);
-                const cXyz small(mid.x + cM_ssin(side) * back, mid.y, mid.z + cM_scos(side) * back);
+                const cXyz small(mid.x + cM_ssin(side) * aside, mid.y, mid.z + cM_scos(side) * aside);
+                spawnTent(c, PSR_TENT_FIRE, mid, face, n.room);
                 spawnTent(c, PSR_TENT_WALL, wall, face, n.room);
                 spawnTent(c, PSR_TENT_A, small, static_cast<s16>(side + 0x8000), n.room);
             }

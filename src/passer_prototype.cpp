@@ -1039,6 +1039,7 @@ const dCcD_SrcSph kStrikeSrc = {
 void guardAnim(daNpcPasser_c* passer, PasserState& state, u8 anm, f32 morf = 8.0f) {
     if (state.anim == anm) return;
     state.anim = anm;
+    traveller_gear::sit(passer, false);   // up off its log
     if (auto* a = static_cast<J3DAnmTransformKey*>(passer->getAnmP(anm, passer->getObjNum()))) {
         passer->setAnm(a, 1.0f, morf, J3DFrameCtrl::EMode_LOOP, 0, -1);
     }
