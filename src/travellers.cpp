@@ -11,10 +11,12 @@
 #include "d/d_kankyo.h"
 #include "d/d_path.h"
 #include "f_op/f_op_actor_mng.h"
+#include "f_pc/f_pc_manager.h"
 #include "f_pc/f_pc_name.h"
 #include "SSystem/SComponent/c_math.h"
 #include "mods/service.hpp"
 #include "mods/svc/actor.h"
+#include "mods/svc/hook.h"
 #include "mods/svc/log.h"
 
 #include <algorithm>
@@ -46,13 +48,13 @@ constexpr f32 kSpawnUnseenRadius = 3200.0f;  // ...but never pop in closer than 
 constexpr f32 kDespawnRadius = 8500.0f;      // back to virtual beyond this, once off screen
 constexpr int kMaxPathPoints = 48;
 constexpr f32 kFleeDistance = 2800.0f;
+// Frames to wait for a created actor that the game is no longer creating but that never showed up.
+// While the game is still creating it (fpcM_IsCreating), we keep waiting however long it takes.
 constexpr int kCreateTimeout = 150;
-// Never more than this many travellers drawn at once. The Castle Town field is already close to
-// Dusklight's per-frame draw budget with vanilla actors (and heavy Link models like Hero of Legend),
-// so it gets a tighter cap. Everyone else keeps walking the network "virtually" and swaps in as
-// the nearest ones leave.
+// Never more than this many real travellers at once (fewer in the Castle Town field). Everyone else
+// keeps walking the network "virtually" and swaps in as the nearest ones leave.
 constexpr int kMaxLive = 6;
-constexpr int kMaxLiveCastleField = 4;          // frames to wait for a created actor to show up
+constexpr int kMaxLiveCastleField = 4;
 // The passer types from the cast (stock passer type ids).
 constexpr std::array<u8, 14> kCast{3, 4, 6, 7, 8, 9, 11, 13, 14, 15, 20, 27, 28, 29};
 
@@ -260,6 +262,90 @@ void diag(const char* fmt, ...) {
 }
 int g_lastStage = -2;
 int g_spawnCooldown = 0;
+int g_lastWorldLogged = -3;   // what the last "world" line said (stage, or -2 for out of the world)
+int g_redirects = 0;          // enemy targeting answers swapped to a traveller since the last status
+
+// Dusklight's per-frame GPU buffer usage (the same numbers as its F3 debug overlay). Mirrors
+// aurora's AuroraStats; resolved by name so no extra link dependency.
+struct FrameStats {
+    u32 queuedPipelines, createdPipelines, drawCallCount, mergedDrawCallCount;
+    u32 lastVertSize, lastUniformSize, lastIndexSize, lastStorageSize, lastTextureUploadSize;
+};
+using GetStatsFn = const FrameStats* (*)();
+GetStatsFn g_getStats = nullptr;
+bool g_statsTried = false;
+constexpr u32 kIndexBufferSize = 2u * 1024u * 1024u;    // aurora IndexBufferSize
+constexpr u32 kVertexBufferSize = 5u * 1024u * 1024u;   // aurora VertexBufferSize
+
+const FrameStats* frameStats() {
+    if (!g_statsTried && g_diag != nullptr) {
+        g_statsTried = true;
+        void* addr = nullptr;
+        if (svc_hook != nullptr && svc_hook->resolve != nullptr &&
+            svc_hook->resolve(mod_ctx, "aurora_get_stats", &addr, nullptr) == MOD_OK && addr != nullptr) {
+            g_getStats = reinterpret_cast<GetStatsFn>(addr);
+        }
+        diag("stats   aurora_get_stats %s", g_getStats != nullptr ? "found" : "NOT FOUND");
+    }
+    return g_getStats != nullptr ? g_getStats() : nullptr;
+}
+
+// Everything actually in the world, counted straight from the game's process list (not from
+// what this mod thinks it spawned), plus the busiest actor types.
+struct WorldCount {
+    int actors = 0, enemies = 0, passers = 0, ours = 0, passersDrawn = 0;
+    std::array<std::pair<s16, int>, 64> names{};   // profile name -> count
+    int nameCount = 0;
+};
+WorldCount countWorld(bool byName) {
+    WorldCount c;
+    struct Ctx { WorldCount* c; bool byName; } ctx{&c, byName};
+    fpcM_Search([](void* p, void* data) -> void* {
+        if (!fopAcM_IsActor(p)) return nullptr;
+        auto* x = static_cast<Ctx*>(data);
+        auto* a = static_cast<fopAc_ac_c*>(p);
+        ++x->c->actors;
+        if (fopAcM_GetGroup(a) == fopAc_ENEMY_e) ++x->c->enemies;
+        const s16 name = fopAcM_GetName(a);
+        if (name == fpcNm_NPC_PASSER_e) {
+            ++x->c->passers;
+            if (isTraveller(a)) ++x->c->ours;
+            if (!fopAcM_CheckCondition(a, fopAcCnd_NODRAW_e)) ++x->c->passersDrawn;
+        }
+        if (x->byName) {
+            int i = 0;
+            while (i < x->c->nameCount && x->c->names[i].first != name) ++i;
+            if (i < x->c->nameCount) {
+                ++x->c->names[i].second;
+            } else if (x->c->nameCount < static_cast<int>(x->c->names.size())) {
+                x->c->names[x->c->nameCount++] = {name, 1};
+            }
+        }
+        return nullptr;
+    }, &ctx);
+    return c;
+}
+
+// Creates we stopped waiting for while the game might still finish them. If one turns up later
+// it is deleted, so it can never become an untracked extra NPC.
+std::array<fpc_ProcID, 16> g_orphans{};
+void addOrphan(fpc_ProcID id) {
+    for (auto& o : g_orphans) {
+        if (o == 0 || o == fpcM_ERROR_PROCESS_ID_e) { o = id; return; }
+    }
+}
+void sweepOrphans() {
+    for (auto& o : g_orphans) {
+        if (o == 0 || o == fpcM_ERROR_PROCESS_ID_e) continue;
+        if (fopAc_ac_c* a = fopAcM_SearchByID(o)) {
+            diag("orphan  deleted a late traveller (proc %u)", static_cast<unsigned>(o));
+            fopAcM_delete(a);
+            o = fpcM_ERROR_PROCESS_ID_e;
+        } else if (!fpcM_IsCreating(o)) {
+            o = fpcM_ERROR_PROCESS_ID_e;   // never made it: nothing to clean up
+        }
+    }
+}
 
 u32 rnd() {
     g_rng ^= g_rng << 13; g_rng ^= g_rng >> 17; g_rng ^= g_rng << 5;
@@ -683,6 +769,8 @@ void initialize() {
 
 bool inNetworkStage() { return currentStage() >= 0; }
 
+void noteEnemyRedirect() { ++g_redirects; }
+
 bool isTraveller(const fopAc_ac_c* actor) { return slotOf(actor) >= 0; }
 
 dPath* pathFor(int pathId) {
@@ -818,12 +906,14 @@ void update() {
     // No travellers in a province still covered by twilight (they keep travelling virtually).
     const bool inWorld = stage >= 0 && player != nullptr && !dKy_darkworld_check();
     const cXyz link = inWorld ? player->current.pos : cXyz(0.0f, 0.0f, 0.0f);
+    if (const int worldNow = inWorld ? stage : -2; worldNow != g_lastWorldLogged) {
+        // only when it changes (this used to write a line every frame while out of the world)
+        g_lastWorldLogged = worldNow;
+        const char* sn = dComIfGp_getStartStageName();
+        diag("world   %s stage %s (net %d) room %d darkworld %d", inWorld ? "IN" : "OUT", sn ? sn : "?", stage,
+             dComIfGp_roomControl_getStayNo(), static_cast<int>(dKy_darkworld_check()));
+    }
     if (!inWorld || stage != g_lastStage) {
-        if (stage != g_lastStage || (g_settle != 0)) {
-            const char* sn = dComIfGp_getStartStageName();
-            diag("world   %s stage %s (net %d) room %d darkworld %d", inWorld ? "IN" : "OUT", sn ? sn : "?", stage,
-                 dComIfGp_roomControl_getStayNo(), static_cast<int>(dKy_darkworld_check()));
-        }
         g_settle = 0;
         g_lastStage = inWorld ? stage : -2;
     } else if (g_settle < kSettleFrames) {
@@ -839,6 +929,12 @@ void update() {
     const int maxLive = (stage >= 0 && std::strcmp(kStages[stage], "F_SP122") == 0) ? kMaxLiveCastleField : kMaxLive;
     int live = 0;
     for (const Traveller& t : g_t) if (t.used && t.spawned) ++live;
+    sweepOrphans();
+    const FrameStats* fs = frameStats();
+    const u32 idx = fs != nullptr ? fs->lastIndexSize : 0;
+    const u32 vtx = fs != nullptr ? fs->lastVertSize : 0;
+    const bool high = idx > kIndexBufferSize * 3 / 4 || vtx > kVertexBufferSize * 3 / 4;
+    static int s_highLines = 0;
     if (g_frame % 30 == 0) {
         int virt = 0, rest = 0, town = 0, gone = 0;
         for (const Traveller& t : g_t) {
@@ -848,6 +944,31 @@ void update() {
         diag("status  live %d/%d settled %d event %d room %d link (%.0f %.0f %.0f) walk %d rest %d town %d gone %d",
              live, maxLive, static_cast<int>(settled), static_cast<int>(dComIfGp_event_runCheck() != 0),
              dComIfGp_roomControl_getStayNo(), link.x, link.y, link.z, virt, rest, town, gone);
+        const WorldCount wc = countWorld(false);
+        diag("frame   idx %u KB / 2048 vtx %u KB / 5120 draws %u | actors %d enemies %d passers %d (ours %d, drawn %d) redirects %d",
+             idx / 1024, vtx / 1024, fs != nullptr ? fs->drawCallCount : 0, wc.actors, wc.enemies, wc.passers, wc.ours,
+             wc.passersDrawn, g_redirects);
+        g_redirects = 0;
+    }
+    // Buffer getting full: write it down every few frames, and once a second list which actor types
+    // are most common, so the last lines before a crash show what was filling it.
+    if (high && g_frame % 5 == 0 && s_highLines < 2000) {
+        ++s_highLines;
+        const bool breakdown = g_frame % 30 == 0;
+        const WorldCount wc = countWorld(breakdown);
+        diag("HIGH    idx %u KB vtx %u KB draws %u | actors %d enemies %d passers %d (ours %d, drawn %d) live %d",
+             idx / 1024, vtx / 1024, fs->drawCallCount, wc.actors, wc.enemies, wc.passers, wc.ours, wc.passersDrawn, live);
+        if (breakdown) {
+            auto names = wc.names;
+            std::sort(names.begin(), names.begin() + wc.nameCount,
+                      [](const auto& a, const auto& b) { return a.second > b.second; });
+            char line[256];
+            int len = std::snprintf(line, sizeof(line), "HIGH    top actor types (profile name: count):");
+            for (int i = 0; i < std::min(wc.nameCount, 10) && len < static_cast<int>(sizeof(line)) - 16; ++i) {
+                len += std::snprintf(line + len, sizeof(line) - len, " %d:%d", names[i].first, names[i].second);
+            }
+            diag("%s", line);
+        }
     }
 
     for (int s = 0; s < kSlots; ++s) {
@@ -858,11 +979,32 @@ void update() {
             auto* actor = static_cast<daNpcPasser_c*>(fopAcM_SearchByID(t.actor));
             if (actor != nullptr) {
                 t.registered = true;
-            } else if (t.registered || ++t.createFrames > kCreateTimeout) {
+            } else if (t.registered) {
                 // the game removed it (room or stage unloaded): carry on virtually
                 diag("lost    slot %d (removed by game)", s);
                 t.spawned = false;
                 t.registered = false;
+                t.actor = fpcM_ERROR_PROCESS_ID_e;
+                continue;
+            } else if (fpcM_IsCreating(t.actor)) {
+                // Still being created (loading its files): keep waiting. Giving up here used to
+                // leave the create running, so the NPC could turn up later with nobody tracking it.
+                if (++t.createFrames == kCreateTimeout * 4) {
+                    diag("slow    slot %d still being created after %d frames", s, t.createFrames);
+                }
+                if (!inWorld) {
+                    // left the field while it was loading: stop waiting, delete it if it turns up
+                    diag("orphan  slot %d left while still being created (proc %u)", s, static_cast<unsigned>(t.actor));
+                    addOrphan(t.actor);
+                    t.spawned = false;
+                    t.actor = fpcM_ERROR_PROCESS_ID_e;
+                }
+                continue;
+            } else if (++t.createFrames > kCreateTimeout) {
+                // not being created and never showed up: the create failed
+                diag("failed  slot %d create never appeared", s);
+                addOrphan(t.actor);
+                t.spawned = false;
                 t.actor = fpcM_ERROR_PROCESS_ID_e;
                 continue;
             }

@@ -385,6 +385,7 @@ void onGetPlaPost(ModContext*, void* args, void* retval, void*) {
         const f32 lz = (*target)->current.pos.z - bulblin->current.pos.z;
         if (tx * tx + tz * tz < lx * lx + lz * lz && tx * tx + tz * tz < kBulblinTargetRadius * kBulblinTargetRadius) {
             *target = passer;
+            travellers::noteEnemyRedirect();
         }
     }
     if (*target == passer) {
@@ -397,6 +398,7 @@ void onGetPlaPost(ModContext*, void* args, void* retval, void*) {
     if (lock != nullptr && lock->frames > 0 &&
         bulblin->current.pos.abs(passer->current.pos) <= kBulblinChaseRadius) {
         *target = passer;
+        travellers::noteEnemyRedirect();
     }
 }
 
@@ -512,6 +514,7 @@ bool isEnemyPlayerQuery(void* args, const fopAc_ac_c** enemyOut,
     *enemyOut = enemy;
     *playerOut = target;
     *targetOut = passer;
+    travellers::noteEnemyRedirect();
     return true;
 }
 

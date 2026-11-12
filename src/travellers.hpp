@@ -37,5 +37,7 @@ void onDeath(daNpcPasser_c* passer);
 daNpcPasser_c* nearestActor(const cXyz& pos, f32 maxDist);
 // Is this one of the Hyrule Field stages the network covers?
 bool inNetworkStage();
+// Diagnostics: an enemy's targeting answer was swapped from Link to a traveller.
+void noteEnemyRedirect();
 
 }  // namespace travellers
