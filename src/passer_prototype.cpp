@@ -109,6 +109,11 @@ bool inFieldStage() {
     return stage != nullptr && std::strcmp(stage, kFieldStage) == 0;
 }
 constexpr f32 kThreatRadius = 900.0f;
+// A traveller with an enemy this close stays in the world even when the camera can't see it, so
+// the enemy can actually chase it down. Once it has gotten away, the game may tidy it up again.
+constexpr f32 kChasedRadius = 3000.0f;
+// Old women run at this share of a normal traveller's flight speed.
+constexpr f32 kOldWomanRunScale = 0.6f;
 constexpr int kSafeFramesToResume = 90;  // three seconds with nothing scary nearby
 constexpr f32 kWallCheckHeight = 55.0f;
 constexpr std::array<f32, 3> kBridgeBulblinPos{-11500.0f, -1034.0f, 22400.0f};
@@ -709,6 +714,18 @@ bool gateAction(daNpcPasser_c* passer) {
     return state != nullptr && (state->dead || state->talking || state->arrived);
 }
 
+bool isOldWoman(const daNpcPasser_c* passer) {
+    return passer->m_type == 20 || passer->m_type == 27;   // WON_a, WON_a2
+}
+
+// Off screen, vanilla deletes a scared traveller. Keep it while an enemy is on it.
+void keepIfChased(daNpcPasser_c* passer) {
+    if (fopAcM_CheckCondition(passer, fopAcCnd_NODRAW_e) &&
+        nearestEnemy(passer, kChasedRadius) != nullptr) {
+        fopAcM_OffCondition(passer, fopAcCnd_NODRAW_e);
+    }
+}
+
 // Vanilla deletes a passer the instant it reaches the end of its path, even on screen.
 // Instead, stop at the end of the road and wait there until the camera can't see it.
 HookAction onExecutePathPre(ModContext*, void* args, void*, void*) {
@@ -745,7 +762,9 @@ HookAction onExecuteEscapePre(ModContext*, void* args, void*, void*) {
     if (!isPrototypePasser(passer) || state == nullptr) {
         return HOOK_CONTINUE;
     }
-    // Off screen, vanilla deletes a fleeing passer; let it (the roster keeps the traveller).
+    // Off screen, vanilla deletes a fleeing passer; let it (the roster keeps the traveller),
+    // unless an enemy is chasing it.
+    keepIfChased(passer);
     if (fopAcM_CheckCondition(passer, fopAcCnd_NODRAW_e)) {
         return HOOK_CONTINUE;
     }
@@ -775,13 +794,26 @@ HookAction onExecuteEscapePre(ModContext*, void* args, void*, void*) {
     return HOOK_SKIP_ORIGINAL;
 }
 
+// Old women can't sprint: cap their flight speed (the run animation slows with it).
+void onExecuteEscapePost(ModContext*, void* args, void*, void*) {
+    auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
+    if (!isPrototypePasser(passer) || !isOldWoman(passer) || passer->field_0xb1c != 1) {
+        return;
+    }
+    const f32 cap = Cd2_HIO_maxSpeed(passer->m_type) * 1.5f * kOldWomanRunScale;
+    passer->speedF = std::min(passer->speedF, cap);
+    passer->field_0xb14 = std::min(passer->field_0xb14, cap);
+}
+
 // Cowering also deletes the passer once it is off screen; keep it.
 HookAction onKeepWhenOffscreenPre(ModContext*, void* args, void*, void*) {
     auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
     if (gateAction(passer)) {
         return HOOK_SKIP_ORIGINAL;
     }
-    // Off screen, vanilla deletes a cowering passer; let it (the roster keeps the traveller).
+    // Off screen, vanilla deletes a cowering passer; let it (the roster keeps the traveller),
+    // unless an enemy is chasing it.
+    if (isPrototypePasser(passer)) keepIfChased(passer);
     travellers::noteAct(passer, "scared");
     return HOOK_CONTINUE;
 }
@@ -797,7 +829,9 @@ HookAction onReliefPre(ModContext*, void* args, void*, void*) {
     if (!isPrototypePasser(passer) || state == nullptr) {
         return HOOK_CONTINUE;
     }
-    // Off screen, vanilla deletes it from the wall-bump pause; let it (the roster keeps the traveller).
+    // Off screen, vanilla deletes it from the wall-bump pause; let it (the roster keeps the
+    // traveller), unless an enemy is chasing it.
+    keepIfChased(passer);
     travellers::noteAct(passer, "stuck on a wall");
     if (++state->reliefFrames >= kSafeFramesToResume && !passer->checkFearSituation()) {
         state->reliefFrames = 0;
@@ -1116,6 +1150,7 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     if (mods::hook::add_post<RoomPathLookup>(onRoomPathPost) != MOD_OK ||
         mods::hook::add_pre<PasserExecutePath>(onExecutePathPre) != MOD_OK ||
         mods::hook::add_pre<PasserExecuteEscape>(onExecuteEscapePre) != MOD_OK ||
+        mods::hook::add_post<PasserExecuteEscape>(onExecuteEscapePost) != MOD_OK ||
         mods::hook::add_pre<PasserExecuteFear>(onKeepWhenOffscreenPre) != MOD_OK ||
         mods::hook::add_pre<PasserExecuteRelief>(onReliefPre) != MOD_OK ||
         mods::hook::add_pre<PasserInitEscape>(onInitEscapePre) != MOD_OK ||

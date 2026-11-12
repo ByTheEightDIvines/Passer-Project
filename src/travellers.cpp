@@ -54,12 +54,13 @@ constexpr f32 kFleeDistance = 2800.0f;
 constexpr int kCreateTimeout = 150;
 constexpr int kMaxReal = 16;                 // safety cap on real travellers at once
 constexpr int kCampSeats = 5;                // seats around each camp fire
-constexpr int kAmphiSeats = 10;              // the amphitheater by Castle Town is big
+constexpr int kAmphiSeats = 6;               // the amphitheater by Castle Town is a bit bigger
 constexpr int kMaxSeats = 10;
-constexpr int kGoneCooldown = 600;           // frames before a traveller the game deleted can reappear
+constexpr int kGoneCooldownMin = 1800;       // frames (30-90 s) before a traveller the game deleted
+constexpr int kGoneCooldownMax = 5400;       // can reappear, different for each so they trickle back
 constexpr f32 kGoneSkip = 800.0f;            // ...and how far down the road it has walked by then
 constexpr f32 kNoArrivalRadius = 3000.0f;    // late arrivals never appear this close to Link
-constexpr int kArrivalGap = 30;              // frames between late arrivals in one room
+constexpr int kArrivalGap = 450;             // frames (7.5 s) between late arrivals in one room
 // The passer types from the cast (stock passer type ids).
 constexpr std::array<u8, 14> kCast{3, 4, 6, 7, 8, 9, 11, 13, 14, 15, 20, 27, 28, 29};
 
@@ -765,14 +766,14 @@ void stepRestOrTown(Traveller& t) {
     if (t.state == ST_REST) {
         if (t.restUntilMorning) {
             const int h = hour();
-            if (h >= 6 && h < 16 && rndRange(0, 600) == 0) t.restUntilMorning = false;   // they wake at different times
+            if (h >= 6 && h < 16 && rndRange(0, 3600) == 0) t.restUntilMorning = false;   // they wake at different times
             return;
         }
         if (--t.timer <= 0) newRoute(t, t.node);
     } else if (t.state == ST_TOWN) {
         if (--t.timer > 0) return;
-        if (isEvening()) {           // stays in town overnight, out again in the morning
-            t.timer = rndRange(300, 900);
+        if (isEvening()) {           // stays in town overnight, out again in the morning (not all at once)
+            t.timer = rndRange(600, 7200);
             return;
         }
         // out of Castle Town through one of its gates
@@ -1150,7 +1151,7 @@ void update() {
                     // The game deleted it (scared or stuck off screen). Give it time to get further
                     // down the road before its spawner may bring it back, so it doesn't reappear in
                     // the same spot and get deleted again.
-                    t.cooldown = kGoneCooldown;
+                    t.cooldown = rndRange(kGoneCooldownMin, kGoneCooldownMax);
                     for (int k = 0; k < static_cast<int>(kGoneSkip / kVirtualSpeed) && t.state == ST_WALK; ++k) {
                         stepVirtual(t);
                     }
