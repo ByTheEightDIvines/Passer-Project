@@ -33,6 +33,15 @@ bool startFlee(daNpcPasser_c* passer);
 void resumeWalk(daNpcPasser_c* passer);
 // The actor is about to be removed because it died (Wind Waker launch finished).
 void onDeath(daNpcPasser_c* passer);
+// Hearts, in quarter hearts (4 per heart, like Link's). -1 if the actor isn't a traveller.
+int life(const fopAc_ac_c* passer);
+int maxLife(const fopAc_ac_c* passer);
+void setLife(const fopAc_ac_c* passer, int quarters);
+// Fighters stand their ground and only run once they are down to their last heart.
+bool isFighter(const fopAc_ac_c* passer);
+// Diagnostics: a traveller was hit; an enemy started or ended a hunt for one.
+void noteHit(const fopAc_ac_c* passer, int damage, int lifeLeft);
+void noteHunt(const fopAc_ac_c* enemy, const fopAc_ac_c* prey, bool start);
 // Nearest live traveller actor to a point, within maxDist (xz), or nullptr.
 daNpcPasser_c* nearestActor(const cXyz& pos, f32 maxDist);
 // Is this one of the Hyrule Field stages the network covers?

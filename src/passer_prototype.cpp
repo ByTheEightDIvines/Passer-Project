@@ -119,6 +119,7 @@ constexpr f32 kWallCheckHeight = 55.0f;
 constexpr std::array<f32, 3> kBridgeBulblinPos{-11500.0f, -1034.0f, 22400.0f};
 constexpr f32 kTalkTagRadius = 180.0f;
 constexpr int kStartingHealth = 3;
+constexpr int kQuartersPerHeart = 4;
 // Wind Waker style death: the final hit launches him up and away, tumbling head over heels,
 // and he bursts into smoke the moment he lands.
 constexpr int kDeathDuration = 90;          // safety limit if he never finds the ground
@@ -157,6 +158,7 @@ struct PasserState {
     int reliefFrames = 0;
     int logFrames = 0;   // frames spent in the vanilla wall-bump pause
     int unseenFrames = 0;  // frames since created without the game finding it by ID
+    bool standing = false;  // a fighter holding its ground against a nearby enemy
 };
 
 std::array<PasserState, 32> g_states{};
@@ -309,12 +311,13 @@ void logProgress(daNpcPasser_c* passer, PasserState& state) {
 
 daNpcPasser_c* livePasser();
 bool lockedOnPasser(const fopAc_ac_c* enemy, const daNpcPasser_c* passer);
+bool holdsGround(const daNpcPasser_c* passer);
 
 // The Bulblin currently running its update, while a live passer is close enough to target.
 fopAc_ac_c* g_bulblinNearPasser = nullptr;
 daNpcPasser_c* g_bulblinTarget = nullptr;   // the traveller nearest the Bulblin updating right now
 int g_coachSwaps = 0;  // wagon lookups answered with the passer during this Bulblin update
-constexpr f32 kBulblinTargetRadius = 1500.0f;
+constexpr f32 kBulblinTargetRadius = 2500.0f;
 
 HookAction onBulblinExecutePre(ModContext*, void* args, void*, void*) {
     g_bulblinNearPasser = nullptr;
@@ -342,8 +345,8 @@ struct BulblinLock {
     int frames = 0;
 };
 std::array<BulblinLock, 8> g_bulblinLocks{};
-constexpr f32 kBulblinChaseRadius = 3000.0f;
-constexpr int kBulblinLockFrames = 600;  // forget him after 20 seconds without seeing him
+constexpr f32 kBulblinChaseRadius = 5000.0f;
+constexpr int kBulblinLockFrames = 900;  // forget him after 30 seconds without seeing him
 
 BulblinLock* findLock(fpc_ProcID id, bool create) {
     BulblinLock* empty = nullptr;
@@ -475,13 +478,100 @@ daNpcPasser_c* livePasser() {
 
 bool lockedOnPasser(const fopAc_ac_c* enemy, const daNpcPasser_c* passer);
 
+// Enemies hunt travellers. Any enemy notices a traveller within kNoticeRadius that is closer to it
+// than Link, and once it has picked one it stays on it (a "hunt") until the traveller is dead, more
+// than kHuntRadius away, or it has gone kHuntFrames without seeing it close. While hunting, the
+// enemy's home moves with it, so the usual "too far from home, walk back" leash doesn't pull it off
+// the chase; when the hunt ends its real home is put back and it wanders home as normal.
+constexpr f32 kNoticeRadius = 2500.0f;
+constexpr f32 kHuntRadius = 5000.0f;
+constexpr int kHuntFrames = 900;    // 30 s
+
+struct Hunt {
+    fpc_ProcID enemy = fpcM_ERROR_PROCESS_ID_e;
+    fpc_ProcID prey = fpcM_ERROR_PROCESS_ID_e;
+    int frames = 0;
+    cXyz home{0.0f, 0.0f, 0.0f};
+    s8 homeRoom = -1;
+};
+std::array<Hunt, 16> g_hunts{};
+
+Hunt* findHunt(fpc_ProcID enemy) {
+    for (auto& h : g_hunts) if (h.enemy == enemy && h.enemy != fpcM_ERROR_PROCESS_ID_e) return &h;
+    return nullptr;
+}
+
+daNpcPasser_c* livePrey(fpc_ProcID id) {
+    auto* actor = static_cast<daNpcPasser_c*>(fopAcM_SearchByID(id));
+    if (actor == nullptr || !isPrototypePasser(actor)) return nullptr;
+    auto* state = findState(actor, false);
+    return state != nullptr && state->dead ? nullptr : actor;
+}
+
+void endHunt(Hunt& h) {
+    if (auto* enemy = fopAcM_SearchByID(h.enemy)) {
+        enemy->home.pos = h.home;   // its real home again: it heads back there
+    }
+    h = Hunt{};
+}
+
+void startHunt(fopAc_ac_c* enemy, daNpcPasser_c* prey) {
+    const fpc_ProcID id = fopAcM_GetID(enemy);
+    if (Hunt* h = findHunt(id)) {
+        h->prey = fopAcM_GetID(prey);
+        h->frames = kHuntFrames;
+        return;
+    }
+    for (auto& h : g_hunts) {
+        if (h.enemy != fpcM_ERROR_PROCESS_ID_e) continue;
+        h.enemy = id;
+        h.prey = fopAcM_GetID(prey);
+        h.frames = kHuntFrames;
+        h.home = enemy->home.pos;
+        travellers::noteHunt(enemy, prey, true);
+        return;
+    }
+}
+
+// Once a frame (mod_update): count hunts down, keep hunters' homes on them, end finished hunts.
+void updateHunts() {
+    for (auto& h : g_hunts) {
+        if (h.enemy == fpcM_ERROR_PROCESS_ID_e) continue;
+        auto* enemy = fopAcM_SearchByID(h.enemy);
+        if (enemy == nullptr) { h = Hunt{}; continue; }   // the enemy itself is gone
+        auto* prey = livePrey(h.prey);
+        const f32 dist = prey != nullptr ? enemy->current.pos.abs(prey->current.pos) : 1e9f;
+        if (prey != nullptr && dist <= kNoticeRadius) h.frames = kHuntFrames;   // still in sight
+        if (prey == nullptr || dist > kHuntRadius || --h.frames <= 0) {
+            travellers::noteHunt(enemy, prey, false);
+            endHunt(h);
+            continue;
+        }
+        enemy->home.pos = enemy->current.pos;
+    }
+}
+
+// Is any enemy hunting this traveller?
+bool isHunted(const daNpcPasser_c* passer) {
+    const fpc_ProcID id = fopAcM_GetID(const_cast<daNpcPasser_c*>(passer));
+    for (const auto& h : g_hunts) if (h.enemy != fpcM_ERROR_PROCESS_ID_e && h.prey == id) return true;
+    return false;
+}
+
 daNpcPasser_c* nearestThreatTarget(const fopAc_ac_c* enemy) {
     if (enemy == nullptr || fopAcM_GetGroup(enemy) != fopAc_ENEMY_e || !inPasserArea(enemy)) {
         return nullptr;
     }
+    auto* self = const_cast<fopAc_ac_c*>(enemy);
+    if (Hunt* h = findHunt(fopAcM_GetID(self))) {
+        if (auto* prey = livePrey(h->prey); prey != nullptr &&
+            enemy->current.pos.abs(prey->current.pos) <= kHuntRadius) {
+            return prey;
+        }
+    }
     pruneStates();
     daNpcPasser_c* result = nullptr;
-    f32 nearestDistanceSq = kThreatRadius * kThreatRadius;
+    f32 nearestDistanceSq = kNoticeRadius * kNoticeRadius;
     for (auto& state : g_states) {
         daNpcPasser_c* actor = state.dead ? nullptr : liveActor(state);
         if (actor == nullptr || !isPrototypePasser(actor)) {
@@ -495,14 +585,23 @@ daNpcPasser_c* nearestThreatTarget(const fopAc_ac_c* enemy) {
             result = actor;
         }
     }
-    // A Bulblin that has already gone for the passer keeps reading him as "Link" while he is
-    // within chase range, so get_pla's closer-of-the-two check keeps picking him when he runs.
     if (result == nullptr) {
+        // A Bulblin that has already gone for a traveller keeps reading it as "Link".
         if (auto* passer = travellers::nearestActor(enemy->current.pos, kBulblinChaseRadius);
             passer != nullptr && lockedOnPasser(enemy, passer)) {
-            result = passer;
+            return passer;
+        }
+        return nullptr;
+    }
+    // Go for the traveller when it is closer than Link (Link still draws enemies off it).
+    if (auto* player = dComIfGp_getPlayer(0)) {
+        const f32 lx = player->current.pos.x - enemy->current.pos.x;
+        const f32 lz = player->current.pos.z - enemy->current.pos.z;
+        if (lx * lx + lz * lz < nearestDistanceSq) {
+            return nullptr;
         }
     }
+    startHunt(self, result);
     return result;
 }
 
@@ -721,7 +820,7 @@ bool isOldWoman(const daNpcPasser_c* passer) {
 // Off screen, vanilla deletes a scared traveller. Keep it while an enemy is on it.
 void keepIfChased(daNpcPasser_c* passer) {
     if (fopAcM_CheckCondition(passer, fopAcCnd_NODRAW_e) &&
-        nearestEnemy(passer, kChasedRadius) != nullptr) {
+        (isHunted(passer) || nearestEnemy(passer, kChasedRadius) != nullptr)) {
         fopAcM_OffCondition(passer, fopAcCnd_NODRAW_e);
     }
 }
@@ -731,6 +830,9 @@ void keepIfChased(daNpcPasser_c* passer) {
 HookAction onExecutePathPre(ModContext*, void* args, void*, void*) {
     auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
     if (gateAction(passer)) {
+        return HOOK_SKIP_ORIGINAL;
+    }
+    if (const auto* state = findState(passer, false); state != nullptr && state->standing) {
         return HOOK_SKIP_ORIGINAL;
     }
     if (!isPrototypePasser(passer) || passer->mPathMode != 2 || !passer->m_path.isPath()) {
@@ -932,6 +1034,29 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
     }
 
 
+    // Fighters stop, face the enemy and stand their ground while they're healthy.
+    if (!state->talking && !state->cowering) {
+        auto* enemy = holdsGround(passer) ? nearestEnemy(passer, kThreatRadius) : nullptr;
+        if (enemy != nullptr) {
+            passer->speedF = 0.0f;
+            const s16 toEnemy = cLib_targetAngleY(&passer->current.pos, &enemy->current.pos);
+            cLib_addCalcAngleS2(&passer->current.angle.y, toEnemy, 4, 0x800);
+            passer->shape_angle.y = passer->current.angle.y;
+            if (!state->standing) {
+                state->standing = true;
+                travellers::noteAct(passer, "standing its ground");
+                if (auto* idle = static_cast<J3DAnmTransformKey*>(passer->getAnmP(0, passer->getObjNum()))) {
+                    passer->setAnm(idle, 1.0f, 6.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
+                }
+            }
+        } else if (state->standing) {
+            state->standing = false;
+            if (!state->arrived) {
+                resumeRoute(passer, *state);
+            }
+        }
+    }
+
     if (passer->mCyl.ChkTgHit()) {
         // Only enemies may hurt the passer. Link's sword, arrows, bombs, boomerang and
         // other player-owned actors all report a non-enemy attacker and are ignored.
@@ -941,17 +1066,23 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
             fopAcM_GetGroup(attacker) != fopAc_ENEMY_e) {
             return HOOK_CONTINUE;
         }
-        --state->health;
-        passer->health = static_cast<s16>(state->health);
-        {
-            char line[128];
-            std::snprintf(line, sizeof(line), "passer hit by enemy %u, health now %d",
-                          static_cast<unsigned>(fopAcM_GetID(attacker)), state->health);
-            svc_log->info(mod_ctx, line);
+        // Damage in quarter hearts, the same amount the attack would take from Link.
+        const int damage = std::max<int>(1, passer->mStts.GetDmg());
+        int life = travellers::life(passer);
+        if (life < 0) {
+            life = state->health * kQuartersPerHeart;   // not on the roster (old prototype walker)
         }
-        if (state->health <= 0) {
+        life = std::max(0, life - damage);
+        travellers::setLife(passer, life);
+        state->health = (life + kQuartersPerHeart - 1) / kQuartersPerHeart;
+        passer->health = static_cast<s16>(state->health);
+        travellers::noteHit(passer, damage, life);
+        if (life <= 0) {
             beginDeath(passer, *state);
+        } else if (holdsGround(passer)) {
+            // a fighter takes it and stays put
         } else if (nearestEnemy(passer, kThreatRadius) != nullptr) {
+            state->standing = false;
             state->arrived = false;  // running away replaces waiting at the end of the road
             state->cowering = false;
             passer->setAction(daNpcPasser_c::MODE_1);
@@ -960,8 +1091,17 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
     return HOOK_CONTINUE;
 }
 
+// A fighter stands its ground while it has more than one heart left.
+bool holdsGround(const daNpcPasser_c* passer) {
+    return travellers::isFighter(passer) && travellers::life(passer) > kQuartersPerHeart;
+}
+
 void onFearCheckPost(ModContext*, void* args, void* retval, void*) {
     auto* passer = static_cast<daNpcPasser_c*>(mods::arg<daNpcCd2_c*>(args, 0));
+    if (retval != nullptr && isPrototypePasser(passer) && holdsGround(passer)) {
+        *static_cast<bool*>(retval) = false;
+        return;
+    }
     if (retval != nullptr && isPrototypePasser(passer) &&
         nearestEnemy(passer, kThreatRadius) != nullptr) {
         *static_cast<bool*>(retval) = true;
@@ -1190,6 +1330,7 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
 
 MOD_EXPORT ModResult mod_update(ModError*) {
     spot_picker::update();
+    updateHunts();
     travellers::update();
     return MOD_OK;
 }

@@ -61,6 +61,16 @@ constexpr int kGoneCooldownMax = 5400;       // can reappear, different for each
 constexpr f32 kGoneSkip = 800.0f;            // ...and how far down the road it has walked by then
 constexpr f32 kNoArrivalRadius = 3000.0f;    // late arrivals never appear this close to Link
 constexpr int kArrivalGap = 450;             // frames (7.5 s) between late arrivals in one room
+// Hearts, counted in quarter hearts like Link's (an enemy hit that takes half a heart from Link
+// takes half a heart from a traveller).
+constexpr int kQuarters = 4;
+constexpr int kFighterHearts = 5;
+constexpr int kCommonHearts = 2;
+constexpr int kHealFrames = 600;             // off screen, a quarter heart back every 10 s
+constexpr int kHealFramesResting = 150;      // ...every 2.5 s while sitting at camp or in town
+// Travellers who fight (every man but 4, 7 and 15, plus passer 29). They stand their ground and only
+// run once they are down to their last heart.
+constexpr std::array<u8, 8> kFighters{3, 6, 8, 9, 11, 13, 14, 29};
 // The passer types from the cast (stock passer type ids).
 constexpr std::array<u8, 14> kCast{3, 4, 6, 7, 8, 9, 11, 13, 14, 15, 20, 27, 28, 29};
 
@@ -238,6 +248,8 @@ struct Traveller {
     std::pair<int, f32> beyond{-1, 0.0f};   // first road point past the end of its walk path
     int cooldown = 0;      // frames until its room's spawner may bring it back
     const char* lastAct = "walk";   // what it was last doing (for the log)
+    int life = -1;         // quarter hearts left (-1: full, set when it first needs it)
+    int healTimer = 0;
 };
 
 std::array<Traveller, kSlots> g_t{};
@@ -577,6 +589,23 @@ int slotOf(const fopAc_ac_c* actor) {
     return slot;
 }
 
+bool fighterType(int type) {
+    return std::find(kFighters.begin(), kFighters.end(), static_cast<u8>(type)) != kFighters.end();
+}
+int fullLife(int type) { return (fighterType(type) ? kFighterHearts : kCommonHearts) * kQuarters; }
+int lifeOf(Traveller& t) {
+    if (t.life < 0 || t.life > fullLife(t.type)) t.life = fullLife(t.type);
+    return t.life;
+}
+void heal(Traveller& t) {
+    if (lifeOf(t) >= fullLife(t.type)) return;
+    const int every = (t.state == ST_REST || t.state == ST_TOWN) ? kHealFramesResting : kHealFrames;
+    if (++t.healTimer >= every) {
+        t.healTimer = 0;
+        ++t.life;
+    }
+}
+
 // Walk path for a spawned traveller from where it is now: ahead along its route, stopping at the
 // route's end, a loading screen or kMaxPathPoints.
 void buildWalkPath(int slot, const cXyz& from) {
@@ -786,6 +815,7 @@ void stepRestOrTown(Traveller& t) {
             // a new traveller arrives on the road out of Castle Town
             t.type = kCast[rnd() % kCast.size()];
             t.dead = false;
+            t.life = -1;
             t.state = ST_TOWN;
             t.timer = 1;
         }
@@ -1035,6 +1065,40 @@ void onDeath(daNpcPasser_c* passer) {
     t.timer = rndRange(9000, 18000);   // someone new comes along later
 }
 
+void noteHit(const fopAc_ac_c* passer, int damage, int lifeLeft) {
+    const int slot = slotOf(passer);
+    if (slot >= 0) diag("hit     slot %d -%d quarters, %d left", slot, damage, lifeLeft);
+}
+
+void noteHunt(const fopAc_ac_c* enemy, const fopAc_ac_c* prey, bool start) {
+    const int slot = slotOf(prey);
+    diag("hunt    enemy %u (%s) %s slot %d", static_cast<unsigned>(fopAcM_GetID(const_cast<fopAc_ac_c*>(enemy))),
+         fopAcM_getProcNameString(const_cast<fopAc_ac_c*>(enemy)), start ? "after" : "gave up on", slot);
+}
+
+int life(const fopAc_ac_c* passer) {
+    const int slot = slotOf(passer);
+    return slot < 0 ? -1 : lifeOf(g_t[slot]);
+}
+
+int maxLife(const fopAc_ac_c* passer) {
+    const int slot = slotOf(passer);
+    return slot < 0 ? -1 : fullLife(g_t[slot].type);
+}
+
+void setLife(const fopAc_ac_c* passer, int quarters) {
+    const int slot = slotOf(passer);
+    if (slot < 0) return;
+    Traveller& t = g_t[slot];
+    t.life = std::max(0, std::min(quarters, fullLife(t.type)));
+    t.healTimer = 0;
+}
+
+bool isFighter(const fopAc_ac_c* passer) {
+    const int slot = slotOf(passer);
+    return slot >= 0 && fighterType(g_t[slot].type);
+}
+
 daNpcPasser_c* nearestActor(const cXyz& pos, f32 maxDist) {
     daNpcPasser_c* best = nullptr;
     f32 bestSq = maxDist * maxDist;
@@ -1193,6 +1257,7 @@ void update() {
 
         // virtual: the roster moves it along; its room's spawner brings it in when that room is loaded
         if (t.cooldown > 0) --t.cooldown;
+        heal(t);
         if (t.state == ST_WALK && isDeepNight() && !t.route.empty()) {
             // Properly dark and nobody can see it: it is at its camp seat (or in town) for the night.
             const int night = nightDestination(t, legEnd(t.route[t.leg]));
