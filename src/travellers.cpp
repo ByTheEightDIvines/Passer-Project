@@ -241,7 +241,7 @@ constexpr int kSettleFrames = 180;
 // The current tent meshes are far too heavy for Dusklight's per-frame vertex buffer
 // (6k-24k vertices in a single draw each) and overflow it. Off until they're rebuilt lighter.
 constexpr bool kTentsEnabled = false;
-constexpr int kSpawnGap = 20;
+constexpr int kSpawnGap = 105;          // ~3.5 s between new travellers appearing (game runs at 30 fps)
 int g_settle = 0;
 int g_lastStage = -2;
 int g_spawnCooldown = 0;
