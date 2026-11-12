@@ -363,6 +363,10 @@ int rndRange(int lo, int hi) { return lo + static_cast<int>(rnd() % static_cast<
 int hour() { return dKy_getdaytime_hour(); }
 bool isNight() { const int h = hour(); return h >= 19 || h < 6; }
 bool isDusk() { const int h = hour(); return h >= 18 || h < 6; }
+// From late afternoon they head for camp (or town), so most arrive around sunset.
+bool isEvening() { const int h = hour(); return h >= 16 || h < 6; }
+// Properly dark: nobody is out on the roads.
+bool isDeepNight() { const int h = hour(); return h >= 20 || h < 5; }
 
 void fillPath(PathStore& store, const std::vector<cXyz>& pts) {
     const size_t n = std::min(pts.size(), static_cast<size_t>(kMaxPathPoints));
@@ -494,7 +498,7 @@ int nightDestination(Traveller& t, int from) {
 void arrive(Traveller& t, int node);
 
 void newRoute(Traveller& t, int from) {
-    const int to = isDusk() ? nightDestination(t, from) : randomDestination(t, from);
+    const int to = isEvening() ? nightDestination(t, from) : randomDestination(t, from);
     if (to >= 0 && to == from) {   // already where it wants to be (a camp at dusk)
         arrive(t, from);
         return;
@@ -542,7 +546,7 @@ void arrive(Traveller& t, int node) {
             break;
         }
         t.state = ST_REST;
-        t.restUntilMorning = isDusk();
+        t.restUntilMorning = isEvening();
         t.timer = rndRange(900, 2400);
         break;
     default:
@@ -719,6 +723,26 @@ void setIdle(daNpcPasser_c* p) {
 }
 
 // Advance a traveller that isn't a real actor right now.
+// In the evening, someone still heading somewhere for the day turns toward the night's camp (or
+// town) from the end of the stretch it is on. Works for travellers on paper and on screen alike.
+void eveningReroute(Traveller& t) {
+    if (!isEvening() || t.state != ST_WALK || t.route.empty()) return;
+    const int dest = legEnd(t.route.back());
+    if (kNodes[dest].kind == NK_GATE || (kNodes[dest].kind == NK_CAMP && t.campNode == dest)) return;
+    const int from = legEnd(t.route[t.leg]);
+    const int night = nightDestination(t, from);
+    if (night < 0 || night == dest) return;
+    std::vector<Leg> rest = night == from ? std::vector<Leg>{} : plan(from, night, false);
+    if (night != from && rest.empty()) return;
+    t.route.resize(t.leg + 1);
+    t.route.insert(t.route.end(), rest.begin(), rest.end());
+    if (kNodes[night].kind == NK_CAMP) {
+        if (t.campNode != night) { releaseSeat(t); takeSeat(t, night); }
+    } else {
+        releaseSeat(t);
+    }
+}
+
 void stepVirtual(Traveller& t) {
     if (t.state == ST_WALK) {
         if (t.route.empty()) { newRoute(t, t.node); return; }
@@ -731,17 +755,8 @@ void stepVirtual(Traveller& t) {
                 arrive(t, t.node);
                 break;
             }
-            // dusk caught it on the road: head for the nearest camp instead
-            const int dest = legEnd(t.route.back());
-            if (isDusk() && kNodes[dest].kind != NK_CAMP && kNodes[dest].kind != NK_GATE) {
-                const int night = nightDestination(t, t.node);
-                if (night >= 0) {
-                    t.route = plan(t.node, night, false);
-                    t.leg = 0;
-                    t.dist = 0.0f;
-                    if (t.route.empty()) arrive(t, t.node);
-                }
-            }
+            // evening caught it on the road: head for the night's camp (or town) instead
+            eveningReroute(t);
         }
     }
 }
@@ -750,13 +765,13 @@ void stepRestOrTown(Traveller& t) {
     if (t.state == ST_REST) {
         if (t.restUntilMorning) {
             const int h = hour();
-            if (h >= 6 && h < 18 && rndRange(0, 600) == 0) t.restUntilMorning = false;   // they wake at different times
+            if (h >= 6 && h < 16 && rndRange(0, 600) == 0) t.restUntilMorning = false;   // they wake at different times
             return;
         }
         if (--t.timer <= 0) newRoute(t, t.node);
     } else if (t.state == ST_TOWN) {
         if (--t.timer > 0) return;
-        if (isDusk()) {              // stays in town overnight, out again in the morning
+        if (isEvening()) {           // stays in town overnight, out again in the morning
             t.timer = rndRange(300, 900);
             return;
         }
@@ -930,6 +945,7 @@ bool onPathEnd(daNpcPasser_c* passer) {
     }
     switch (t.pathEnd) {
     case PE_CONTINUE:
+        eveningReroute(t);
         buildWalkPath(slot, passer->current.pos);
         setOwnPath(passer, kWalkPathBase + slot);
         return true;
@@ -1176,6 +1192,20 @@ void update() {
 
         // virtual: the roster moves it along; its room's spawner brings it in when that room is loaded
         if (t.cooldown > 0) --t.cooldown;
+        if (t.state == ST_WALK && isDeepNight() && !t.route.empty()) {
+            // Properly dark and nobody can see it: it is at its camp seat (or in town) for the night.
+            const int night = nightDestination(t, legEnd(t.route[t.leg]));
+            if (night >= 0) {
+                t.route.clear();
+                t.leg = 0;
+                t.dist = 0.0f;
+                arrive(t, night);
+                if (t.state == ST_REST && t.campNode != night) {   // that fire was full after all
+                    t.state = ST_TOWN;
+                    t.timer = rndRange(300, 900);
+                }
+            }
+        }
         if (t.state == ST_WALK) {
             stepVirtual(t);
         } else {
@@ -1227,6 +1257,7 @@ bool spawnerTick(fopAc_ac_c* spawner, bool firstTick) {
         if (!t.used || t.spawned || t.dead || t.cooldown > 0) continue;
         Where w{};
         if (t.state == ST_WALK && !t.route.empty()) {
+            if (isDeepNight()) continue;   // roads are empty at night: only campers appear
             w = locate(t.route[t.leg], t.dist);
         } else if (t.state == ST_REST) {
             w = restWhere(t, s);
