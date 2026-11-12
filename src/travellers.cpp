@@ -44,7 +44,13 @@ constexpr f32 kSpawnUnseenRadius = 3200.0f;  // ...but never pop in closer than 
 constexpr f32 kDespawnRadius = 8500.0f;      // back to virtual beyond this, once off screen
 constexpr int kMaxPathPoints = 48;
 constexpr f32 kFleeDistance = 2800.0f;
-constexpr int kCreateTimeout = 150;          // frames to wait for a created actor to show up
+constexpr int kCreateTimeout = 150;
+// Never more than this many travellers drawn at once. The Castle Town field is already close to
+// Dusklight's per-frame draw budget with vanilla actors (and heavy Link models like Hero of Legend),
+// so it gets a tighter cap. Everyone else keeps walking the network "virtually" and swaps in as
+// the nearest ones leave.
+constexpr int kMaxLive = 6;
+constexpr int kMaxLiveCastleField = 4;          // frames to wait for a created actor to show up
 // The passer types from the cast (stock passer type ids).
 constexpr std::array<u8, 14> kCast{3, 4, 6, 7, 8, 9, 11, 13, 14, 15, 20, 27, 28, 29};
 
@@ -794,6 +800,9 @@ void update() {
         updateCamps(stage, link);
     }
     const s16 facing = inWorld ? player->shape_angle.y : 0;
+    int live = 0;
+    for (const Traveller& t : g_t) if (t.used && t.spawned) ++live;
+    const int maxLive = (stage >= 0 && std::strcmp(kStages[stage], "F_SP122") == 0) ? kMaxLiveCastleField : kMaxLive;
 
     for (int s = 0; s < kSlots; ++s) {
         Traveller& t = g_t[s];
@@ -851,7 +860,9 @@ void update() {
         const s16 toIt = cM_atan2s(dx, dz);
         const bool inFront = std::abs(static_cast<s16>(toIt - facing)) < 0x3000;
         if (inFront && d2 < kSpawnUnseenRadius * kSpawnUnseenRadius) continue;
+        if (live >= maxLive) continue;
         spawn(s, w);
+        ++live;
         g_spawnCooldown = kSpawnGap;
     }
 }
