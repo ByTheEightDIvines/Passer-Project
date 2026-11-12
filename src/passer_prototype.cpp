@@ -22,6 +22,7 @@
 #include "spawner_actor.hpp"
 #include "spot_picker.hpp"
 #include "tent_actor.hpp"
+#include "traveller_gear.hpp"
 #include "travellers.hpp"
 
 #include <algorithm>
@@ -1501,6 +1502,9 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     // hooked (missing from the symbol manifest), the passer still works with nearest-target only.
     if (mods::hook::add_post<BulblinGetPla>(onGetPlaPost) != MOD_OK) {
         svc_log->info(mod_ctx, "Bulblin get_pla hook unavailable; Bulblins target whoever is closer");
+    }
+    if (!traveller_gear::install()) {
+        return mods::set_error(error, MOD_UNAVAILABLE, "failed to install the traveller look hooks");
     }
     if (psr_tent::registerActor() != MOD_OK) {
         return mods::set_error(error, MOD_ERROR, "failed to register the tent actor");

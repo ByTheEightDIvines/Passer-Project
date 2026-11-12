@@ -39,6 +39,8 @@ int maxLife(const fopAc_ac_c* passer);
 void setLife(const fopAc_ac_c* passer, int quarters);
 // Fighters stand their ground and only run once they are down to their last heart.
 bool isFighter(const fopAc_ac_c* passer);
+// Roster slot of a traveller actor (0..31), or -1.
+int slotIndex(const fopAc_ac_c* actor);
 // Diagnostics: a traveller was hit; an enemy started or ended a hunt for one.
 void noteHit(const fopAc_ac_c* passer, int damage, int lifeLeft);
 // Settled at a camp for the night (seated): camp centre, its seat and the way it faces.

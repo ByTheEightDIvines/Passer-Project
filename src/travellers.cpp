@@ -1022,6 +1022,7 @@ void noteAct(fopAc_ac_c* passer, const char* what) {
 }
 
 bool isTraveller(const fopAc_ac_c* actor) { return slotOf(actor) >= 0; }
+int slotIndex(const fopAc_ac_c* actor) { return slotOf(actor); }
 
 dPath* pathFor(int pathId) {
     if (pathId >= kWalkPathBase && pathId < kWalkPathBase + kSlots) return &g_walk[pathId - kWalkPathBase].path;
