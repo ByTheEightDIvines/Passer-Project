@@ -796,9 +796,17 @@ daNpcPasser_c* nearestActor(const cXyz& pos, f32 maxDist) {
 
 void update() {
     ++g_frame;
-    if (g_diag == nullptr && g_frame == 1) {
+    // open the diagnostic log, retrying every ~2 s until it works; say so in Dusklight's log either way
+    static int s_diagTries = 0;
+    if (g_diag == nullptr && (g_frame == 1 || g_frame % 60 == 0) && s_diagTries < 30) {
+        ++s_diagTries;
         g_diag = spot_picker::openDataFile("travellers_diag.log", "w");
-        diag("diag log open");
+        if (g_diag != nullptr) {
+            svc_log->info(mod_ctx, "travellers: diagnostic log open (mod_data/travellers_diag.log)");
+            diag("diag log open, attempt %d", s_diagTries);
+        } else if (s_diagTries == 1 || s_diagTries == 30) {
+            svc_log->warn(mod_ctx, "travellers: could not open mod_data/travellers_diag.log");
+        }
     }
     if (!g_started) {
         g_rng ^= static_cast<u32>(dKy_getdaytime_minute() * 7919 + hour() * 104729);

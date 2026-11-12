@@ -404,8 +404,14 @@ ModResult updatePanel(ModContext*, void*, ModError*) {
 
 std::FILE* openDataFile(const char* name, const char* mode) {
     const char* dir = nullptr;
-    if (svc_host->data_dir(mod_ctx, &dir) != MOD_OK || dir == nullptr) return nullptr;
-    return openFile(std::string(dir) + "/" + name, mode);
+    if (svc_host->data_dir(mod_ctx, &dir) != MOD_OK || dir == nullptr) {
+        svc_log->warn(mod_ctx, "openDataFile: no data folder");
+        return nullptr;
+    }
+    const std::string path = std::string(dir) + "/" + name;
+    std::FILE* f = openFile(path, mode);
+    if (f == nullptr) svc_log->warn(mod_ctx, ("openDataFile: fopen failed for " + path).c_str());
+    return f;
 }
 
 void initialize() {
