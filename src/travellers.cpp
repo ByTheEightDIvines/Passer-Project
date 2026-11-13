@@ -1236,6 +1236,17 @@ void noteStand(const fopAc_ac_c* passer, const fopAc_ac_c* enemy) {
 
 int campSeatCount(int campNode) { return campSeats(campNode); }
 
+bool campSeatSpot(int campNode, int seat, cXyz* pos, s16* yaw) { return seatSpot(campNode, seat, pos, yaw); }
+
+bool campSeatInUse(int campNode, int seat) {
+    for (int i = 0; i < kSlots; ++i) {
+        const Traveller& t = g_t[i];
+        if (t.used && t.spawned && t.state == ST_REST && t.campNode == campNode && t.node == campNode &&
+            t.seat == seat && traveller_gear::sitting(i)) return true;
+    }
+    return false;
+}
+
 bool campInfo(const fopAc_ac_c* passer, cXyz* center, cXyz* seat, s16* seatYaw) {
     const int slot = slotOf(passer);
     if (slot < 0) return false;
