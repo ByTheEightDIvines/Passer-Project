@@ -27,7 +27,7 @@ endif ()
 
 add_mod(dynamic_travelers
         FEATURES game
-        SOURCES src/camp_cook.cpp src/camp_fire.cpp src/passer_prototype.cpp src/spawner_actor.cpp src/spot_picker.cpp src/tent_actor.cpp src/traveller_gear.cpp src/travellers.cpp
+        SOURCES src/camp_cook.cpp src/camp_fire.cpp src/fighter_anim.cpp src/passer_prototype.cpp src/spawner_actor.cpp src/spot_picker.cpp src/tent_actor.cpp src/traveller_gear.cpp src/travellers.cpp
         MOD_JSON "${CMAKE_CURRENT_BINARY_DIR}/mod.json"
         ${PASSER_OVERLAY_ARGS}
 )

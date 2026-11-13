@@ -25,6 +25,7 @@
 #include "travellers.hpp"
 #include "traveller_gear.hpp"
 #include "camp_cook.hpp"
+#include "fighter_anim.hpp"
 
 #include <array>
 #include <cstdio>
@@ -263,7 +264,15 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
     }
     drawOn(g->pack, kBackbone, nullptr);
     drawOn(g->belt, kWaist, nullptr);
-    if (const Kit* kit = kitFor(travellerLook(passer))) drawOn(g->weapon, kWaist, &kit->sheath);
+    Mtx inHand;
+    if (g->weapon != nullptr && fighter_anim::weaponMtx(passer, inHand)) {
+        // out of its sheath, in the right hand (fighter_anim.cpp)
+        g_env_light.setLightTevColorType_MAJI(g->weapon, &passer->tevStr);
+        g->weapon->setBaseTRMtx(inHand);
+        mDoExt_modelUpdateDL(g->weapon);
+    } else if (const Kit* kit = kitFor(travellerLook(passer))) {
+        drawOn(g->weapon, kWaist, &kit->sheath);
+    }
 }
 
 }  // namespace

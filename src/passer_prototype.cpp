@@ -23,6 +23,7 @@
 #include "spot_picker.hpp"
 #include "tent_actor.hpp"
 #include "traveller_gear.hpp"
+#include "fighter_anim.hpp"
 #include "camp_fire.hpp"
 #include "camp_cook.hpp"
 #include "travellers.hpp"
@@ -169,6 +170,9 @@ struct PasserState {
     int strikeTimer = 0;
     u8 anim = 0xFF;         // animation the camp guard last set (so it isn't restarted every frame)
     int invuln = 0;         // frames left of the short invincible moment after being hit (like Link's)
+    bool chasing = false;   // a camp defender running after its enemy (not yet in reach)
+    bool swingReq = false;  // a fighter in reach and due a swing (the blow lands on the swing's frames)
+    bool onGuard = false;   // this frame: a fighter with an enemy to face (draws and squares up)
 };
 
 std::array<PasserState, 32> g_states{};
@@ -335,6 +339,9 @@ void logProgress(daNpcPasser_c* passer, PasserState& state) {
 daNpcPasser_c* livePasser();
 bool lockedOnPasser(const fopAc_ac_c* enemy, const daNpcPasser_c* passer);
 bool holdsGround(const daNpcPasser_c* passer);
+void strike(daNpcPasser_c* passer, PasserState& state);
+bool swingOrStrike(daNpcPasser_c* passer, PasserState& state);
+void fighterAnim(daNpcPasser_c* passer, PasserState& state);
 
 // The Bulblin currently running its update, while a live passer is close enough to target.
 fopAc_ac_c* g_bulblinNearPasser = nullptr;
@@ -779,6 +786,7 @@ DEFINE_HOOK(&daNpcPasser_c::create_init, PasserCreateInit);
 DEFINE_HOOK_SYMBOL("daNpcPasser_Execute", int(void*), PasserProfileExecute);
 DEFINE_HOOK_SYMBOL("daNpcPasser_Delete", int(void*), PasserProfileDelete);
 DEFINE_HOOK(&daNpcPasser_c::executePath, PasserExecutePath);
+DEFINE_HOOK(&daNpcPasser_c::pathMoveF, PasserPathMove);
 DEFINE_HOOK(&daNpcPasser_c::executeEscape, PasserExecuteEscape);
 DEFINE_HOOK(&daNpcPasser_c::executeFear, PasserExecuteFear);
 DEFINE_HOOK(&daNpcPasser_c::executeRelief, PasserExecuteRelief);
@@ -953,6 +961,15 @@ void onExecuteEscapePost(ModContext*, void* args, void*, void*) {
     passer->field_0xb14 = std::min(passer->field_0xb14, cap);
 }
 
+// The walk code sets the animation speed from how fast it's walking every frame; the fighters' own
+// stances, draws and swings play at their own speed (running and limping keep the walk's).
+void onPathMovePost(ModContext*, void* args, void*, void*) {
+    auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
+    if (isPrototypePasser(passer) && fighter_anim::ownSpeed(passer)) {
+        passer->mpMorf->setPlaySpeed(1.0f);
+    }
+}
+
 HookAction onProfileDeletePre(ModContext*, void* args, void*, void*) {
     auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
     if (isPrototypePasser(passer)) travellers::noteDelete(passer);
@@ -1017,6 +1034,7 @@ void onProfileExecutePost(ModContext*, void* args, void*, void*) {
     }
     if (!state->dead) {
         setDamageable(passer);
+        fighterAnim(passer, *state);
         return;
     }
     if (passer->mpMorf == nullptr) {
@@ -1041,7 +1059,8 @@ void onProfileExecutePost(ModContext*, void* args, void*, void*) {
 constexpr f32 kCampGuardRadius = 1500.0f;   // an enemy this close to the fire wakes the camp
 constexpr f32 kCampLeashRadius = 2200.0f;   // a defender chases it this far from the fire
 constexpr f32 kStrikeReach = 150.0f;
-constexpr int kStrikeEvery = 45;            // frames between strikes
+constexpr f32 kLimpSpeed = 0.6f;            // limping on the last heart, part of a walk
+constexpr int kStrikeEvery = 75;            // frames between swings (each swing is two blows)
 constexpr u8 kStrikePower = 2;              // a sword hit (10 damage to an enemy: a Bokoblin takes 4)
 constexpr u8 kAnmIdle = 0, kAnmWalk = 2, kAnmRun = 4, kAnmCower = 0x26;
 
@@ -1086,6 +1105,54 @@ void strike(daNpcPasser_c* passer, PasserState& state) {
     dComIfG_Ccsp()->Set(&sph);
 }
 
+// A fighter in reach takes a swing: with its own animations the blows land on the swing's frames
+// (fighterAnim); without them (#29 for now) the blow lands at once, as before. False while it's
+// still busy (startled, drawing, mid-swing): try again next frame.
+bool swingOrStrike(daNpcPasser_c* passer, PasserState& state) {
+    if (!fighter_anim::has(passer)) {
+        strike(passer, state);
+        return true;
+    }
+    if (fighter_anim::busy(passer)) return false;
+    state.swingReq = true;
+    return true;
+}
+
+// Once per frame after the traveller's own action code: what its weapon and body should be doing.
+void fighterAnim(daNpcPasser_c* passer, PasserState& state) {
+    using fighter_anim::Want;
+    if (!fighter_anim::has(passer)) {
+        state.swingReq = false;
+        return;
+    }
+    Want want = Want::Calm;
+    if (state.talking) {
+        want = Want::Calm;
+    } else if (state.onGuard) {
+        want = state.defending && state.chasing ? Want::Chase : Want::Ready;
+    } else if (!holdsGround(passer)) {
+        // down to its last heart
+        if (passer->mActionIdx == daNpcPasser_c::MODE_1) {
+            want = passer->field_0xb1c == 1 ? Want::Flee : Want::Keep;   // 0: vanilla's own startle first
+        } else if (state.cowering || passer->mActionIdx == daNpcPasser_c::MODE_2) {
+            want = Want::HurtWait;
+        } else if (passer->mActionIdx == daNpcPasser_c::MODE_0 &&
+                   !travellers::campInfo(passer, nullptr, nullptr, nullptr)) {
+            want = Want::HurtWalk;
+        }
+    }
+    if (fighter_anim::update(passer, want, state.swingReq) > 0) {
+        strike(passer, state);
+    }
+    state.swingReq = false;
+    if (want == Want::HurtWalk) {
+        // limping: slower than a walk (the limp's feet keep up)
+        const f32 cap = Cd2_HIO_walkMaxSpeed(passer->m_type) * kLimpSpeed;
+        passer->speedF = std::min(passer->speedF, cap);
+        passer->field_0xb14 = std::min(passer->field_0xb14, cap);
+    }
+}
+
 bool campGuard(daNpcPasser_c* passer, PasserState& state) {
     cXyz center, seat;
     s16 seatYaw = 0;
@@ -1119,7 +1186,11 @@ bool campGuard(daNpcPasser_c* passer, PasserState& state) {
             const f32 dx = enemy->current.pos.x - passer->current.pos.x;
             const f32 dz = enemy->current.pos.z - passer->current.pos.z;
             const f32 dist = std::sqrt(dx * dx + dz * dz);
-            if (dist > kStrikeReach) {
+            state.chasing = dist > kStrikeReach;
+            state.onGuard = true;
+            if (fighter_anim::busy(passer)) {
+                // startled, drawing or mid-swing: it stays where it is until that's done
+            } else if (dist > kStrikeReach) {
                 guardAnim(passer, state, kAnmRun);
                 stepToward(passer, enemy->current.pos, Cd2_HIO_maxSpeed(passer->m_type) * 1.5f);
             } else {
@@ -1127,11 +1198,16 @@ bool campGuard(daNpcPasser_c* passer, PasserState& state) {
                 const s16 yaw = cLib_targetAngleY(&passer->current.pos, &enemy->current.pos);
                 cLib_addCalcAngleS2(&passer->current.angle.y, yaw, 4, 0x1000);
                 passer->shape_angle.y = passer->current.angle.y;
-                if (--state.strikeTimer <= 0) {
-                    strike(passer, state);
+                if (--state.strikeTimer <= 0 && swingOrStrike(passer, state)) {
                     state.strikeTimer = kStrikeEvery;
                 }
             }
+            return true;
+        }
+        state.chasing = false;
+        if (state.defending && fighter_anim::weaponOut(passer)) {
+            // all clear: put the weapon away before walking back
+            passer->speedF = 0.0f;
             return true;
         }
         if (state.defending) {
@@ -1231,6 +1307,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
 
     // Settled at a camp for the night: the camp guard decides (defend the fire / cower / sit).
     bool campHandled = false;
+    state->onGuard = false;
     if (!state->talking && !state->cowering) {
         campHandled = campGuard(passer, *state);
     }
@@ -1240,6 +1317,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         !travellers::campInfo(passer, nullptr, nullptr, nullptr)) {
         auto* enemy = holdsGround(passer) ? nearestEnemy(passer, kThreatRadius) : nullptr;
         if (enemy != nullptr) {
+            state->onGuard = true;
             passer->speedF = 0.0f;
             const s16 toEnemy = cLib_targetAngleY(&passer->current.pos, &enemy->current.pos);
             cLib_addCalcAngleS2(&passer->current.angle.y, toEnemy, 4, 0x800);
@@ -1252,6 +1330,18 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
                     passer->setAnm(idle, 1.0f, 6.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
                 }
             }
+            // in reach: swing at it (the blow lands on the swing's own frames)
+            const f32 dx = enemy->current.pos.x - passer->current.pos.x;
+            const f32 dz = enemy->current.pos.z - passer->current.pos.z;
+            if (dx * dx + dz * dz <= kStrikeReach * kStrikeReach) {
+                if (--state->strikeTimer <= 0 && swingOrStrike(passer, *state)) {
+                    state->strikeTimer = kStrikeEvery;
+                }
+            } else {
+                state->strikeTimer = std::min(state->strikeTimer, 20);
+            }
+        } else if (state->standing && fighter_anim::weaponOut(passer)) {
+            passer->speedF = 0.0f;   // put the weapon away first, then walk on
         } else if (state->standing) {
             state->standing = false;
             if (!state->arrived) {
@@ -1561,6 +1651,10 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
 
     // Optional: keeps Bulblins chasing the passer once they've picked him. If get_pla can't be
     // hooked (missing from the symbol manifest), the passer still works with nearest-target only.
+    // Optional: without it the fighters' stances and swings play at the walk's speed.
+    if (mods::hook::add_post<PasserPathMove>(onPathMovePost) != MOD_OK) {
+        svc_log->info(mod_ctx, "passer walk-speed hook unavailable; fight animations follow the walk speed");
+    }
     if (mods::hook::add_pre<PasserProfileDelete>(onProfileDeletePre) != MOD_OK) {
         svc_log->info(mod_ctx, "passer delete hook unavailable; vanished travellers won't be traced");
     }
