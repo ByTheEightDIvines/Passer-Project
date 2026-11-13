@@ -62,6 +62,9 @@ constexpr int kAmphiSeats = 6;               // the amphitheater by Castle Town 
 constexpr int kMaxSeats = 10;
 constexpr int kGoneCooldownMin = 1800;       // frames (30-90 s) before a traveller the game deleted
 constexpr int kGoneCooldownMax = 5400;       // can reappear, different for each so they trickle back
+constexpr int kCampBackMin = 450;             // frames (15-30 s) before a camper the game deleted
+constexpr int kCampBackMax = 900;             // sits back down at its seat
+constexpr f32 kCampBackRadius = 1200.0f;      // ...never closer to Link than this, and only behind him
 constexpr f32 kGoneSkip = 800.0f;            // ...and how far down the road it has walked by then
 constexpr f32 kNoArrivalRadius = 3000.0f;    // late arrivals never appear this close to Link
 constexpr int kArrivalGap = 450;             // frames (7.5 s) between late arrivals in one room
@@ -1221,6 +1224,23 @@ void noteHit(const fopAc_ac_c* passer, int damage, int lifeLeft) {
     if (slot >= 0) diag("hit     slot %d -%d quarters, %d left", slot, damage, lifeLeft);
 }
 
+// Called as the game tears a traveller's actor down: records what it was doing, so a camper
+// that vanishes can be traced to the code that deleted it.
+void noteDelete(const daNpcPasser_c* p) {
+    const int slot = slotOf(p);
+    if (slot < 0) return;
+    const Traveller& t = g_t[slot];
+    const auto* link = dComIfGp_getPlayer(0);
+    const f32 dist = link != nullptr ? const_cast<cXyz&>(p->current.pos).abs(link->current.pos) : -1.0f;
+    auto& path = const_cast<daNpcPasser_c*>(p)->m_path;
+    const int last = path.isPath() && path.mPath != nullptr ? path.mPath->m_num - 1 : -1;
+    diag("delete  slot %d st %d act %d pmode %d sub %d pt %d/%d nodraw %d leaving %d y %.0f home %.0f link %.0f",
+         slot, static_cast<int>(t.state), static_cast<int>(p->mActionIdx), static_cast<int>(p->mPathMode),
+         static_cast<int>(p->field_0xb1c), static_cast<int>(path.field_0x20), last,
+         fopAcM_CheckCondition(const_cast<daNpcPasser_c*>(p), fopAcCnd_NODRAW_e) ? 1 : 0,
+         t.leaving ? 1 : 0, p->current.pos.y, p->home.pos.y, dist);
+}
+
 void noteHunt(const fopAc_ac_c* enemy, const fopAc_ac_c* prey, bool start) {
     const int slot = slotOf(prey);
     diag("hunt    enemy %u (%s) %s slot %d", static_cast<unsigned>(fopAcM_GetID(const_cast<fopAc_ac_c*>(enemy))),
@@ -1410,7 +1430,9 @@ void update() {
                     // The game deleted it (scared or stuck off screen). Give it time to get further
                     // down the road before its spawner may bring it back, so it doesn't reappear in
                     // the same spot and get deleted again.
-                    t.cooldown = rndRange(kGoneCooldownMin, kGoneCooldownMax);
+                    // a camper goes back to its seat soon (out of sight); walkers trickle back later
+                    t.cooldown = t.state == ST_REST ? rndRange(kCampBackMin, kCampBackMax)
+                                                    : rndRange(kGoneCooldownMin, kGoneCooldownMax);
                     for (int k = 0; k < static_cast<int>(kGoneSkip / kVirtualSpeed) && t.state == ST_WALK; ++k) {
                         stepVirtual(t);
                     }
@@ -1542,8 +1564,17 @@ bool spawnerTick(fopAc_ac_c* spawner, bool firstTick) {
             // not in front of him until further out
             const f32 dx = w.pos.x - link.x, dz = w.pos.z - link.z;
             const f32 d2 = dx * dx + dz * dz;
-            if (d2 < kNoArrivalRadius * kNoArrivalRadius) continue;
-            const bool inFront = std::abs(static_cast<s16>(cM_atan2s(dx, dz) - facing)) < 0x3000;
+            const s16 off = static_cast<s16>(cM_atan2s(dx, dz) - facing);
+            // Someone back at their camp seat may sit down again closer in, as long as it happens
+            // behind Link's back (the camera looks over his shoulder): camps don't stay empty.
+            const bool campSeat = t.state == ST_REST && t.seat >= 0;
+            const bool behind = std::abs(static_cast<int>(off)) > 0x6000;
+            if (campSeat && behind && d2 >= kCampBackRadius * kCampBackRadius) {
+                // fine: out of sight
+            } else if (d2 < kNoArrivalRadius * kNoArrivalRadius) {
+                continue;
+            }
+            const bool inFront = std::abs(static_cast<int>(off)) < 0x3000;
             if (inFront && d2 < (kNoArrivalRadius + kViewGuardRadius) * (kNoArrivalRadius + kViewGuardRadius)) continue;
         }
         spawn(s, w);

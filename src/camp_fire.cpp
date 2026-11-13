@@ -123,6 +123,7 @@ cPhs_Step psrFire_c::create() {
     }
     // the cull box is measured from the fire itself (without this it sat at the world's origin and
     // the whole camp was always "off screen": only the flame, a particle, ever showed)
+    groundDecor();
     placeModels();
     fopAcM_SetMtx(this, mpPart[0]->getBaseTRMtx());
     fopAcM_setCullSizeBox(this, -600.0f, -60.0f, -600.0f, 600.0f, 260.0f, 600.0f);
@@ -189,6 +190,21 @@ void psrFire_c::groundDecor() {
             mDecorY[i] = ground;
         }
     }
+    for (int i = 0; i < kStoolMax; i++) {
+        cXyz at;
+        s16 yaw;
+        mStoolY[i] = current.pos.y;
+        if (!travellers::campSeatSpot(mCampNode, i, &at, &yaw)) continue;
+        cXyz probe(at.x, current.pos.y + 400.0f, at.z);
+        dBgS_ObjGndChk gnd;
+        gnd.SetPos(&probe);
+        const f32 ground = dComIfG_Bgsp().GroundCross(&gnd);
+        if (ground == -G_CM3D_F_INF) {
+            all = false;
+        } else {
+            mStoolY[i] = ground;
+        }
+    }
     mDecorGrounded = all;
 }
 
@@ -217,7 +233,7 @@ void psrFire_c::placeModels() {
         cXyz at;
         s16 yaw;
         if (mpStool[i] == NULL || !travellers::campSeatSpot(mCampNode, i, &at, &yaw)) continue;
-        mDoMtx_stack_c::transS(at.x, current.pos.y, at.z);
+        mDoMtx_stack_c::transS(at.x, mStoolY[i], at.z);
         mDoMtx_stack_c::YrotM(yaw);
         mDoMtx_stack_c::scaleM(kStoolWidth, kStoolHeight, kStoolWidth);
         mpStool[i]->setBaseTRMtx(mDoMtx_stack_c::get());

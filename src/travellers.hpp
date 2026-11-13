@@ -56,6 +56,7 @@ void refreshIdle(const fopAc_ac_c* passer);
 void noteCamp(const fopAc_ac_c* passer, const char* what, const fopAc_ac_c* enemy);
 void noteStand(const fopAc_ac_c* passer, const fopAc_ac_c* enemy);
 void noteHunt(const fopAc_ac_c* enemy, const fopAc_ac_c* prey, bool start);
+void noteDelete(const daNpcPasser_c* passer);
 // Nearest live traveller actor to a point, within maxDist (xz), or nullptr.
 daNpcPasser_c* nearestActor(const cXyz& pos, f32 maxDist);
 // Is this one of the Hyrule Field stages the network covers?

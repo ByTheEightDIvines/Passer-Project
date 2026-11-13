@@ -38,6 +38,7 @@ public:
     static constexpr int kDecorNum = 4;
     J3DModel* mpDecor[kDecorNum] = {};
     f32 mDecorY[kDecorNum] = {};
+    f32 mStoolY[kStoolMax] = {};   // each stool stands on the ground under it
     bool mDecorGrounded = false;
 
     int mCampNode = -1;

@@ -777,6 +777,7 @@ DEFINE_HOOK(&daNpcPasser_c::create_init, PasserCreateInit);
 // (called through the actor method table) and the action functions (called through a member
 // function pointer table) instead; neither can be inlined away.
 DEFINE_HOOK_SYMBOL("daNpcPasser_Execute", int(void*), PasserProfileExecute);
+DEFINE_HOOK_SYMBOL("daNpcPasser_Delete", int(void*), PasserProfileDelete);
 DEFINE_HOOK(&daNpcPasser_c::executePath, PasserExecutePath);
 DEFINE_HOOK(&daNpcPasser_c::executeEscape, PasserExecuteEscape);
 DEFINE_HOOK(&daNpcPasser_c::executeFear, PasserExecuteFear);
@@ -950,6 +951,12 @@ void onExecuteEscapePost(ModContext*, void* args, void*, void*) {
     const f32 cap = Cd2_HIO_maxSpeed(passer->m_type) * 1.5f * kOldWomanRunScale;
     passer->speedF = std::min(passer->speedF, cap);
     passer->field_0xb14 = std::min(passer->field_0xb14, cap);
+}
+
+HookAction onProfileDeletePre(ModContext*, void* args, void*, void*) {
+    auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
+    if (isPrototypePasser(passer)) travellers::noteDelete(passer);
+    return HOOK_CONTINUE;
 }
 
 // Cowering also deletes the passer once it is off screen; keep it.
@@ -1554,6 +1561,9 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
 
     // Optional: keeps Bulblins chasing the passer once they've picked him. If get_pla can't be
     // hooked (missing from the symbol manifest), the passer still works with nearest-target only.
+    if (mods::hook::add_pre<PasserProfileDelete>(onProfileDeletePre) != MOD_OK) {
+        svc_log->info(mod_ctx, "passer delete hook unavailable; vanished travellers won't be traced");
+    }
     if (mods::hook::add_post<BulblinGetPla>(onGetPlaPost) != MOD_OK) {
         svc_log->info(mod_ctx, "Bulblin get_pla hook unavailable; Bulblins target whoever is closer");
     }

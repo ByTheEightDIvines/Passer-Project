@@ -27,6 +27,8 @@ public:
     dBgW* mpCollider;
     u8 mKind;
     bool mGrounded;
+    s16 mTiltX = 0;             // lean to follow the slope it stands on (about its own x axis)
+    s16 mTiltZ = 0;             // ...and about its own z axis
 
     virtual ~psrTent_c();
     cPhs_Step create();

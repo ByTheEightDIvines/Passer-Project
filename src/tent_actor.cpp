@@ -1,7 +1,10 @@
 #include "global.h"
 
+#include <algorithm>
+
 #include "tent_actor.hpp"
 
+#include "SSystem/SComponent/c_math.h"
 #include "d/d_bg_s_gnd_chk.h"
 #include "d/d_com_inf_game.h"
 #include "d/d_kankyo.h"
@@ -95,19 +98,55 @@ cPhs_Step psrTent_c::create() {
     return step;
 }
 
-void psrTent_c::snapToGround() {
+// Half the size of each tent's footprint on the ground (x across, z front to back).
+constexpr f32 kFootX[PSR_TENT_KIND_NUM] = {150.0f, 310.0f, 350.0f};
+constexpr f32 kFootZ[PSR_TENT_KIND_NUM] = {245.0f, 445.0f, 515.0f};
+constexpr f32 kMaxTilt = 0.30f;   // about 17 degrees: steeper than that it leans this far and sinks in
+
+static f32 groundAt(f32 x, f32 y, f32 z, dBgS_ObjGndChk* out = nullptr) {
     dBgS_ObjGndChk gnd;
-    cXyz probe = current.pos;
-    probe.y += 400.0f;
+    cXyz probe(x, y + 600.0f, z);
     gnd.SetPos(&probe);
-    const f32 ground = dComIfG_Bgsp().GroundCross(&gnd);
-    if (ground != -G_CM3D_F_INF) {
-        current.pos.y = ground;
-        home.pos.y = ground;
-        mGrounded = true;
-        tevStr.room_no = dComIfG_Bgsp().GetRoomId(gnd);
-        tevStr.YukaCol = dComIfG_Bgsp().GetPolyColor(gnd);
+    const f32 g = dComIfG_Bgsp().GroundCross(&gnd);
+    if (out != nullptr) *out = gnd;
+    return g;
+}
+
+// Stand the tent on the ground: probe the middle and the four corners of its footprint, lean it to
+// match the slope, then lower it until no corner hangs in the air (it sinks a little instead).
+void psrTent_c::snapToGround() {
+    dBgS_ObjGndChk centre;
+    const f32 mid = groundAt(current.pos.x, current.pos.y, current.pos.z, &centre);
+    if (mid == -G_CM3D_F_INF) return;
+    const f32 hx = kFootX[mKind], hz = kFootZ[mKind];
+    const f32 c = cM_scos(shape_angle.y), sn = cM_ssin(shape_angle.y);
+    f32 h[4];   // corners: (-x,-z) (+x,-z) (-x,+z) (+x,+z)
+    for (int i = 0; i < 4; i++) {
+        const f32 lx = (i & 1) ? hx : -hx;
+        const f32 lz = (i & 2) ? hz : -hz;
+        const f32 g = groundAt(current.pos.x + lx * c + lz * sn, mid, current.pos.z - lx * sn + lz * c);
+        h[i] = g == -G_CM3D_F_INF ? mid : g;
     }
+    // slope across and along the tent, limited to a sensible lean
+    f32 sx = ((h[1] + h[3]) - (h[0] + h[2])) / (4.0f * hx);
+    f32 sz = ((h[2] + h[3]) - (h[0] + h[1])) / (4.0f * hz);
+    sx = std::max(-kMaxTilt, std::min(kMaxTilt, sx));
+    sz = std::max(-kMaxTilt, std::min(kMaxTilt, sz));
+    f32 y = (h[0] + h[1] + h[2] + h[3]) * 0.25f;
+    // lower it until neither the middle nor any corner of the leaning floor is above the ground
+    f32 sink = std::max(0.0f, y - mid);
+    for (int i = 0; i < 4; i++) {
+        const f32 lx = (i & 1) ? hx : -hx;
+        const f32 lz = (i & 2) ? hz : -hz;
+        sink = std::max(sink, (y + sx * lx + sz * lz) - h[i]);
+    }
+    y -= sink;
+    current.pos.y = home.pos.y = y;
+    mTiltZ = static_cast<s16>(cM_atan2s(sx, 1.0f));    // +x side up
+    mTiltX = static_cast<s16>(-cM_atan2s(sz, 1.0f));   // +z side up
+    mGrounded = true;
+    tevStr.room_no = dComIfG_Bgsp().GetRoomId(centre);
+    tevStr.YukaCol = dComIfG_Bgsp().GetPolyColor(centre);
 }
 
 int psrTent_c::CreateHeap() {
@@ -160,10 +199,15 @@ int psrTent_c::Delete() {
 
 int psrTent_c::Execute() {
     if (!mGrounded) {
-        snapToGround();   // the room's ground may load after the tent
+        // the room's ground may load after the tent: probe without the tent's own floor and roof
+        if (mpCollider != NULL) dComIfG_Bgsp().Release(mpCollider);
+        snapToGround();
+        if (mpCollider != NULL) dComIfG_Bgsp().Regist(mpCollider, this);
     }
     mDoMtx_stack_c::transS(current.pos.x, current.pos.y, current.pos.z);
     mDoMtx_stack_c::YrotM(shape_angle.y);
+    mDoMtx_stack_c::XrotM(mTiltX);
+    mDoMtx_stack_c::ZrotM(mTiltZ);
     mpModel->setBaseTRMtx(mDoMtx_stack_c::get());
     if (mpGlow != NULL) {
         mpGlow->setBaseTRMtx(mDoMtx_stack_c::get());
@@ -172,6 +216,8 @@ int psrTent_c::Execute() {
         const StageProp& prop = kStage[i];
         mDoMtx_stack_c::transS(current.pos.x, current.pos.y, current.pos.z);
         mDoMtx_stack_c::YrotM(shape_angle.y);
+        mDoMtx_stack_c::XrotM(mTiltX);
+        mDoMtx_stack_c::ZrotM(mTiltZ);
         mDoMtx_stack_c::transM(prop.x, prop.y, prop.z);
         mDoMtx_stack_c::scaleM(prop.scale, prop.scale, prop.scale);
         mpStage[i]->setBaseTRMtx(mDoMtx_stack_c::get());
