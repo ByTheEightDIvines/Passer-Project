@@ -45,6 +45,16 @@ int slotIndex(const fopAc_ac_c* actor);
 void noteHit(const fopAc_ac_c* passer, int damage, int lifeLeft);
 // Settled at a camp for the night (seated): camp centre, its seat and the way it faces.
 bool campInfo(const fopAc_ac_c* passer, cXyz* center, cXyz* seat, s16* seatYaw);
+// The seats around a camp's fire (campNode = the camp's road node), for the fire to draw its stumps.
+int campSeatCount(int campNode);
+bool campSeatSpot(int campNode, int seat, cXyz* pos, s16* yaw);
+bool campSeatInUse(int campNode, int seat);   // someone is sitting on it right now (it draws its own)
+// A second scoop of a camp's soup: the nearest camper, or a big guy right behind Link, comes to yell.
+// Returns the roster slot (-1: nobody available). He stands until the yelling is over, then sits.
+int summonGreedyGuard(int campNode, const cXyz& link, s16 linkYaw, s8 room);
+fopAc_ac_c* slotActor(int slot);
+bool walkingToSeat(const fopAc_ac_c* passer);
+void doneWalkingToSeat(const fopAc_ac_c* passer);
 // Put its resting (sitting) animation back next frame.
 void refreshIdle(const fopAc_ac_c* passer);
 void noteCamp(const fopAc_ac_c* passer, const char* what, const fopAc_ac_c* enemy);

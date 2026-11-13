@@ -3,6 +3,7 @@
 #include "travellers.hpp"
 #include "travel_network_data.inc"
 #include "tent_actor.hpp"
+#include "camp_fire.hpp"
 #include "spot_picker.hpp"
 #include "traveller_gear.hpp"
 
@@ -75,6 +76,7 @@ constexpr int kHealFramesResting = 150;      // ...every 2.5 s while sitting at 
 // run once they are down to their last heart.
 constexpr std::array<u8, 8> kFighters{3, 6, 8, 9, 11, 13, 14, 29};
 // The passer types from the cast (stock passer type ids).
+constexpr u8 kBigGuy = 15;    // the stocky man (MBN_a2)
 constexpr std::array<u8, 14> kCast{3, 4, 6, 7, 8, 9, 11, 13, 14, 15, 20, 27, 28, 29};
 
 // --- network ----------------------------------------------------------------------------------
@@ -254,6 +256,7 @@ struct Traveller {
     const char* lastAct = "walk";   // what it was last doing (for the log)
     int life = -1;         // quarter hearts left (-1: full, set when it first needs it)
     int healTimer = 0;
+    bool walkToSeat = false;   // stands and walks to its camp seat (the greedy-soup yeller) before sitting
 };
 
 std::array<Traveller, kSlots> g_t{};
@@ -821,7 +824,9 @@ void syncFromActor(Traveller& t, daNpcPasser_c* p) {
 void setIdle(daNpcPasser_c* p) {
     p->speedF = 0.0f;
     // at its own seat by a camp fire: sit down on its log
-    if (campInfo(p, nullptr, nullptr, nullptr) && traveller_gear::sit(p, true)) return;
+    const int slot = slotOf(p);
+    const bool walking = slot >= 0 && g_t[slot].walkToSeat;
+    if (!walking && campInfo(p, nullptr, nullptr, nullptr) && traveller_gear::sit(p, true)) return;
     traveller_gear::sit(p, false);
     if (auto* idle = static_cast<J3DAnmTransformKey*>(p->getAnmP(0, p->getObjNum()))) {
         p->setAnm(idle, 1.0f, 12.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
@@ -898,27 +903,35 @@ void stepRestOrTown(Traveller& t) {
     }
 }
 
+// Seat i at a camp: from 135 deg left of the camp's facing round to 45 deg right of it,
+// 185 out from the fire (220 at the amphitheater), facing the fire.
+bool seatSpot(int campNode, int seat, cXyz* pos, s16* yaw) {
+    if (campNode < 0 || seat < 0) return false;
+    const int seats = campSeats(campNode);
+    if (seat >= seats) return false;
+    const Node& n = kNodes[campNode];
+    const f32 ring = seats > kCampSeats ? 220.0f : 185.0f;
+    const int step = seats > 1 ? 0x8000 / (seats - 1) : 0;
+    const s16 a = static_cast<s16>(n.facing - 0x6000 + seat * step);
+    if (pos) pos->set(n.x + cM_ssin(a) * ring, n.y, n.z + cM_scos(a) * ring);
+    if (yaw) *yaw = static_cast<s16>(a + 0x8000);
+    return true;
+}
+
 Where restWhere(const Traveller& t, int slot) {
     const Node& n = kNodes[t.node];
     Where w{};
     w.stage = n.stage;
     w.room = n.room;
     // A camp seat: on a half-ring in front of the fire, away from the big tent behind it and the
-    // small tent at its side. Anyone without a seat (resting at a road junction, say) just spreads
-    // out around the spot by its slot.
-    s16 a;
-    f32 ring;
-    if (t.seat >= 0) {
-        const int seats = campSeats(t.node);
-        ring = seats > kCampSeats ? 260.0f : 230.0f;
-        // from 135 deg left of the camp's facing round to 45 deg right of it
-        const int span = 0x8000;                      // 180 deg
-        const int step = seats > 1 ? span / (seats - 1) : 0;
-        a = static_cast<s16>(n.facing - 0x6000 + t.seat * step);
-    } else {
-        ring = 300.0f;
-        a = static_cast<s16>(slot * (0x10000 / kCampSeats) + 0x1555);
+    // small tent at its side (see seatSpot). Anyone without a seat (resting at a road junction,
+    // say) just spreads out around the spot by its slot.
+    if (t.seat >= 0 && seatSpot(t.node, t.seat, &w.pos, &w.yaw)) {
+        w.nextPoint = 0;
+        return w;
     }
+    const f32 ring = 300.0f;
+    const s16 a = static_cast<s16>(slot * (0x10000 / kCampSeats) + 0x1555);
     w.pos.set(n.x + cM_ssin(a) * ring, n.y, n.z + cM_scos(a) * ring);
     w.yaw = static_cast<s16>(a + 0x8000);   // facing the middle
     w.nextPoint = 0;
@@ -932,8 +945,30 @@ struct CampTents {
 };
 std::array<CampTents, kCampCount> g_camps{};
 
-void spawnTent(CampTents& c, u8 kind, const cXyz& at, s16 yaw, s8 room) {
-    diag("tent    kind %d room %d", kind, room);
+// Which of Yeto's soups a camp's pot holds, by province (the game's own field-room split,
+// dKy_F_SP121Check): Faron 1 (Simple), Eldin 2 (Good), Lanayru and Castle Town's field 3 (Superb).
+u32 soupLevel(int stage, int room) {
+    if (stage == 1) return 3;
+    if (room == 1 || room == 6 || room == 15) return 1;
+    if (room >= 9 && room <= 14) return 3;
+    return 2;
+}
+
+void spawnFire(CampTents& c, u32 params, const cXyz& at, s16 yaw, s8 room) {
+    diag("fire    camp node %d soup %d room %d", static_cast<int>(params & 0xFF), static_cast<int>(params >> 8), room);
+    ActorSpawnParams p{};
+    p.parameters = params;
+    p.argument = -1;
+    p.room_num = room;
+    p.position.x = at.x; p.position.y = at.y; p.position.z = at.z;
+    p.angle.y = yaw;
+    p.scale.x = p.scale.y = p.scale.z = 1.0f;
+    ActorId id{};
+    if (svc_actor->create_actor_from_name(mod_ctx, PSR_FIRE_NAME, &p, &id) == MOD_OK) c.ids.push_back(id);
+}
+
+void spawnTent(CampTents& c, u32 kind, const cXyz& at, s16 yaw, s8 room) {
+    diag("tent    kind %d room %d", static_cast<int>(kind & 0xFF), room);
     ActorSpawnParams p{};
     p.parameters = kind;
     p.argument = -1;
@@ -967,7 +1002,7 @@ void updateCamps(int stage, const cXyz& link) {
                 const cXyz wall(mid.x - cM_ssin(face) * back, mid.y, mid.z - cM_scos(face) * back);
                 const s16 side = static_cast<s16>(face + 0x4000);
                 const cXyz small(mid.x + cM_ssin(side) * aside, mid.y, mid.z + cM_scos(side) * aside);
-                spawnTent(c, PSR_TENT_FIRE, mid, face, n.room);
+                spawnFire(c, cp.node | (soupLevel(n.stage, n.room) << 8), mid, face, n.room);
                 spawnTent(c, PSR_TENT_WALL, wall, face, n.room);
                 spawnTent(c, PSR_TENT_A, small, static_cast<s16>(side + 0x8000), n.room);
             }
@@ -1195,6 +1230,84 @@ void noteStand(const fopAc_ac_c* passer, const fopAc_ac_c* enemy) {
     if (slot >= 0) diag("stand   slot %d faces enemy %u (%s)", slot,
                         static_cast<unsigned>(fopAcM_GetID(const_cast<fopAc_ac_c*>(enemy))),
                         fopAcM_getProcNameString(const_cast<fopAc_ac_c*>(enemy)));
+}
+
+int campSeatCount(int campNode) { return campSeats(campNode); }
+
+// Someone to yell at Link for a second scoop of a camp's soup: the camper sitting nearest him, or,
+// if the camp is empty, the big guy turning up right behind him (he then takes a seat at the camp).
+int summonGreedyGuard(int campNode, const cXyz& link, s16 linkYaw, s8 room) {
+    int best = -1;
+    f32 bestD = 1e12f;
+    for (int i = 0; i < kSlots; ++i) {
+        Traveller& t = g_t[i];
+        if (!t.used || !t.spawned || t.dead || t.state != ST_REST || t.campNode != campNode || t.node != campNode) continue;
+        auto* a = static_cast<fopAc_ac_c*>(fopAcM_SearchByID(t.actor));
+        if (a == nullptr) continue;
+        const f32 d = a->current.pos.abs2(link);
+        if (d < bestD) { bestD = d; best = i; }
+    }
+    if (best < 0) {
+        int pick = -1;
+        for (int i = 0; i < kSlots && pick < 0; ++i) if (!g_t[i].used) pick = i;
+        for (int i = 0; i < kSlots && pick < 0; ++i) {
+            const Traveller& t = g_t[i];
+            if (!t.spawned && (t.state == ST_TOWN || t.state == ST_GONE)) pick = i;
+        }
+        if (pick < 0) return -1;
+        Traveller& t = g_t[pick];
+        releaseSeat(t);
+        t = Traveller{};
+        t.used = true;
+        t.type = kBigGuy;
+        t.state = ST_REST;
+        t.node = campNode;
+        t.restUntilMorning = true;
+        takeSeat(t, campNode);
+        const Node& n = kNodes[campNode];
+        Where w{};
+        w.stage = n.stage;
+        w.room = room;
+        w.pos.set(link.x - cM_ssin(linkYaw) * 130.0f, link.y, link.z - cM_scos(linkYaw) * 130.0f);
+        w.yaw = linkYaw;   // facing Link's back
+        w.nextPoint = 0;
+        spawn(pick, w);
+        diag("greedy  big guy slot %d behind Link at camp %d", pick, campNode);
+        best = pick;
+    } else {
+        diag("greedy  camper slot %d at camp %d", best, campNode);
+    }
+    g_t[best].walkToSeat = true;
+    g_t[best].idleSet = false;
+    return best;
+}
+
+fopAc_ac_c* slotActor(int slot) {
+    if (slot < 0 || slot >= kSlots || !g_t[slot].spawned) return nullptr;
+    return static_cast<fopAc_ac_c*>(fopAcM_SearchByID(g_t[slot].actor));
+}
+
+bool walkingToSeat(const fopAc_ac_c* passer) {
+    const int slot = slotOf(passer);
+    return slot >= 0 && g_t[slot].walkToSeat;
+}
+
+void doneWalkingToSeat(const fopAc_ac_c* passer) {
+    const int slot = slotOf(passer);
+    if (slot < 0) return;
+    g_t[slot].walkToSeat = false;
+    g_t[slot].idleSet = false;
+}
+
+bool campSeatSpot(int campNode, int seat, cXyz* pos, s16* yaw) { return seatSpot(campNode, seat, pos, yaw); }
+
+bool campSeatInUse(int campNode, int seat) {
+    for (int i = 0; i < kSlots; ++i) {
+        const Traveller& t = g_t[i];
+        if (t.used && t.spawned && t.state == ST_REST && t.campNode == campNode && t.node == campNode &&
+            t.seat == seat && traveller_gear::sitting(i)) return true;
+    }
+    return false;
 }
 
 bool campInfo(const fopAc_ac_c* passer, cXyz* center, cXyz* seat, s16* seatYaw) {

@@ -235,6 +235,10 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
 
 namespace traveller_gear {
 
+bool sitting(int slot) {
+    return slot >= 0 && slot < static_cast<int>(g_gear.size()) && g_gear[slot].sitting && g_gear[slot].seat != nullptr;
+}
+
 bool sit(daNpcPasser_c* passer, bool on) {
     Gear* g = travellerLook(passer) != nullptr ? gearFor(passer) : nullptr;
     if (g == nullptr || g->owner != fopAcM_GetID(passer)) on = false;
