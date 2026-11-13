@@ -4,6 +4,7 @@
 #include "f_op/f_op_actor.h"
 #include "SSystem/SComponent/c_phase.h"
 #include "d/d_bg_w.h"
+#include "d/d_bg_s_acch.h"
 
 // The camp tents: one actor, the tent kind is the low byte of its parameters.
 //   0 = small A-tent, 1 = big wall tent, 2 = Beedle's tent (with its night glow).
@@ -50,6 +51,11 @@ constexpr f32 kScale[PSR_TENT_KIND_NUM] = {1.3f, 1.3f, 1.6f};
 // Half the size of each tent's footprint on the ground at that scale (x across, z front to back).
 constexpr f32 kFootX[PSR_TENT_KIND_NUM] = {150.0f * 1.3f, 310.0f * 1.3f, 350.0f * 1.6f};
 constexpr f32 kFootZ[PSR_TENT_KIND_NUM] = {245.0f * 1.3f, 445.0f * 1.3f, 515.0f * 1.6f};
+
+// Someone (a traveller, the cook) ended up standing on a tent's canvas: the sloped roof counts as
+// ground, so anyone who bumped into a tent walked up onto it. Puts them back down on the grass just
+// outside the nearest side of that tent. Returns true if they were moved.
+bool pushOff(fopAc_ac_c* npc, dBgS_Acch& acch);
 
 // Registers the actor with the game. Call once from mod_initialize.
 ModResult registerActor();

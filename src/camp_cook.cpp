@@ -1,7 +1,9 @@
 #include "global.h"
 
 #include "camp_cook.hpp"
+#include "fighter_anim.hpp"
 #include "travellers.hpp"
+#include "tent_actor.hpp"
 
 #include "d/actor/d_a_alink.h"
 #include "d/actor/d_a_npc_cd2.h"
@@ -15,6 +17,7 @@
 #include "mods/svc/log.h"
 #include "SSystem/SComponent/c_math.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace {
@@ -26,8 +29,10 @@ constexpr f32 kScaredOf = 900.0f;         // a monster this close sends him runn
 constexpr f32 kSafeAgain = 1600.0f;
 constexpr int kSafeFrames = 180;
 constexpr f32 kSpoonReach = 115.0f;
-constexpr int kSwingFrames = 42;          // one whack, wind-up to recovery
-constexpr int kSwingHit = 9;              // the frame the spoon lands
+constexpr f32 kSwingHits[] = {4.0f, 20.0f};   // psr_s_fight_a: the two blows land on these frames
+constexpr int kSwingRest = 30;                 // on guard this long between swings
+constexpr f32 kGravity = 5.0f, kMaxFall = 60.0f;
+constexpr f32 kChaseSpeed = 1.25f;             // his chase, part of a passer's full run
 constexpr u8 kSpoonPower = 4;             // a Bokoblin's club is 1: he hits HARD (two hearts)
 constexpr int kLastLine = 3;              // "THAT'S IT!" - and then the spoon
 constexpr u8 kAnmIdle = 0, kAnmWalk = 2, kAnmRun = 4, kAnmSit = 17;   // 17: the heavyset sit
@@ -39,7 +44,6 @@ fpc_ProcID g_brain = fpcM_ERROR_PROCESS_ID_e;
 fpc_ProcID g_body = fpcM_ERROR_PROCESS_ID_e;
 int g_lines = 0;                // lines he has yelled since he turned up
 bool g_spoonOut = false;
-f32 g_swing = 0.0f;
 bool g_greedyAgain = false;     // Link tried again while he was on his way to (or on) his mat
 // where the brain should go: set by onGreedy just before it is created
 int g_camp = -1;
@@ -74,8 +78,10 @@ public:
     u8 mAnim = 0xFF;
     int mTimer = 0;
     int mCalm = 0;
-    int mSwing = -1;
-    bool mHit = false;
+    int mSwing = -1;          // >= 0: mid-swing
+    int mRest = 0;
+    int mHitHold = 0;         // frames the spoon's hit stays out after a blow lands
+    f32 mPrevFrame = 0.0f;
     bool mFlowStarted = false;
     bool mSitting = false;
     cXyz mMat;
@@ -89,7 +95,6 @@ public:
             g_brain = fpcM_ERROR_PROCESS_ID_e;
             g_lines = 0;
             g_spoonOut = false;
-            g_swing = 0.0f;
             g_greedyAgain = false;
         }
     }
@@ -110,11 +115,40 @@ public:
         return cPhs_COMPLEATE_e;
     }
 
-    void anim(daNpcPasser_c* b, u8 anm) {
-        if (mAnim == anm) return;
-        mAnim = anm;
-        auto* a = static_cast<J3DAnmTransformKey*>(b->getAnmP(anm, anm == kAnmSit ? 0 : b->getObjNum()));
-        if (a != nullptr) b->setAnm(a, 1.0f, 8.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
+    // The townsfolk's own animations, played at the speed the game plays them for how fast he moves
+    // (so his feet keep up with the ground, like any passer's).
+    void anim(daNpcPasser_c* b, u8 anm, f32 pace = 1.0f) {
+        f32 rate = 1.0f;
+        if (anm == kAnmWalk) rate = Cd2_HIO_walkAnmPlaySpeed(kCookType) * pace;
+        if (anm == kAnmRun) rate = Cd2_HIO_anmPlaySpeed(kCookType) * pace;
+        if (mAnim != anm) {
+            mAnim = anm;
+            auto* a = static_cast<J3DAnmTransformKey*>(b->getAnmP(anm, anm == kAnmSit ? 0 : b->getObjNum()));
+            if (a != nullptr) b->mpMorf->setAnm(a, J3DFrameCtrl::EMode_LOOP, 8.0f, rate, 0, -1);
+        }
+        b->mpMorf->setPlaySpeed(rate);
+    }
+
+    // The fighters' animations (PsrPack.arc): on guard and the two-blow swing.
+    static constexpr u8 kBckGuard = 0xF0, kBckSwing = 0xF1;
+    void bck(daNpcPasser_c* b, u8 id, bool restart) {
+        if (mAnim == id && !restart) return;
+        mAnim = id;
+        const char* name = id == kBckSwing ? "psr_s_fight_a.bck" : "psr_squareup.bck";
+        auto* a = static_cast<J3DAnmTransformKey*>(dComIfG_getObjectRes("PsrPack", name));
+        if (a == nullptr) return;
+        b->mpMorf->setAnm(a, id == kBckSwing ? J3DFrameCtrl::EMode_NONE : J3DFrameCtrl::EMode_LOOP,
+                          id == kBckSwing ? 3.0f : 6.0f, 1.0f, 0, -1);
+    }
+
+    // He's moved by hand (his own walk code is off), so he needs his own gravity: without it he
+    // walked straight out over any dip and hung in the air.
+    void fall(daNpcPasser_c* b) {
+        b->speed.y = std::max(b->speed.y - kGravity, -kMaxFall);
+        b->current.pos.y += b->speed.y;
+        b->mAcch.CrrPos(dComIfG_Bgsp());
+        if (b->mAcch.ChkGroundHit()) b->speed.y = 0.0f;
+        psr_tent::pushOff(b, b->mAcch);   // never up on a tent's canvas
     }
 
     void face(daNpcPasser_c* b, const cXyz& to) {
@@ -126,14 +160,13 @@ public:
         face(b, to);
         b->current.pos.x += cM_ssin(b->current.angle.y) * speed;
         b->current.pos.z += cM_scos(b->current.angle.y) * speed;
-        b->mAcch.CrrPos(dComIfG_Bgsp());
     }
 
     void standUp(daNpcPasser_c* b) {
         if (!mSitting) return;
         mSitting = false;
         b->current.pos.y += 37.2f * Cd2_HIO_objScale(kCookType);   // back up off the mat
-        b->mAcch.CrrPos(dComIfG_Bgsp());
+        b->speed.y = 0.0f;
     }
 
     // His spoon lands: a hit on whatever is in front of him at spoon height (only Link can take it).
@@ -177,8 +210,8 @@ public:
                 mBefore = mState == S_ATTACK ? S_ATTACK : S_TO_MAT;
                 mState = S_FLEE;
                 mCalm = 0;
-                g_swing = 0.0f;
                 mSwing = -1;
+                mHitHold = 0;
             }
         }
 
@@ -246,7 +279,7 @@ public:
         case S_GETUP:
             // up off the mat and over to Link
             if (distXZ(b->current.pos, link->current.pos) > kWalkUp) {
-                anim(b, kAnmWalk);
+                anim(b, kAnmWalk, 1.3f);
                 step(b, link->current.pos, Cd2_HIO_walkMaxSpeed(kCookType) * 1.3f);
                 break;
             }
@@ -257,23 +290,33 @@ public:
             break;
 
         case S_ATTACK: {
+            // He goes for Link like any enemy: runs him down, squares up, swings (two blows a swing).
             g_spoonOut = true;
             const f32 d = distXZ(b->current.pos, link->current.pos);
-            if (mSwing < 0 && d > kSpoonReach) {
-                anim(b, kAnmRun);
-                step(b, link->current.pos, Cd2_HIO_maxSpeed(kCookType) * 1.25f);
-                g_swing = 0.0f;
-                break;
+            if (mSwing >= 0) {
+                cLib_addCalcAngleS2(&b->current.angle.y, cLib_targetAngleY(&b->current.pos, &link->current.pos), 8, 0x400);
+                b->shape_angle.y = b->current.angle.y;
+                const f32 now = b->mpMorf->getFrame();
+                for (f32 hit : kSwingHits) {
+                    if (mPrevFrame < hit && now >= hit) mHitHold = 2;
+                }
+                mPrevFrame = now;
+                ++mSwing;
+                if (b->mpMorf->isStop() || mSwing > 60) { mSwing = -1; mRest = kSwingRest; }
+            } else if (d > kSpoonReach) {
+                anim(b, kAnmRun, kChaseSpeed);
+                step(b, link->current.pos, Cd2_HIO_maxSpeed(kCookType) * kChaseSpeed);
+                mRest = std::min(mRest, 6);
+            } else {
+                bck(b, kBckGuard, false);
+                face(b, link->current.pos);
+                if (--mRest <= 0) {
+                    bck(b, kBckSwing, true);
+                    mSwing = 0;
+                    mPrevFrame = 0.0f;
+                }
             }
-            anim(b, kAnmIdle);
-            face(b, link->current.pos);
-            if (mSwing < 0) { mSwing = 0; mHit = false; }
-            // wind up, smack, recover
-            const int f = mSwing++;
-            g_swing = f < kSwingHit ? f / static_cast<f32>(kSwingHit)
-                                    : std::max(0.0f, 1.0f - (f - kSwingHit) / 18.0f);
-            if (f >= kSwingHit && f <= kSwingHit + 2) whack(b);
-            if (mSwing >= kSwingFrames) mSwing = -1;
+            if (mHitHold > 0) { --mHitHold; whack(b); }
             break;
         }
 
@@ -295,6 +338,7 @@ public:
             break;
         }
         }
+        if (!mSitting) fall(b);
         return 1;
     }
 };
@@ -369,7 +413,6 @@ bool isBody(const fopAc_ac_c* actor) {
 }
 
 bool spoonOut() { return g_spoonOut; }
-f32 spoonSwing() { return g_swing; }
 
 ModResult registerActor() { return svc_actor->register_actor(mod_ctx, &kProfile, &s_procName, &s_handle); }
 

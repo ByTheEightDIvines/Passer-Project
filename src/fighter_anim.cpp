@@ -14,6 +14,10 @@
 #include "global.h"
 
 #include "d/actor/d_a_npc_passer.h"
+#include "d/actor/d_a_npc_cd2.h"
+#include "JSystem/J3DGraphAnimator/J3DJoint.h"
+#include "mods/service.hpp"
+#include "mods/svc/hook.hpp"
 #include "d/d_com_inf_game.h"
 #include "f_op/f_op_actor_mng.h"
 #include "m_Do/m_Do_mtx.h"
@@ -21,6 +25,7 @@
 
 #include "fighter_anim.hpp"
 #include "travellers.hpp"
+#include "camp_cook.hpp"
 
 #include <algorithm>
 #include <array>
@@ -174,6 +179,12 @@ bool has(const daNpcPasser_c* passer) {
            anm("psr_s_fight_a.bck") != nullptr;
 }
 
+void drop(daNpcPasser_c* passer) {
+    Slot* s = slotFor(passer, false);
+    if (s == nullptr || s->phase == Phase::Sheathed) return;
+    giveBack(passer, *s);
+}
+
 bool busy(const daNpcPasser_c* passer) {
     const Slot* s = slotFor(passer, false);
     return s != nullptr && (s->phase == Phase::Surprised || s->phase == Phase::Drawing ||
@@ -185,7 +196,7 @@ bool weaponOut(const daNpcPasser_c* passer) {
     return s != nullptr && s->phase != Phase::Sheathed && s->phase != Phase::Surprised;
 }
 
-int update(daNpcPasser_c* passer, Want want, bool swing) {
+int update(daNpcPasser_c* passer, Want want, bool swing, bool turning) {
     if (!has(passer)) return 0;
     Slot* sp = slotFor(passer, true);
     if (sp == nullptr) return 0;
@@ -238,6 +249,8 @@ int update(daNpcPasser_c* passer, Want want, bool swing) {
                 if (swing) {
                     s.phase = Phase::Swinging;
                     restart(passer, anm("psr_s_fight_a.bck"), false, 3.0f);
+                } else if (turning) {
+                    play(passer, anm("psr_squareup_step.bck"), true, 4.0f);   // shuffles round to face it
                 } else {
                     play(passer, anm("psr_squareup.bck"), true, 6.0f);
                 }
@@ -287,6 +300,15 @@ bool ownSpeed(const daNpcPasser_c* passer) {
     return !(a == anm("psr_run.bck") && passer->mActionIdx == daNpcPasser_c::MODE_1);
 }
 
+bool heldMtx(const daNpcPasser_c* passer, Mtx out) {
+    const Body* b = passer != nullptr ? bodyFor(passer->m_type) : nullptr;
+    if (b == nullptr || passer->mpMorf == nullptr) return false;
+    mDoMtx_copy(passer->mpMorf->getModel()->getAnmMtx(kHandR), mDoMtx_stack_c::now);
+    mDoMtx_stack_c::concat(b->grip);
+    mDoMtx_copy(mDoMtx_stack_c::now, out);
+    return true;
+}
+
 bool weaponMtx(const daNpcPasser_c* passer, Mtx out) {
     const Slot* s = slotFor(passer, false);
     if (s == nullptr || passer->mpMorf == nullptr) return false;
@@ -322,4 +344,63 @@ bool weaponMtx(const daNpcPasser_c* passer, Mtx out) {
     return true;
 }
 
+}  // namespace fighter_anim
+
+namespace {
+
+DEFINE_HOOK(&daNpcCd2_c::jntNodeCB, Cd2JointTweak);
+
+// How much of the body's own tweak to apply: 1 normally, 0 while one of our animations plays
+// (faded over a few frames so it doesn't snap). Slots 0..31 travellers, 32 the cook.
+std::array<f32, travellers::kSlots + 1> g_tweak{};
+std::array<fpc_ProcID, travellers::kSlots + 1> g_tweakOwner{};
+constexpr f32 kTweakFade = 1.0f / 8.0f;
+
+int tweakSlot(daNpcCd2_c* npc) {
+    if (cook::isBody(npc)) return travellers::kSlots;
+    if (!travellers::isTraveller(npc)) return -1;
+    return travellers::slotIndex(npc);
+}
+
+HookAction onJointTweakPre(ModContext*, void* args, void* retval, void*) {
+    auto* npc = mods::arg<daNpcCd2_c*>(args, 0);
+    auto* joint = mods::arg<J3DJoint*>(args, 1);
+    auto* model = mods::arg<J3DModel*>(args, 2);
+    if (npc == nullptr || joint == nullptr || model == nullptr || npc->mpMorf == nullptr || npc->m_type >= 16) {
+        return HOOK_CONTINUE;
+    }
+    const int slot = tweakSlot(npc);
+    if (slot < 0 || slot > travellers::kSlots) return HOOK_CONTINUE;
+    const Body* b = bodyFor(npc->m_type);
+    const int jnt = joint->getJntNo();
+    if (g_tweakOwner[slot] != fopAcM_GetID(npc)) {
+        g_tweakOwner[slot] = fopAcM_GetID(npc);
+        g_tweak[slot] = 1.0f;
+    }
+    if (jnt == 0) {
+        // once a frame (the first joint): fade toward none while ours plays, back to full after
+        const bool mine = b != nullptr && ours(b, npc->mpMorf->getAnm());
+        const f32 target = mine ? 0.0f : 1.0f;
+        f32& w = g_tweak[slot];
+        w = w < target ? std::min(target, w + kTweakFade) : std::max(target, w - kTweakFade);
+    }
+    const f32 w = g_tweak[slot];
+    if (w >= 0.999f) return HOOK_CONTINUE;   // the game's own, untouched
+    const auto& t = l_Cd2_HIO.field_0x0004[npc->m_type].field_0x004[jnt].field_0x04;
+    const cXyz tr(10.0f * t.field_0x00[0] * w, 10.0f * t.field_0x00[1] * w, 10.0f * t.field_0x00[2] * w);
+    const csXyz rot(static_cast<s16>(DEG2S(t.field_0x0C[0]) * w), static_cast<s16>(DEG2S(t.field_0x0C[1]) * w),
+                    static_cast<s16>(DEG2S(t.field_0x0C[2]) * w));
+    mDoMtx_stack_c::copy(model->getAnmMtx(jnt));
+    mDoMtx_stack_c::ZXYrotM(rot);
+    mDoMtx_stack_c::transM(tr);
+    model->setAnmMtx(jnt, mDoMtx_stack_c::get());
+    cMtx_copy(mDoMtx_stack_c::get(), J3DSys::mCurrentMtx);
+    if (retval != nullptr) *static_cast<int*>(retval) = 1;
+    return HOOK_SKIP_ORIGINAL;
+}
+
+}  // namespace
+
+namespace fighter_anim {
+bool install() { return mods::hook::add_pre<Cd2JointTweak>(onJointTweakPre) == MOD_OK; }
 }  // namespace fighter_anim

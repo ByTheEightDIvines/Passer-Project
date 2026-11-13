@@ -274,6 +274,29 @@ const ActorProfileDesc psrTent_c::sProfile = {
 };
 
 namespace psr_tent {
+bool pushOff(fopAc_ac_c* npc, dBgS_Acch& acch) {
+    if (npc == nullptr || !acch.ChkGroundHit()) return false;
+    fopAc_ac_c* under = dComIfG_Bgsp().GetActorPointer(acch.m_gnd);
+    if (under == nullptr || fopAcM_GetName(under) != psrTent_c::sProcName) return false;
+    auto* tent = static_cast<psrTent_c*>(under);
+    // where it stands, in the tent's own frame (x across, z front to back)
+    const f32 c = cM_scos(tent->shape_angle.y), sn = cM_ssin(tent->shape_angle.y);
+    const f32 dx = npc->current.pos.x - tent->current.pos.x, dz = npc->current.pos.z - tent->current.pos.z;
+    f32 lx = dx * c - dz * sn;
+    f32 lz = dx * sn + dz * c;
+    const f32 hx = kFootX[tent->mKind] + 45.0f, hz = kFootZ[tent->mKind] + 45.0f;
+    // out over whichever edge is nearest
+    if (hx - std::abs(lx) < hz - std::abs(lz)) lx = lx < 0.0f ? -hx : hx;
+    else lz = lz < 0.0f ? -hz : hz;
+    const f32 x = tent->current.pos.x + lx * c + lz * sn;
+    const f32 z = tent->current.pos.z - lx * sn + lz * c;
+    const f32 g = groundAt(x, tent->current.pos.y + 60.0f, z);
+    npc->current.pos.set(x, g == -G_CM3D_F_INF ? tent->current.pos.y : g, z);
+    npc->old.pos = npc->current.pos;
+    npc->speed.y = 0.0f;
+    return true;
+}
+
 ModResult registerActor() {
     return svc_actor->register_actor(mod_ctx, &psrTent_c::sProfile, &psrTent_c::sProcName,
                                      &psrTent_c::sActorHandle);

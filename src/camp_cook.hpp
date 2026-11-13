@@ -27,9 +27,8 @@ void onGreedy(int campNode, const cXyz& fire, s16 campYaw);
 void matSpot(const cXyz& fire, s16 campYaw, cXyz* pos, s16* yaw);
 // His body (a townsfolk actor): its own behaviour is off, and it wears his look.
 bool isBody(const fopAc_ac_c* actor);
-// The spoon: out (in his hand) or not, and how far through a swing it is (0 up, 1 smack).
+// The spoon: out (in his hand, swung with the fighters' swing) or not.
 bool spoonOut();
-f32 spoonSwing();
 ModResult registerActor();
 }  // namespace cook
 

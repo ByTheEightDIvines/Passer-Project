@@ -30,6 +30,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -138,7 +139,11 @@ constexpr u16 kTalkAnimation = 6;
 // The talk marker runs its flow in the stage's message file. Hyrule Field (F_SP121) uses group 8;
 // registering in group 0 left the node unresolved, so the talk opened with no text and never ended.
 constexpr u16 kTalkFlowGroup = 8;
-constexpr int kHurtInvulnFrames = 30;   // half a second untouchable after a hit, like Link
+constexpr int kHurtInvulnFrames = 30;
+constexpr u8 kStrikeLinkPower = 2;       // a fighter's blow on Link (wolf): half a heart
+constexpr int kStuckFrames = 10;         // fleeing and pinned this long: step sideways
+constexpr int kSidestepFrames = 20;
+constexpr f32 kReachAbove = 180.0f;      // fighters only square up to enemies within reach of the ground   // half a second untouchable after a hit, like Link
 constexpr std::array kLanguages{
     MESSAGE_LANGUAGE_ENGLISH, MESSAGE_LANGUAGE_GERMAN, MESSAGE_LANGUAGE_FRENCH,
     MESSAGE_LANGUAGE_SPANISH, MESSAGE_LANGUAGE_ITALIAN, MESSAGE_LANGUAGE_JAPANESE,
@@ -173,9 +178,23 @@ struct PasserState {
     bool chasing = false;   // a camp defender running after its enemy (not yet in reach)
     bool swingReq = false;  // a fighter in reach and due a swing (the blow lands on the swing's frames)
     bool onGuard = false;   // this frame: a fighter with an enemy to face (draws and squares up)
+    bool turning = false;   // this frame: still turning to face it (shuffles round instead of spinning)
+    int stuck = 0;          // fleeing: frames pinned against something (a tent, a rock)
+    int sidestep = 0;       // fleeing: frames left of stepping sideways off it
+    bool vsWolf = false;    // the one it's facing is wolf Link (its blows are aimed at him)
+    s8 sideSign = 1;
 };
 
 std::array<PasserState, 32> g_states{};
+// Fighters the wolf has bitten (by roster slot): for five minutes they're as scared of wolf Link as
+// any unarmed traveller and never go for him. Kept apart from the actor's state so it lasts when the
+// traveller walks out of range and back; real time, so it runs out while they're away too.
+constexpr auto kWolfShyTime = std::chrono::minutes(5);
+std::array<std::chrono::steady_clock::time_point, travellers::kSlots> g_wolfShyUntil{};
+bool wolfShy(const daNpcPasser_c* passer) {
+    const int slot = travellers::slotIndex(passer);
+    return slot >= 0 && slot < travellers::kSlots && std::chrono::steady_clock::now() < g_wolfShyUntil[slot];
+}
 mods::flow::RegisteredMessage g_greeting;
 mods::flow::Graph g_talkGraph;
 uint16_t g_talkNode = 0xFFFF;
@@ -253,13 +272,15 @@ bool isProjectile(fopAc_ac_c* actor) {
     return name == fpcNm_E_ARROW_e || name == fpcNm_E_TK_BALL_e || name == fpcNm_E_TH_BALL_e;
 }
 
-fopAc_ac_c* nearestEnemyAt(const cXyz& at, f32 maxDistance) {
+// maxAbove: skip enemies flying higher than this above the spot (birds circling overhead).
+fopAc_ac_c* nearestEnemyAt(const cXyz& at, f32 maxDistance, f32 maxAbove = 1.0e9f) {
     struct Search {
         const cXyz* at;
         f32 maxDistanceSq;
         f32 nearestDistanceSq;
         fopAc_ac_c* result;
-    } search{&at, maxDistance * maxDistance, maxDistance * maxDistance, nullptr};
+        f32 maxAbove;
+    } search{&at, maxDistance * maxDistance, maxDistance * maxDistance, nullptr, maxAbove};
 
     auto findEnemy = [](void* candidate, void* context) -> void* {
         auto* data = static_cast<Search*>(context);
@@ -268,6 +289,9 @@ fopAc_ac_c* nearestEnemyAt(const cXyz& at, f32 maxDistance) {
         }
         auto* enemy = static_cast<fopAc_ac_c*>(candidate);
         if (fopAcM_GetGroup(enemy) != fopAc_ENEMY_e || !inPasserArea(enemy) || isProjectile(enemy)) {
+            return nullptr;
+        }
+        if (enemy->current.pos.y - data->at->y > data->maxAbove) {
             return nullptr;
         }
         const f32 dx = enemy->current.pos.x - data->at->x;
@@ -285,6 +309,27 @@ fopAc_ac_c* nearestEnemyAt(const cXyz& at, f32 maxDistance) {
 
 fopAc_ac_c* nearestEnemy(const daNpcPasser_c* passer, f32 maxDistance) {
     return nearestEnemyAt(passer->current.pos, maxDistance);
+}
+
+// Wolf Link counts as a foe for the fighters (as a man he's a friend): returns him if he is a wolf
+// within maxDistance of the spot, or nullptr.
+fopAc_ac_c* wolfLinkNear(const cXyz& at, f32 maxDistance) {
+    if (!daPy_py_c::checkNowWolf()) return nullptr;
+    fopAc_ac_c* link = dComIfGp_getPlayer(0);
+    if (link == nullptr) return nullptr;
+    const f32 dx = link->current.pos.x - at.x, dz = link->current.pos.z - at.z;
+    return dx * dx + dz * dz <= maxDistance * maxDistance ? link : nullptr;
+}
+
+// The nearer of a monster and wolf Link (either may be nullptr).
+fopAc_ac_c* nearerFoe(const cXyz& at, fopAc_ac_c* a, fopAc_ac_c* b) {
+    if (a == nullptr) return b;
+    if (b == nullptr) return a;
+    auto d2 = [&](fopAc_ac_c* f) {
+        const f32 dx = f->current.pos.x - at.x, dz = f->current.pos.z - at.z;
+        return dx * dx + dz * dz;
+    };
+    return d2(a) <= d2(b) ? a : b;
 }
 
 daNpcPasser_c* nearestPasser(const daTag_KMsg_c* tag) {
@@ -721,7 +766,9 @@ void setDamageable(daNpcPasser_c* passer) {
     // when the attack's groups overlap the target's. Enemy attacks aim at group 0x4 (melee 0xD,
     // arrows 0x1D), so they all land; Link's attacks aim at 0x1A, so his never do. (Group 0x10,
     // the escort wagon's, only caught Bulblin arrows and Link's own sword.)
-    passer->mCyl.SetTgSPrm(0x5);
+    // While Link is a wolf, fighters also take his bites (group 0x2, one of the groups his attacks
+    // aim at): he can hurt them, never kill them, and they run (see the hit handler).
+    passer->mCyl.SetTgSPrm(daPy_py_c::checkNowWolf() && travellers::isFighter(passer) ? 0x7 : 0x5);
     passer->mCyl.SetTgHitMark(CcG_Tg_UNK_MARK_1);
     passer->mCyl.SetTgSe(dCcD_SE_SOFT_BODY);
 }
@@ -953,7 +1000,32 @@ HookAction onExecuteEscapePre(ModContext*, void* args, void*, void*) {
 // Old women can't sprint: cap their flight speed (the run animation slows with it).
 void onExecuteEscapePost(ModContext*, void* args, void*, void*) {
     auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
-    if (!isPrototypePasser(passer) || !isOldWoman(passer) || passer->field_0xb1c != 1) {
+    if (!isPrototypePasser(passer) || passer->field_0xb1c != 1) {
+        return;
+    }
+    // Running away straight into a tent (or a rock) pinned them there until they died: when it is
+    // stuck against something, it steps sideways off it, then runs on.
+    if (auto* state = findState(passer, false)) {
+        const bool pinned = passer->mAcch.ChkWallHit() && passer->current.pos.abs(passer->old.pos) < 3.0f;
+        if (state->sidestep > 0) {
+            --state->sidestep;
+            const s16 side = static_cast<s16>(passer->shape_angle.y + state->sideSign * 0x4000);
+            const f32 step = std::max(passer->speedF, Cd2_HIO_maxSpeed(passer->m_type)) * 0.8f;
+            passer->current.pos.x += cM_ssin(side) * step;
+            passer->current.pos.z += cM_scos(side) * step;
+            passer->mAcch.CrrPos(dComIfG_Bgsp());
+            if (state->sidestep == 0) state->stuck = 0;
+        } else if (pinned) {
+            if (++state->stuck >= kStuckFrames) {
+                state->sidestep = kSidestepFrames;
+                state->sideSign = static_cast<s8>(-state->sideSign);   // the other way if that didn't do it
+                travellers::noteAct(passer, "stepping off something it ran into");
+            }
+        } else if (state->stuck > 0) {
+            --state->stuck;
+        }
+    }
+    if (!isOldWoman(passer)) {
         return;
     }
     const f32 cap = Cd2_HIO_maxSpeed(passer->m_type) * 1.5f * kOldWomanRunScale;
@@ -1034,6 +1106,9 @@ void onProfileExecutePost(ModContext*, void* args, void*, void*) {
     }
     if (!state->dead) {
         setDamageable(passer);
+        if (psr_tent::pushOff(passer, passer->mAcch)) {
+            travellers::noteAct(passer, "stepped off a tent it had climbed");
+        }
         fighterAnim(passer, *state);
         return;
     }
@@ -1059,12 +1134,23 @@ void onProfileExecutePost(ModContext*, void* args, void*, void*) {
 constexpr f32 kCampGuardRadius = 1500.0f;   // an enemy this close to the fire wakes the camp
 constexpr f32 kCampLeashRadius = 2200.0f;   // a defender chases it this far from the fire
 constexpr f32 kStrikeReach = 150.0f;
-constexpr f32 kLimpSpeed = 0.6f;            // limping on the last heart, part of a walk
+constexpr f32 kLimpSpeed = 0.6f;
+constexpr s16 kGuardTurn = 0x300;           // turning on guard: about 4 degrees a frame, shuffling
+constexpr s16 kTurnShuffle = 0x800;         // more than ~11 degrees off: shuffle round to face it            // limping on the last heart, part of a walk
 constexpr int kStrikeEvery = 75;            // frames between swings (each swing is two blows)
 constexpr u8 kStrikePower = 2;              // a sword hit (10 damage to an enemy: a Bokoblin takes 4)
 constexpr u8 kAnmIdle = 0, kAnmWalk = 2, kAnmRun = 4, kAnmCower = 0x26;
 
 std::array<dCcD_Sph, 32> g_strike{};
+const dCcD_SrcSph kStrikeLinkSrc = {
+    {
+        {0x0, {{AT_TYPE_NORMAL_SWORD, kStrikeLinkPower, 0xD}, {0x0, 0x0}, 0x0}},   // aimed like a monster's blow
+        {dCcD_SE_SWORD, 0x0, 0x0, 0x0, 0x0},
+        {0x0, 0x0, 0x0, 0x0, 0x0},
+        {0x0},
+    },
+    {{{0.0f, 0.0f, 0.0f}, 70.0f}},
+};
 const dCcD_SrcSph kStrikeSrc = {
     {
         {0x0, {{AT_TYPE_NORMAL_SWORD, kStrikePower, 0x3}, {0x0, 0x0}, 0x0}},   // hits enemies only
@@ -1095,7 +1181,7 @@ void stepToward(daNpcPasser_c* passer, const cXyz& to, f32 speed) {
 
 void strike(daNpcPasser_c* passer, PasserState& state) {
     dCcD_Sph& sph = g_strike[&state - g_states.data()];
-    sph.Set(kStrikeSrc);
+    sph.Set(state.vsWolf ? kStrikeLinkSrc : kStrikeSrc);
     sph.SetStts(&passer->mStts);
     cXyz at = passer->current.pos;
     at.x += cM_ssin(passer->shape_angle.y) * 90.0f;
@@ -1141,7 +1227,7 @@ void fighterAnim(daNpcPasser_c* passer, PasserState& state) {
             want = Want::HurtWalk;
         }
     }
-    if (fighter_anim::update(passer, want, state.swingReq) > 0) {
+    if (fighter_anim::update(passer, want, state.swingReq, state.turning) > 0) {
         strike(passer, state);
     }
     state.swingReq = false;
@@ -1161,8 +1247,11 @@ bool campGuard(daNpcPasser_c* passer, PasserState& state) {
         state.campCower = false;
         return false;
     }
-    auto* enemy = nearestEnemyAt(center, state.defending ? kCampLeashRadius : kCampGuardRadius);
     const bool fighter = travellers::isFighter(passer);
+    const f32 guardRadius = state.defending ? kCampLeashRadius : kCampGuardRadius;
+    auto* enemy = nearestEnemyAt(center, guardRadius, fighter ? kReachAbove : 1.0e9f);
+    if (fighter && !wolfShy(passer)) enemy = nearerFoe(center, enemy, wolfLinkNear(center, guardRadius));
+    state.vsWolf = enemy != nullptr && enemy == dComIfGp_getPlayer(0);
 
     if (fighter && !holdsGround(passer)) {
         // down to its last heart: it runs (like anywhere else)
@@ -1196,7 +1285,10 @@ bool campGuard(daNpcPasser_c* passer, PasserState& state) {
             } else {
                 guardAnim(passer, state, kAnmIdle);
                 const s16 yaw = cLib_targetAngleY(&passer->current.pos, &enemy->current.pos);
-                cLib_addCalcAngleS2(&passer->current.angle.y, yaw, 4, 0x1000);
+                state.turning = std::abs(static_cast<s16>(yaw - passer->shape_angle.y)) > kTurnShuffle;
+                if (!fighter_anim::busy(passer)) {
+                    cLib_addCalcAngleS2(&passer->current.angle.y, yaw, 4, fighter_anim::has(passer) ? kGuardTurn : 0x1000);
+                }
                 passer->shape_angle.y = passer->current.angle.y;
                 if (--state.strikeTimer <= 0 && swingOrStrike(passer, state)) {
                     state.strikeTimer = kStrikeEvery;
@@ -1308,6 +1400,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
     // Settled at a camp for the night: the camp guard decides (defend the fire / cower / sit).
     bool campHandled = false;
     state->onGuard = false;
+    state->turning = false;
     if (!state->talking && !state->cowering) {
         campHandled = campGuard(passer, *state);
     }
@@ -1315,12 +1408,19 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
     // Fighters stop, face the enemy and stand their ground while they're healthy.
     if (!campHandled && !state->talking && !state->cowering &&
         !travellers::campInfo(passer, nullptr, nullptr, nullptr)) {
-        auto* enemy = holdsGround(passer) ? nearestEnemy(passer, kThreatRadius) : nullptr;
+        auto* enemy = holdsGround(passer) ? nearestEnemyAt(passer->current.pos, kThreatRadius, kReachAbove) : nullptr;
+        if (holdsGround(passer) && !wolfShy(passer)) {
+            enemy = nearerFoe(passer->current.pos, enemy, wolfLinkNear(passer->current.pos, kThreatRadius));
+        }
+        state->vsWolf = enemy != nullptr && enemy == dComIfGp_getPlayer(0);
         if (enemy != nullptr) {
             state->onGuard = true;
             passer->speedF = 0.0f;
             const s16 toEnemy = cLib_targetAngleY(&passer->current.pos, &enemy->current.pos);
-            cLib_addCalcAngleS2(&passer->current.angle.y, toEnemy, 4, 0x800);
+            state->turning = std::abs(static_cast<s16>(toEnemy - passer->shape_angle.y)) > kTurnShuffle;
+            if (!fighter_anim::busy(passer)) {
+                cLib_addCalcAngleS2(&passer->current.angle.y, toEnemy, 4, fighter_anim::has(passer) ? kGuardTurn : 0x800);
+            }
             passer->shape_angle.y = passer->current.angle.y;
             if (!state->standing) {
                 state->standing = true;
@@ -1360,8 +1460,10 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         // other player-owned actors all report a non-enemy attacker and are ignored.
         auto* attacker = passer->mCyl.GetTgHitAc();
         passer->mCyl.ResetTgHit();
-        if (attacker == nullptr || !fopAcM_IsActor(attacker) ||
-            fopAcM_GetGroup(attacker) != fopAc_ENEMY_e) {
+        const bool byWolf = attacker != nullptr && attacker == dComIfGp_getPlayer(0) &&
+                            daPy_py_c::checkNowWolf() && travellers::isFighter(passer);
+        if (!byWolf && (attacker == nullptr || !fopAcM_IsActor(attacker) ||
+                        fopAcM_GetGroup(attacker) != fopAc_ENEMY_e)) {
             return HOOK_CONTINUE;
         }
         // Damage in quarter hearts, the same amount the attack would take from Link.
@@ -1371,12 +1473,30 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         if (life < 0) {
             life = state->health * kQuartersPerHeart;   // not on the roster (old prototype walker)
         }
-        life = std::max(0, life - damage);
+        // the wolf hurts, but never kills: at least a quarter heart is always left
+        life = byWolf ? std::max(1, life - damage) : std::max(0, life - damage);
         travellers::setLife(passer, life);
         state->health = (life + kQuartersPerHeart - 1) / kQuartersPerHeart;
         passer->health = static_cast<s16>(state->health);
         travellers::noteHit(passer, damage, life);
         state->invuln = kHurtInvulnFrames;
+        if (byWolf) {
+            // bitten: from now on it's like any other traveller with the wolf: runs from him, never fights
+            fighter_anim::drop(passer);
+            if (const int slot = travellers::slotIndex(passer); slot >= 0 && slot < travellers::kSlots) {
+                g_wolfShyUntil[slot] = std::chrono::steady_clock::now() + kWolfShyTime;
+            }
+            state->standing = false;
+            state->defending = false;
+            state->campCower = false;
+            state->arrived = false;
+            state->cowering = false;
+            state->anim = 0xFF;
+            traveller_gear::sit(passer, false);
+            travellers::noteAct(passer, "bitten by wolf Link, running");
+            passer->setAction(daNpcPasser_c::MODE_1);
+            return HOOK_CONTINUE;
+        }
         if (life <= 0) {
             beginDeath(passer, *state);
         } else if (holdsGround(passer)) {
@@ -1401,6 +1521,10 @@ bool holdsGround(const daNpcPasser_c* passer) {
 
 void onFearCheckPost(ModContext*, void* args, void* retval, void*) {
     auto* passer = static_cast<daNpcPasser_c*>(mods::arg<daNpcCd2_c*>(args, 0));
+    if (retval != nullptr && isPrototypePasser(passer) && wolfShy(passer) &&
+        wolfLinkNear(passer->current.pos, kThreatRadius) != nullptr) {
+        return;   // bitten once: afraid of the wolf like any non-fighter (the game's own fear decides)
+    }
     if (retval != nullptr && isPrototypePasser(passer) && holdsGround(passer)) {
         *static_cast<bool*>(retval) = false;
         return;
@@ -1651,6 +1775,10 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
 
     // Optional: keeps Bulblins chasing the passer once they've picked him. If get_pla can't be
     // hooked (missing from the symbol manifest), the passer still works with nearest-target only.
+    // Optional: without it the old men's hunch stacks on the fight animations.
+    if (!fighter_anim::install()) {
+        svc_log->info(mod_ctx, "joint tweak hook unavailable; fight animations keep the body tweaks");
+    }
     // Optional: without it the fighters' stances and swings play at the walk's speed.
     if (mods::hook::add_post<PasserPathMove>(onPathMovePost) != MOD_OK) {
         svc_log->info(mod_ctx, "passer walk-speed hook unavailable; fight animations follow the walk speed");

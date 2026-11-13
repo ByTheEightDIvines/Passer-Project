@@ -250,14 +250,11 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
     if (g->hat != nullptr) {
         drawOn(g->hat, kHead, nullptr);   // made in his head's own space
     }
-    if (g->spoon != nullptr && cook::spoonOut()) {
-        // in his right hand, held up and brought down in a swing (turned with him, not with the hand,
-        // so it reads clearly whatever his arm is doing)
-        const MtxP hand = body->getAnmMtx(kHandR);
-        mDoMtx_stack_c::transS(hand[0][3], hand[1][3], hand[2][3]);
-        mDoMtx_stack_c::YrotM(passer->shape_angle.y);
-        mDoMtx_stack_c::XrotM(static_cast<s16>(cook::spoonSwing() * 0x5800));   // up -> forward and down
-        mDoMtx_stack_c::ZrotM(0x4000);                                          // the spoon's length points up
+    Mtx held;
+    if (g->spoon != nullptr && cook::spoonOut() && fighter_anim::heldMtx(passer, held)) {
+        // in his right hand, held like the fighters hold their maces (the spoon is modelled along +X)
+        mDoMtx_copy(held, mDoMtx_stack_c::now);
+        mDoMtx_stack_c::YrotM(-0x4000);
         g->spoon->setBaseTRMtx(mDoMtx_stack_c::now);
         g_env_light.setLightTevColorType_MAJI(g->spoon, &passer->tevStr);
         mDoExt_modelUpdateDL(g->spoon);
