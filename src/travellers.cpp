@@ -9,6 +9,8 @@
 
 #include "d/actor/d_a_npc_passer.h"
 #include "d/d_bg_s_gnd_chk.h"
+#include "d/d_bg_s_wtr_chk.h"
+#include "camp_cook.hpp"
 #include "d/d_com_inf_game.h"
 #include "d/d_kankyo.h"
 #include "d/d_path.h"
@@ -981,6 +983,149 @@ void spawnTent(CampTents& c, u32 kind, const cXyz& at, s16 yaw, s8 room) {
     g_spawnCooldown = kSpawnGap;
 }
 
+// --- where the tents stand: the flattest open ground around the camp ----------------------------
+f32 probeGround(f32 x, f32 y, f32 z) {
+    dBgS_ObjGndChk gnd;
+    cXyz probe(x, y + 600.0f, z);
+    gnd.SetPos(&probe);
+    return dComIfG_Bgsp().GroundCross(&gnd);
+}
+
+bool underWater(f32 x, f32 ground, f32 z) {
+    dBgS_WtrChk w;
+    cXyz at(x, ground - 50.0f, z);
+    w.Set(at, ground + 400.0f);
+    return dComIfG_Bgsp().WaterChk(&w) && w.GetHeight() > ground - 5.0f;
+}
+
+// Closest distance from a point to a tent's footprint (a rectangle turned by yaw), on the ground plane.
+f32 distToFootprint(const cXyz& at, s16 yaw, f32 hx, f32 hz, f32 px, f32 pz) {
+    const f32 c = cM_scos(yaw), sn = cM_ssin(yaw);
+    const f32 dx = px - at.x, dz = pz - at.z;
+    const f32 lx = dx * c - dz * sn, lz = dx * sn + dz * c;   // into the tent's own frame
+    const f32 ox = std::max(0.0f, std::abs(lx) - hx), oz = std::max(0.0f, std::abs(lz) - hz);
+    return std::sqrt(ox * ox + oz * oz);
+}
+
+constexpr f32 kFlatEnough = 30.0f;   // highest minus lowest ground under a big tent's whole floor
+
+struct TentSpot {
+    cXyz pos;
+    s16 yaw;
+    f32 hx, hz;
+};
+
+// How bumpy the ground under a footprint is (highest minus lowest of a 5 x 5 grid of probes), or
+// -1 if it can't stand there (no ground, water, or a ledge well above or below the camp).
+f32 bumpiness(const cXyz& at, s16 yaw, f32 hx, f32 hz, f32 refY, bool fine = true) {
+    const f32 c = cM_scos(yaw), sn = cM_ssin(yaw);
+    f32 lo = 1e9f, hi = -1e9f;
+    const int step = fine ? 1 : 2;   // rough pass: corners, edge middles and centre only
+    for (int i = 0; i <= 4; i += step) {
+        for (int j = 0; j <= 4; j += step) {
+            const f32 lx = hx * (i * 0.5f - 1.0f), lz = hz * (j * 0.5f - 1.0f);
+            const f32 x = at.x + lx * c + lz * sn, z = at.z - lx * sn + lz * c;
+            const f32 g = probeGround(x, refY, z);
+            if (g == -G_CM3D_F_INF || std::abs(g - refY) > 300.0f) return -1.0f;
+            if (fine && ((i | j) & 1) == 0 && underWater(x, g, z)) return -1.0f;
+            lo = std::min(lo, g);
+            hi = std::max(hi, g);
+        }
+    }
+    return hi - lo;
+}
+
+// Search rings around the fire for the flattest spot a tent fits: clear of the fire, every seat,
+// the cook's mat and the tents already placed, with its door toward the fire. Close in is better,
+// but flat ground beats close.
+bool findTentSpot(int campNode, const cXyz& fire, s16 campYaw, u32 kind, const std::vector<TentSpot>& placed,
+                  TentSpot* out, f32 maxBump = 1e9f) {
+    const f32 hx = psr_tent::kFootX[kind], hz = psr_tent::kFootZ[kind];
+    cXyz seats[16];
+    int seatCount = 0;
+    for (int i = 0; i < 16 && i < campSeatCount(campNode); i++) {
+        s16 y;
+        if (campSeatSpot(campNode, i, &seats[seatCount], &y)) ++seatCount;
+    }
+    cXyz mat;
+    s16 matYaw;
+    cook::matSpot(fire, campYaw, &mat, &matYaw);
+    // rough pass over every candidate that fits, then the closer look at the best few
+    struct Cand { f32 score; cXyz at; s16 yaw; };
+    std::vector<Cand> cands;
+    for (f32 r = 300.0f; r <= 1500.0f; r += 150.0f) {
+        for (int a = 0; a < 24; a++) {
+            const s16 dir = static_cast<s16>(a * 0x10000 / 24);
+            const cXyz at(fire.x + cM_ssin(dir) * r, fire.y, fire.z + cM_scos(dir) * r);
+            const s16 yaw = static_cast<s16>(dir + 0x8000);   // door toward the fire
+            if (distToFootprint(at, yaw, hx, hz, fire.x, fire.z) < 320.0f) continue;
+            if (distToFootprint(at, yaw, hx, hz, mat.x, mat.z) < 160.0f) continue;
+            bool clear = true;
+            for (int i = 0; i < seatCount && clear; i++) {
+                clear = distToFootprint(at, yaw, hx, hz, seats[i].x, seats[i].z) >= 130.0f;
+            }
+            for (const TentSpot& o : placed) {
+                if (!clear) break;
+                // keep a walkway between tents: no corner of either near the other
+                for (int k = 0; k < 4 && clear; k++) {
+                    const f32 cx = (k & 1) ? hx : -hx, cz = (k & 2) ? hz : -hz;
+                    const f32 wx = at.x + cx * cM_scos(yaw) + cz * cM_ssin(yaw);
+                    const f32 wz = at.z - cx * cM_ssin(yaw) + cz * cM_scos(yaw);
+                    const f32 ox = (k & 1) ? o.hx : -o.hx, oz = (k & 2) ? o.hz : -o.hz;
+                    const f32 vx = o.pos.x + ox * cM_scos(o.yaw) + oz * cM_ssin(o.yaw);
+                    const f32 vz = o.pos.z - ox * cM_ssin(o.yaw) + oz * cM_scos(o.yaw);
+                    clear = distToFootprint(o.pos, o.yaw, o.hx, o.hz, wx, wz) >= 120.0f &&
+                            distToFootprint(at, yaw, hx, hz, vx, vz) >= 120.0f;
+                }
+                if (clear) clear = at.abs(o.pos) >= std::max(hx, hz) + std::max(o.hx, o.hz);
+            }
+            if (!clear) continue;
+            const f32 bump = bumpiness(at, yaw, hx, hz, fire.y, false);
+            if (bump < 0.0f) continue;
+            cands.push_back({bump + r * 0.03f, at, yaw});   // 100 units further out costs 3 of bump
+        }
+    }
+    std::sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) { return a.score < b.score; });
+    f32 best = 1e9f, bestBump = 0.0f;
+    bool found = false;
+    for (size_t i = 0; i < cands.size() && i < (maxBump < 1e8f ? 16u : 6u); i++) {
+        const f32 bump = bumpiness(cands[i].at, cands[i].yaw, hx, hz, fire.y, true);
+        if (bump < 0.0f || bump > maxBump) continue;
+        const f32 score = bump + cands[i].at.abs(fire) * 0.03f;
+        if (score < best) {
+            best = score;
+            bestBump = bump;
+            found = true;
+            *out = {cands[i].at, cands[i].yaw, hx, hz};
+        }
+    }
+    if (found) diag("tentpos kind %d bump %.0f at %.0f out (%d spots fit)", static_cast<int>(kind), bestBump,
+                    out->pos.abs(fire), static_cast<int>(cands.size()));
+    return found;
+}
+
+// Beedle's tent has no fire: look nearby for the flattest open ground, keeping its facing.
+bool findBeedleSpot(const cXyz& mid, s16 face, TentSpot* out) {
+    const f32 hx = psr_tent::kFootX[PSR_TENT_BEEDLE], hz = psr_tent::kFootZ[PSR_TENT_BEEDLE];
+    f32 best = 1e9f;
+    bool found = false;
+    for (f32 r = 0.0f; r <= 1200.0f; r += 150.0f) {
+        for (int a = 0; a < (r == 0.0f ? 1 : 16); a++) {
+            const s16 dir = static_cast<s16>(a * 0x1000);
+            const cXyz at(mid.x + cM_ssin(dir) * r, mid.y, mid.z + cM_scos(dir) * r);
+            const f32 bump = bumpiness(at, face, hx, hz, mid.y);
+            if (bump < 0.0f) continue;
+            const f32 score = bump + r * 0.03f;
+            if (score < best) {
+                best = score;
+                found = true;
+                *out = {at, face, hx, hz};
+            }
+        }
+    }
+    return found;
+}
+
 void updateCamps(int stage, const cXyz& link) {
     for (int i = 0; i < kCampCount; ++i) {
         const Camp& cp = kCamps[i];
@@ -994,7 +1139,9 @@ void updateCamps(int stage, const cXyz& link) {
             const s16 face = static_cast<s16>(cp.facing);   // the way you faced when you logged it
             const cXyz mid(cp.x, cp.y, cp.z);
             if (n.kind == NK_BEEDLE) {
-                spawnTent(c, PSR_TENT_BEEDLE, mid, face, n.room);
+                TentSpot b{mid, face, 0.0f, 0.0f};
+                findBeedleSpot(mid, face, &b);
+                spawnTent(c, PSR_TENT_BEEDLE, b.pos, b.yaw, n.room);
             } else {
                 // the big wall tent behind the fire, a small A-tent off to one side, doors inward
                 // (the seats sit on a half-ring 230 out in front, so the tents stand clear of them)
@@ -1003,8 +1150,18 @@ void updateCamps(int stage, const cXyz& link) {
                 const s16 side = static_cast<s16>(face + 0x4000);
                 const cXyz small(mid.x + cM_ssin(side) * aside, mid.y, mid.z + cM_scos(side) * aside);
                 spawnFire(c, cp.node | (soupLevel(n.stage, n.room) << 8), mid, face, n.room);
-                spawnTent(c, PSR_TENT_WALL, wall, face, n.room);
-                spawnTent(c, PSR_TENT_A, small, static_cast<s16>(side + 0x8000), n.room);
+                // ...unless that ground is bumpy: then each tent goes to the flattest open spot nearby
+                // The big wall tent only goes up where there is properly flat ground; camps without
+                // any just have the small tent.
+                std::vector<TentSpot> placed;
+                TentSpot w{wall, face, psr_tent::kFootX[PSR_TENT_WALL], psr_tent::kFootZ[PSR_TENT_WALL]};
+                const bool big = findTentSpot(cp.node, mid, face, PSR_TENT_WALL, placed, &w, kFlatEnough);
+                if (big) placed.push_back(w);
+                TentSpot a{small, static_cast<s16>(side + 0x8000), psr_tent::kFootX[PSR_TENT_A], psr_tent::kFootZ[PSR_TENT_A]};
+                findTentSpot(cp.node, mid, face, PSR_TENT_A, placed, &a);
+                if (big) spawnTent(c, PSR_TENT_WALL, w.pos, w.yaw, n.room);
+                else diag("tent    no flat ground for the big tent at camp node %d", cp.node);
+                spawnTent(c, PSR_TENT_A, a.pos, a.yaw, n.room);
             }
         } else if (!here && c.up) {
             c.ids.clear();          // the room unloaded and took the tents with it

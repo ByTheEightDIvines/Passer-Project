@@ -93,14 +93,11 @@ cPhs_Step psrTent_c::create() {
     }
     fopAcM_SetMtx(this, mpModel->getBaseTRMtx());
     // Generous cull box: Beedle's banner pole stands about 5 m tall, guy ropes reach 3 m out.
-    fopAcM_setCullSizeBox(this, -520.0f, -20.0f, -520.0f, 520.0f, 560.0f, 520.0f);
+    fopAcM_setCullSizeBox(this, -860.0f, -40.0f, -860.0f, 860.0f, 900.0f, 860.0f);
     Execute();
     return step;
 }
 
-// Half the size of each tent's footprint on the ground (x across, z front to back).
-constexpr f32 kFootX[PSR_TENT_KIND_NUM] = {150.0f, 310.0f, 350.0f};
-constexpr f32 kFootZ[PSR_TENT_KIND_NUM] = {245.0f, 445.0f, 515.0f};
 constexpr f32 kMaxTilt = 0.30f;   // about 17 degrees: steeper than that it leans this far and sinks in
 
 static f32 groundAt(f32 x, f32 y, f32 z, dBgS_ObjGndChk* out = nullptr) {
@@ -118,7 +115,7 @@ void psrTent_c::snapToGround() {
     dBgS_ObjGndChk centre;
     const f32 mid = groundAt(current.pos.x, current.pos.y, current.pos.z, &centre);
     if (mid == -G_CM3D_F_INF) return;
-    const f32 hx = kFootX[mKind], hz = kFootZ[mKind];
+    const f32 hx = psr_tent::kFootX[mKind], hz = psr_tent::kFootZ[mKind];
     const f32 c = cM_scos(shape_angle.y), sn = cM_ssin(shape_angle.y);
     f32 h[4];   // corners: (-x,-z) (+x,-z) (-x,+z) (+x,+z)
     for (int i = 0; i < 4; i++) {
@@ -208,6 +205,8 @@ int psrTent_c::Execute() {
     mDoMtx_stack_c::YrotM(shape_angle.y);
     mDoMtx_stack_c::XrotM(mTiltX);
     mDoMtx_stack_c::ZrotM(mTiltZ);
+    const f32 k = psr_tent::kScale[mKind];
+    mDoMtx_stack_c::scaleM(k, k, k);
     mpModel->setBaseTRMtx(mDoMtx_stack_c::get());
     if (mpGlow != NULL) {
         mpGlow->setBaseTRMtx(mDoMtx_stack_c::get());
@@ -218,6 +217,7 @@ int psrTent_c::Execute() {
         mDoMtx_stack_c::YrotM(shape_angle.y);
         mDoMtx_stack_c::XrotM(mTiltX);
         mDoMtx_stack_c::ZrotM(mTiltZ);
+        mDoMtx_stack_c::scaleM(k, k, k);
         mDoMtx_stack_c::transM(prop.x, prop.y, prop.z);
         mDoMtx_stack_c::scaleM(prop.scale, prop.scale, prop.scale);
         mpStage[i]->setBaseTRMtx(mDoMtx_stack_c::get());

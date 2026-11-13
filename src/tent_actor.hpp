@@ -45,6 +45,12 @@ public:
 };
 
 namespace psr_tent {
+// How much bigger than the modelled size each tent stands in the world (A-tent, wall tent, Beedle's).
+constexpr f32 kScale[PSR_TENT_KIND_NUM] = {1.3f, 1.3f, 1.6f};
+// Half the size of each tent's footprint on the ground at that scale (x across, z front to back).
+constexpr f32 kFootX[PSR_TENT_KIND_NUM] = {150.0f * 1.3f, 310.0f * 1.3f, 350.0f * 1.6f};
+constexpr f32 kFootZ[PSR_TENT_KIND_NUM] = {245.0f * 1.3f, 445.0f * 1.3f, 515.0f * 1.6f};
+
 // Registers the actor with the game. Call once from mod_initialize.
 ModResult registerActor();
 }  // namespace psr_tent

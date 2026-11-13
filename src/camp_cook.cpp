@@ -56,7 +56,13 @@ const dCcD_SrcSph kSpoonSrc = {
     {{{0.0f, 0.0f, 0.0f}, 45.0f}},
 };
 
-daNpcPasser_c* body() { return static_cast<daNpcPasser_c*>(fopAcM_SearchByID(g_body)); }
+// His body, once it is fully made: while the game is still loading it the actor can already be found
+// but has no model or animations yet (touching it then crashed the game on the second scoop).
+daNpcPasser_c* body() {
+    if (g_body == fpcM_ERROR_PROCESS_ID_e || fpcM_IsCreating(g_body)) return nullptr;
+    auto* b = static_cast<daNpcPasser_c*>(fopAcM_SearchByID(g_body));
+    return b != nullptr && b->mpMorf != nullptr ? b : nullptr;
+}
 
 f32 distXZ(const cXyz& a, const cXyz& b) { return std::hypot(a.x - b.x, a.z - b.z); }
 }  // namespace
