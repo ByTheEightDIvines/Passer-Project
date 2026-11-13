@@ -60,6 +60,7 @@ constexpr int kMaxCampFighters = 2;         // at most this many fighters sit at
 constexpr int kBowman = 8;                   // passer 8 (bow and sword): only one out in a room at a time
 constexpr int kAmphiSeats = 6;               // the amphitheater by Castle Town is a bit bigger
 constexpr int kMaxSeats = 10;
+constexpr int kBigSeat = 8;    // the big guy's own seat at every camp: nobody else ever takes it
 constexpr int kGoneCooldownMin = 1800;       // frames (30-90 s) before a traveller the game deleted
 constexpr int kGoneCooldownMax = 5400;       // can reappear, different for each so they trickle back
 constexpr f32 kGoneSkip = 800.0f;            // ...and how far down the road it has walked by then
@@ -76,7 +77,7 @@ constexpr int kHealFramesResting = 150;      // ...every 2.5 s while sitting at 
 // run once they are down to their last heart.
 constexpr std::array<u8, 8> kFighters{3, 6, 8, 9, 11, 13, 14, 29};
 // The passer types from the cast (stock passer type ids).
-constexpr u8 kBigGuy = 15;    // the stocky man (MBN_a2)
+constexpr u8 kBigGuy = 9;     // the big guy with the moustache (MAD_a2)
 constexpr std::array<u8, 14> kCast{3, 4, 6, 7, 8, 9, 11, 13, 14, 15, 20, 27, 28, 29};
 
 // --- network ----------------------------------------------------------------------------------
@@ -422,13 +423,13 @@ int campSeats(int campNode) { return campNode == amphitheaterNode() ? kAmphiSeat
 
 int seatsTaken(int campNode) {
     int n = 0;
-    for (const Traveller& t : g_t) if (t.used && t.campNode == campNode) ++n;
+    for (const Traveller& t : g_t) if (t.used && t.campNode == campNode && t.seat != kBigSeat) ++n;
     return n;
 }
 
 int fightersAt(int campNode) {
     int n = 0;
-    for (const Traveller& t : g_t) if (t.used && t.campNode == campNode && fighterType(t.type)) ++n;
+    for (const Traveller& t : g_t) if (t.used && t.campNode == campNode && t.seat != kBigSeat && fighterType(t.type)) ++n;
     return n;
 }
 
@@ -908,11 +909,13 @@ void stepRestOrTown(Traveller& t) {
 bool seatSpot(int campNode, int seat, cXyz* pos, s16* yaw) {
     if (campNode < 0 || seat < 0) return false;
     const int seats = campSeats(campNode);
-    if (seat >= seats) return false;
+    if (seat >= seats && seat != kBigSeat) return false;
     const Node& n = kNodes[campNode];
     const f32 ring = seats > kCampSeats ? 220.0f : 185.0f;
     const int step = seats > 1 ? 0x8000 / (seats - 1) : 0;
-    const s16 a = static_cast<s16>(n.facing - 0x6000 + seat * step);
+    // the big guy's seat: 90 deg round to the small tent's side, clear of the half-ring
+    const s16 a = seat == kBigSeat ? static_cast<s16>(n.facing + 0x4000)
+                                   : static_cast<s16>(n.facing - 0x6000 + seat * step);
     if (pos) pos->set(n.x + cM_ssin(a) * ring, n.y, n.z + cM_scos(a) * ring);
     if (yaw) *yaw = static_cast<s16>(a + 0x8000);
     return true;
@@ -1249,6 +1252,11 @@ int summonGreedyGuard(int campNode, const cXyz& link, s16 linkYaw, s8 room) {
     }
     if (best < 0) {
         int pick = -1;
+        // there is only one big guy: if he's somewhere off screen (in town, gone, on the road), it's him
+        for (int i = 0; i < kSlots && pick < 0; ++i) {
+            const Traveller& t = g_t[i];
+            if (t.used && t.type == kBigGuy && !t.spawned && !t.dead) pick = i;
+        }
         for (int i = 0; i < kSlots && pick < 0; ++i) if (!g_t[i].used) pick = i;
         for (int i = 0; i < kSlots && pick < 0; ++i) {
             const Traveller& t = g_t[i];
@@ -1263,7 +1271,8 @@ int summonGreedyGuard(int campNode, const cXyz& link, s16 linkYaw, s8 room) {
         t.state = ST_REST;
         t.node = campNode;
         t.restUntilMorning = true;
-        takeSeat(t, campNode);
+        t.campNode = campNode;
+        t.seat = kBigSeat;   // his own seat, kept empty for him
         const Node& n = kNodes[campNode];
         Where w{};
         w.stage = n.stage;
@@ -1300,6 +1309,13 @@ void doneWalkingToSeat(const fopAc_ac_c* passer) {
 }
 
 bool campSeatSpot(int campNode, int seat, cXyz* pos, s16* yaw) { return seatSpot(campNode, seat, pos, yaw); }
+
+int bigSeat() { return kBigSeat; }
+
+bool inBigSeat(const fopAc_ac_c* passer) {
+    const int slot = slotOf(passer);
+    return slot >= 0 && g_t[slot].seat == kBigSeat;
+}
 
 bool campSeatInUse(int campNode, int seat) {
     for (int i = 0; i < kSlots; ++i) {

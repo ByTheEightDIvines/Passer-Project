@@ -48,7 +48,9 @@ bool campInfo(const fopAc_ac_c* passer, cXyz* center, cXyz* seat, s16* seatYaw);
 // The seats around a camp's fire (campNode = the camp's road node), for the fire to draw its stumps.
 int campSeatCount(int campNode);
 bool campSeatSpot(int campNode, int seat, cXyz* pos, s16* yaw);
-bool campSeatInUse(int campNode, int seat);   // someone is sitting on it right now (it draws its own)
+bool campSeatInUse(int campNode, int seat);
+int bigSeat();                                // the big guy's reserved seat number at every camp
+bool inBigSeat(const fopAc_ac_c* passer);      // this traveller is the big guy, in his seat   // someone is sitting on it right now (it draws its own)
 // A second scoop of a camp's soup: the nearest camper, or a big guy right behind Link, comes to yell.
 // Returns the roster slot (-1: nobody available). He stands until the yelling is over, then sits.
 int summonGreedyGuard(int campNode, const cXyz& link, s16 linkYaw, s8 room);

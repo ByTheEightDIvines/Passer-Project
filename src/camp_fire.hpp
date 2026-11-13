@@ -34,6 +34,7 @@ public:
     mDoExt_btkAnm mBubbling;
     static constexpr int kStoolMax = 8;
     J3DModel* mpStool[kStoolMax] = {};
+    J3DModel* mpBigSeat = nullptr;     // the big guy's own seat, empty unless he's in it
     static constexpr int kDecorNum = 4;
     J3DModel* mpDecor[kDecorNum] = {};
     f32 mDecorY[kDecorNum] = {};

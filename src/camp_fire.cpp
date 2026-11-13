@@ -7,6 +7,7 @@
 #include "d/d_bg_s_gnd_chk.h"
 #include "d/d_com_inf_game.h"
 #include "d/d_item_data.h"
+#include "d/actor/d_a_npc_cd2.h"
 #include "f_op/f_op_actor_mng.h"
 #include "f_pc/f_pc_draw_priority.h"
 #include "m_Do/m_Do_audio.h"
@@ -143,6 +144,7 @@ int psrFire_c::CreateHeap() {
     for (int i = 0; i < seats && i < kStoolMax; i++) {
         mpStool[i] = makeModel(kPackArc, "psr_seat.bmd");
     }
+    mpBigSeat = makeModel(kPackArc, "psr_bigseat.bmd");
     for (int i = 0; i < kDecorNum; i++) {
         mpDecor[i] = kDecor[i].arc == 0 ? makeModel("J_taru00", "j_taru_00.bmd") : makeModel("Obj_kbox", "k_skiba_00.bmd");
     }
@@ -215,6 +217,18 @@ void psrFire_c::placeModels() {
         mDoMtx_stack_c::YrotM(yaw);
         mDoMtx_stack_c::scaleM(kStoolWidth, kStoolHeight, kStoolWidth);
         mpStool[i]->setBaseTRMtx(mDoMtx_stack_c::get());
+    }
+    if (mpBigSeat != NULL) {
+        cXyz at;
+        s16 yaw;
+        if (travellers::campSeatSpot(mCampNode, travellers::bigSeat(), &at, &yaw)) {
+            // sized for the big guy (his own copy, drawn while he sits, scales with him)
+            const f32 s = Cd2_HIO_objScale(9);
+            mDoMtx_stack_c::transS(at.x, current.pos.y, at.z);
+            mDoMtx_stack_c::YrotM(yaw);
+            mDoMtx_stack_c::scaleM(s, s, s);
+            mpBigSeat->setBaseTRMtx(mDoMtx_stack_c::get());
+        }
     }
     for (int i = 0; i < kDecorNum; i++) {
         if (mpDecor[i] == NULL) continue;
@@ -379,6 +393,7 @@ int psrFire_c::Draw() {
     for (int i = 0; i < kStoolMax; i++) {
         if (!travellers::campSeatInUse(mCampNode, i)) draw(mpStool[i]);   // a sitter draws its own
     }
+    if (!travellers::campSeatInUse(mCampNode, travellers::bigSeat())) draw(mpBigSeat);
     for (J3DModel* m : mpDecor) draw(m);
     return 1;
 }

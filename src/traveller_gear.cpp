@@ -108,6 +108,7 @@ struct Gear {
     J3DModel* belt = nullptr;
     J3DModel* weapon = nullptr;
     J3DModel* seat = nullptr;     // a log round, drawn under it while it sits at a camp fire
+    J3DModel* bigSeat = nullptr;  // the big guy's wide seat with its backrest ledge
     bool sitting = false;
 };
 std::array<Gear, 32> g_gear{};
@@ -193,6 +194,7 @@ void onCreateHeapPost(ModContext*, void* args, void* retval, void*) {
     };
     g->pack = make(look->pack);
     g->seat = make("psr_seat.bmd");
+    if (passer->m_type == 9) g->bigSeat = make("psr_bigseat.bmd");
     g->sitting = false;
     if (const Kit* kit = kitFor(look)) {
         g->belt = make(kit->belt);
@@ -221,10 +223,16 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
         const f32 height = (passer->m_type < 16 ? 37.2f : 55.9f) * scale;
         mDoMtx_stack_c::transS(passer->current.pos.x, passer->current.pos.y, passer->current.pos.z);
         mDoMtx_stack_c::YrotM(passer->shape_angle.y);
-        mDoMtx_stack_c::scaleM(scale * 1.1f, height, scale * 1.1f);
-        g->seat->setBaseTRMtx(mDoMtx_stack_c::now);
-        g_env_light.setLightTevColorType_MAJI(g->seat, &passer->tevStr);
-        mDoExt_modelUpdateDL(g->seat);
+        J3DModel* seat = g->seat;
+        if (g->bigSeat != nullptr && travellers::inBigSeat(passer)) {
+            seat = g->bigSeat;   // modelled at a man's stool height: scales with him like the vanilla stool
+            mDoMtx_stack_c::scaleM(scale, scale, scale);
+        } else {
+            mDoMtx_stack_c::scaleM(scale * 1.1f, height, scale * 1.1f);
+        }
+        seat->setBaseTRMtx(mDoMtx_stack_c::now);
+        g_env_light.setLightTevColorType_MAJI(seat, &passer->tevStr);
+        mDoExt_modelUpdateDL(seat);
     }
     drawOn(g->pack, kBackbone, nullptr);
     drawOn(g->belt, kWaist, nullptr);
@@ -243,9 +251,9 @@ bool sit(daNpcPasser_c* passer, bool on) {
     Gear* g = travellerLook(passer) != nullptr ? gearFor(passer) : nullptr;
     if (g == nullptr || g->owner != fopAcM_GetID(passer)) on = false;
     if (on) {
-        // the townsfolk "sit and wait" loop (the stocky men have their own); asked for with no
+        // the townsfolk "sit and wait" loop (the heavyset men have their own); asked for with no
         // held object so the game doesn't swap in its standing fallback
-        const bool stocky = passer->m_type == 7 || passer->m_type == 15;
+        const bool stocky = passer->m_type == 1 || passer->m_type == 9;   // the heavyset men (MAD)
         auto* anm = static_cast<J3DAnmTransformKey*>(passer->getAnmP(stocky ? 17 : 14, 0));
         if (anm == nullptr) on = false;
         else passer->setAnm(anm, 1.0f, 12.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
