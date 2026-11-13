@@ -23,6 +23,8 @@ void update();                            // once per frame (mod_update)
 bool isTraveller(const fopAc_ac_c* actor);
 // The path a traveller's actor asked for (dPath_GetRoomPath hook), or nullptr.
 dPath* pathFor(int pathId);
+// The camp cook's body walks a two-point path of his own (it only needs one to be created).
+void setCookPath(const cXyz& from, const cXyz& to);
 // The actor reached the end of the path it was given. Returns true when handled (skip vanilla,
 // which would delete it on the spot).
 bool onPathEnd(daNpcPasser_c* passer);
@@ -48,15 +50,7 @@ bool campInfo(const fopAc_ac_c* passer, cXyz* center, cXyz* seat, s16* seatYaw);
 // The seats around a camp's fire (campNode = the camp's road node), for the fire to draw its stumps.
 int campSeatCount(int campNode);
 bool campSeatSpot(int campNode, int seat, cXyz* pos, s16* yaw);
-bool campSeatInUse(int campNode, int seat);
-int bigSeat();                                // the big guy's reserved seat number at every camp
-bool inBigSeat(const fopAc_ac_c* passer);      // this traveller is the big guy, in his seat   // someone is sitting on it right now (it draws its own)
-// A second scoop of a camp's soup: the nearest camper, or a big guy right behind Link, comes to yell.
-// Returns the roster slot (-1: nobody available). He stands until the yelling is over, then sits.
-int summonGreedyGuard(int campNode, const cXyz& link, s16 linkYaw, s8 room);
-fopAc_ac_c* slotActor(int slot);
-bool walkingToSeat(const fopAc_ac_c* passer);
-void doneWalkingToSeat(const fopAc_ac_c* passer);
+bool campSeatInUse(int campNode, int seat);   // someone is sitting on it right now (it draws its own)
 // Put its resting (sitting) animation back next frame.
 void refreshIdle(const fopAc_ac_c* passer);
 void noteCamp(const fopAc_ac_c* passer, const char* what, const fopAc_ac_c* enemy);

@@ -24,6 +24,7 @@
 
 #include "travellers.hpp"
 #include "traveller_gear.hpp"
+#include "camp_cook.hpp"
 
 #include <array>
 #include <cstdio>
@@ -34,7 +35,9 @@
 namespace {
 
 constexpr const char* kPackArc = "PsrPack";
-constexpr int kBackbone = 1;   // joint 1 on every townsfolk skeleton (center, backbone, neck, head, ...)
+constexpr int kBackbone = 1;
+constexpr int kHead = 3;       // head joint on the men's skeleton
+constexpr int kHandR = 11;     // right hand   // joint 1 on every townsfolk skeleton (center, backbone, neck, head, ...)
 constexpr int kWaist = 12;     // joint 12 on both the men's and the women's skeleton
 
 // Per type (stock passer type id): retextured body archive, its model and eye-animation files,
@@ -91,8 +94,12 @@ const Look* lookFor(int type) {
     return &kLooks[type];
 }
 
-// A traveller in the light world wearing one of our looks, or nullptr.
+// The camp cook (camp_cook.cpp): #9's own model and clothes, straight from the game.
+const Look kCookLook = {"MAD_a2", "mad_a2.bmd", "mad_a2.btp", nullptr};
+
+// A traveller in the light world wearing one of our looks (or the cook), or nullptr.
 const Look* travellerLook(daNpcCd2_c* npc) {
+    if (npc != nullptr && !npc->mIsDarkWorld && cook::isBody(npc)) return &kCookLook;
     if (npc == nullptr || npc->mIsDarkWorld || !travellers::isTraveller(npc)) return nullptr;
     return lookFor(npc->m_type);
 }
@@ -108,12 +115,16 @@ struct Gear {
     J3DModel* belt = nullptr;
     J3DModel* weapon = nullptr;
     J3DModel* seat = nullptr;     // a log round, drawn under it while it sits at a camp fire
-    J3DModel* bigSeat = nullptr;  // the big guy's wide seat with its backrest ledge
+    J3DModel* hat = nullptr;      // the cook's chef's hat
+    J3DModel* spoon = nullptr;    // the cook's wooden spoon
     bool sitting = false;
 };
 std::array<Gear, 32> g_gear{};
 
+Gear g_cookGear;
+
 Gear* gearFor(daNpcCd2_c* npc) {
+    if (cook::isBody(npc)) return &g_cookGear;
     const int slot = travellers::slotIndex(npc);
     return slot >= 0 && slot < static_cast<int>(g_gear.size()) ? &g_gear[slot] : nullptr;
 }
@@ -193,8 +204,14 @@ void onCreateHeapPost(ModContext*, void* args, void* retval, void*) {
         return data != nullptr ? mDoExt_J3DModel__create(data, 0x80000, 0x11000084) : nullptr;
     };
     g->pack = make(look->pack);
+    if (cook::isBody(passer)) {
+        // the cook: his hat and spoon, no pack, belt or weapon
+        g->hat = make("psr_chefhat.bmd");
+        g->spoon = make("psr_spoon.bmd");
+        g->owner = fopAcM_GetID(passer);
+        return;
+    }
     g->seat = make("psr_seat.bmd");
-    if (passer->m_type == 9) g->bigSeat = make("psr_bigseat.bmd");
     g->sitting = false;
     if (const Kit* kit = kitFor(look)) {
         g->belt = make(kit->belt);
@@ -224,15 +241,25 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
         mDoMtx_stack_c::transS(passer->current.pos.x, passer->current.pos.y, passer->current.pos.z);
         mDoMtx_stack_c::YrotM(passer->shape_angle.y);
         J3DModel* seat = g->seat;
-        if (g->bigSeat != nullptr && travellers::inBigSeat(passer)) {
-            seat = g->bigSeat;   // modelled at a man's stool height: scales with him like the vanilla stool
-            mDoMtx_stack_c::scaleM(scale, scale, scale);
-        } else {
-            mDoMtx_stack_c::scaleM(scale * 1.1f, height, scale * 1.1f);
-        }
+        mDoMtx_stack_c::scaleM(scale * 1.1f, height, scale * 1.1f);
         seat->setBaseTRMtx(mDoMtx_stack_c::now);
         g_env_light.setLightTevColorType_MAJI(seat, &passer->tevStr);
         mDoExt_modelUpdateDL(seat);
+    }
+    if (g->hat != nullptr) {
+        drawOn(g->hat, kHead, nullptr);   // made in his head's own space
+    }
+    if (g->spoon != nullptr && cook::spoonOut()) {
+        // in his right hand, held up and brought down in a swing (turned with him, not with the hand,
+        // so it reads clearly whatever his arm is doing)
+        const MtxP hand = body->getAnmMtx(kHandR);
+        mDoMtx_stack_c::transS(hand[0][3], hand[1][3], hand[2][3]);
+        mDoMtx_stack_c::YrotM(passer->shape_angle.y);
+        mDoMtx_stack_c::XrotM(static_cast<s16>(cook::spoonSwing() * 0x5800));   // up -> forward and down
+        mDoMtx_stack_c::ZrotM(0x4000);                                          // the spoon's length points up
+        g->spoon->setBaseTRMtx(mDoMtx_stack_c::now);
+        g_env_light.setLightTevColorType_MAJI(g->spoon, &passer->tevStr);
+        mDoExt_modelUpdateDL(g->spoon);
     }
     drawOn(g->pack, kBackbone, nullptr);
     drawOn(g->belt, kWaist, nullptr);

@@ -13,8 +13,8 @@
 // to morning with the game's fire, glow and crackle. Log stools stand at the camp's empty seats;
 // barrels and a crate sit by the tents.
 //
-// Link may scoop one bottle of soup from each camp's pot per day. Try for a second and the
-// nearest camper (or, at an empty camp, a big guy right behind him) yells at him.
+// Link may scoop one bottle of soup from each camp's pot per day. Try for a second and the camp
+// cook turns up (camp_cook.cpp). His mat lies by every fire.
 //
 // Parameters: bits 0-7 the camp's road node, bits 8-9 the soup (1 Simple, 2 Good, 3 Superb).
 #define PSR_FIRE_NAME "PsrFire"
@@ -34,7 +34,7 @@ public:
     mDoExt_btkAnm mBubbling;
     static constexpr int kStoolMax = 8;
     J3DModel* mpStool[kStoolMax] = {};
-    J3DModel* mpBigSeat = nullptr;     // the big guy's own seat, empty unless he's in it
+    J3DModel* mpMat = nullptr;         // the camp cook's mat (camp_cook.cpp)
     static constexpr int kDecorNum = 4;
     J3DModel* mpDecor[kDecorNum] = {};
     f32 mDecorY[kDecorNum] = {};
@@ -52,11 +52,7 @@ public:
 
     bool mCatching = false;        // Link's scoop event with this pot is running
     bool mSwinging = false;        // Link was mid bottle-swing last frame
-    int mGreedyStep = 0;
-    int mGreedySlot = -1;
-    int mGreedyTimer = 0;
-    dMsgFlow_c mFlow;
-    bool mFlowStarted = false;
+    int mGreedyCooldown = 0;
 
     virtual ~psrFire_c();
     cPhs_Step create();
@@ -81,5 +77,3 @@ namespace psr_fire {
 ModResult registerActor();
 }  // namespace psr_fire
 
-// The "HEY! Don't be greedy!" line (registered with the travellers' talk flow).
-uint16_t greedyFlowNode();

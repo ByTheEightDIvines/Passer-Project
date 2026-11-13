@@ -24,6 +24,7 @@
 #include "tent_actor.hpp"
 #include "traveller_gear.hpp"
 #include "camp_fire.hpp"
+#include "camp_cook.hpp"
 #include "travellers.hpp"
 
 #include <algorithm>
@@ -174,8 +175,9 @@ std::array<PasserState, 32> g_states{};
 mods::flow::RegisteredMessage g_greeting;
 mods::flow::Graph g_talkGraph;
 uint16_t g_talkNode = 0xFFFF;
-mods::flow::RegisteredMessage g_greedyLine;
-uint16_t g_greedyNode = 0xFFFF;
+constexpr int kCookLineCount = 4;
+std::array<mods::flow::RegisteredMessage, kCookLineCount> g_cookLines;
+std::array<uint16_t, kCookLineCount> g_cookNodes{0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF};
 
 // Rooms 0 (the field past the bridge), 4 and 5 are loaded together, and the passer walks
 // through them, so enemies from any of them count.
@@ -800,7 +802,7 @@ DEFINE_HOOK(&fopAcM_searchActorDistanceXZ2, EnemyTargetDistanceXZSquared);
 // A traveller sets its walk path up inside create_init: open the path lookup just for that.
 HookAction onCreateInitPre(ModContext*, void* args, void*, void*) {
     auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
-    if (isPrototypePasser(passer)) {
+    if (isPrototypePasser(passer) || cook::isBody(passer)) {
         travellers::setPathLookupOpen(true);
     }
     return HOOK_CONTINUE;
@@ -832,6 +834,9 @@ void onCreateInitPost(ModContext*, void* args, void*, void*) {
 // Runs at the start of every action function, after execute() has set this frame's wall check.
 // Returns true when the action should be skipped (dead, talking or waiting at the road's end).
 bool gateAction(daNpcPasser_c* passer) {
+    if (cook::isBody(passer)) {
+        return true;
+    }
     if (!isPrototypePasser(passer)) {
         return false;
     }
@@ -879,6 +884,9 @@ HookAction onExecutePathPre(ModContext*, void* args, void*, void*) {
 
 HookAction onInitEscapePre(ModContext*, void* args, void*, void*) {
     auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
+    if (cook::isBody(passer)) {
+        return HOOK_SKIP_ORIGINAL;   // he runs from monsters his own way
+    }
     // Run from the nearest enemy (or from Link, if it's him it's scared of).
     cXyz threat = passer->current.pos;
     if (auto* enemy = nearestEnemy(passer, kChasedRadius)) {
@@ -1077,31 +1085,6 @@ bool campGuard(daNpcPasser_c* passer, PasserState& state) {
     if (!travellers::campInfo(passer, &center, &seat, &seatYaw)) {
         state.defending = false;
         state.campCower = false;
-        return false;
-    }
-    if (travellers::walkingToSeat(passer)) {
-        passer->speedF = 0.0f;
-        if (dComIfGp_event_runCheck()) {
-            // yelling at Link: up off the log, facing him
-            guardAnim(passer, state, kAnmIdle);
-            const s16 yaw = fopAcM_searchPlayerAngleY(passer);
-            cLib_addCalcAngleS2(&passer->current.angle.y, yaw, 4, 0x1000);
-            passer->shape_angle.y = passer->current.angle.y;
-            return true;
-        }
-        const f32 dx = seat.x - passer->current.pos.x;
-        const f32 dz = seat.z - passer->current.pos.z;
-        if (dx * dx + dz * dz > 40.0f * 40.0f) {
-            guardAnim(passer, state, kAnmWalk);
-            stepToward(passer, seat, Cd2_HIO_walkMaxSpeed(passer->m_type));
-            return true;
-        }
-        passer->current.pos.x = seat.x;
-        passer->current.pos.z = seat.z;
-        passer->current.angle.y = passer->shape_angle.y = seatYaw;
-        state.anim = 0xFF;
-        travellers::doneWalkingToSeat(passer);   // sits down on its next idle
-        travellers::noteCamp(passer, "sits back down after yelling", nullptr);
         return false;
     }
     auto* enemy = nearestEnemyAt(center, state.defending ? kCampLeashRadius : kCampGuardRadius);
@@ -1425,7 +1408,9 @@ void onEnemyTargetDistanceXZSquaredPost(ModContext*, void* args, void* retval, v
     redirectEnemyDistance(args, retval, true, true);
 }
 
-uint16_t greedyFlowNode_() { return g_greedyNode; }
+uint16_t cookFlowNode_(int line) {
+    return g_cookNodes[std::clamp(line, 0, kCookLineCount - 1)];
+}
 
 ModResult registerGreetingFlow() {
     mods::flow::MessageBuilder builder;
@@ -1442,25 +1427,35 @@ ModResult registerGreetingFlow() {
         return g_greeting.result();
     }
 
-    // A second scoop of a camp's soup in one day earns Link a yelling.
-    mods::flow::MessageBuilder greedy;
-    greedy.box_kind(MESSAGE_BOX_TALK).text_scale(140).text("HEY!").text_scale(100).text(" Don't be greedy!");
-    std::vector<mods::flow::MessageVariant> greedyVariants;
-    for (const auto language : kLanguages) {
-        greedyVariants.push_back(greedy.build(language));
-    }
-    g_greedyLine = mods::flow::register_message(kTalkFlowGroup, greedyVariants);
-    if (!g_greedyLine) {
-        return g_greedyLine.result();
+    // The camp cook's lines: each greedy try gets the next one; the last comes with the spoon.
+    static const char* const kCookLines[kCookLineCount][2] = {
+        {"HEY!", " Don't be greedy!"},
+        {"I SAID", " don't be greedy! That soup's for everyone!"},
+        {"Last warning, kid.", " Put. The bottle. Down."},
+        {"THAT'S IT!", ""},
+    };
+    for (int i = 0; i < kCookLineCount; ++i) {
+        mods::flow::MessageBuilder line;
+        line.box_kind(MESSAGE_BOX_TALK).text_scale(140).text(kCookLines[i][0]).text_scale(100).text(kCookLines[i][1]);
+        std::vector<mods::flow::MessageVariant> variants;
+        for (const auto language : kLanguages) {
+            variants.push_back(line.build(language));
+        }
+        g_cookLines[i] = mods::flow::register_message(kTalkFlowGroup, variants);
+        if (!g_cookLines[i]) {
+            return g_cookLines[i].result();
+        }
     }
 
     mods::flow::GraphBuilder graph{kTalkFlowGroup};
     auto line = graph.add_message(g_greeting.id());
     g_talkNode = line.id();
     line.next(mods::flow::kEnd);
-    auto yell = graph.add_message(g_greedyLine.id());
-    g_greedyNode = yell.id();
-    yell.next(mods::flow::kEnd);
+    for (int i = 0; i < kCookLineCount; ++i) {
+        auto yell = graph.add_message(g_cookLines[i].id());
+        g_cookNodes[i] = yell.id();
+        yell.next(mods::flow::kEnd);
+    }
     g_talkGraph = graph.commit();
     return g_talkGraph ? MOD_OK : g_talkGraph.result();
 }
@@ -1518,7 +1513,10 @@ ModResult addRoomActors() {
 
 }  // namespace
 
-uint16_t greedyFlowNode() { return greedyFlowNode_(); }
+uint16_t cookFlowNode(int line) { return cookFlowNode_(line); }
+
+// The nearest monster to a spot (for the cook, who runs from them).
+fopAc_ac_c* nearestMonster(const cXyz& at, f32 maxDistance) { return nearestEnemyAt(at, maxDistance); }
 
 extern "C" {
 MOD_EXPORT ModResult mod_initialize(ModError* error) {
@@ -1561,6 +1559,9 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     }
     if (!traveller_gear::install()) {
         return mods::set_error(error, MOD_UNAVAILABLE, "failed to install the traveller look hooks");
+    }
+    if (cook::registerActor() != MOD_OK) {
+        return mods::set_error(error, MOD_ERROR, "failed to register the camp cook");
     }
     if (psr_fire::registerActor() != MOD_OK) {
         return mods::set_error(error, MOD_ERROR, "failed to register the camp fire actor");

@@ -2,12 +2,12 @@
 
 #include "camp_fire.hpp"
 #include "travellers.hpp"
+#include "camp_cook.hpp"
 
 #include "d/actor/d_a_alink.h"
 #include "d/d_bg_s_gnd_chk.h"
 #include "d/d_com_inf_game.h"
 #include "d/d_item_data.h"
-#include "d/actor/d_a_npc_cd2.h"
 #include "f_op/f_op_actor_mng.h"
 #include "f_pc/f_pc_draw_priority.h"
 #include "m_Do/m_Do_audio.h"
@@ -148,7 +148,7 @@ int psrFire_c::CreateHeap() {
     for (int i = 0; i < seats && i < kStoolMax; i++) {
         mpStool[i] = makeModel(kPackArc, "psr_seat.bmd");
     }
-    mpBigSeat = makeModel(kPackArc, "psr_bigseat.bmd");
+    mpMat = makeModel(kCampArc, "psr_cookmat.bmd");
     for (int i = 0; i < kDecorNum; i++) {
         mpDecor[i] = kDecor[i].arc == 0 ? makeModel("J_taru00", "j_taru_00.bmd") : makeModel("Obj_kbox", "k_skiba_00.bmd");
     }
@@ -222,17 +222,18 @@ void psrFire_c::placeModels() {
         mDoMtx_stack_c::scaleM(kStoolWidth, kStoolHeight, kStoolWidth);
         mpStool[i]->setBaseTRMtx(mDoMtx_stack_c::get());
     }
-    if (mpBigSeat != NULL) {
+    if (mpMat != NULL) {
+        // the cook's mat: lying by the fire whether he's here or not
         cXyz at;
         s16 yaw;
-        if (travellers::campSeatSpot(mCampNode, travellers::bigSeat(), &at, &yaw)) {
-            // sized for the big guy (his own copy, drawn while he sits, scales with him)
-            const f32 s = Cd2_HIO_objScale(9);
-            mDoMtx_stack_c::transS(at.x, current.pos.y, at.z);
-            mDoMtx_stack_c::YrotM(yaw);
-            mDoMtx_stack_c::scaleM(s, s, s);
-            mpBigSeat->setBaseTRMtx(mDoMtx_stack_c::get());
-        }
+        cook::matSpot(current.pos, shape_angle.y, &at, &yaw);
+        dBgS_ObjGndChk gnd;
+        cXyz probe(at.x, at.y + 300.0f, at.z);
+        gnd.SetPos(&probe);
+        const f32 ground = dComIfG_Bgsp().GroundCross(&gnd);
+        mDoMtx_stack_c::transS(at.x, ground != -G_CM3D_F_INF ? ground : current.pos.y, at.z);
+        mDoMtx_stack_c::YrotM(yaw);
+        mpMat->setBaseTRMtx(mDoMtx_stack_c::get());
     }
     for (int i = 0; i < kDecorNum; i++) {
         if (mpDecor[i] == NULL) continue;
@@ -290,85 +291,25 @@ void psrFire_c::updateSoup() {
         markScooped(mCampNode);   // Link's bottle went in: that's this camp's soup for today
     }
     mCatching = catching;
-    if (mGreedyStep == 0 && !scoopedToday(mCampNode) && dComIfGp_getEvent()->isOrderOK() && !catching) {
+    if (!scoopedToday(mCampNode) && dComIfGp_getEvent()->isOrderOK() && !catching) {
         dComIfGp_att_CatchRequest(this, kSoupItem[mSoupLevel - 1], 100.0f, 50.0f, -50.0f, 0x2000, 1);
         eventInfo.onCondition(dEvtCnd_40_e);
     }
 }
 
-// A second scoop the same day: someone comes to yell.
+// A second try the same day: the camp cook comes (or, if he's here, gets up) to yell.
 void psrFire_c::updateGreedy() {
     daAlink_c* link = daAlink_getAlinkActorClass();
     if (link == NULL) return;
-    switch (mGreedyStep) {
-    case 0: {
-        // Link swings an empty bottle at a pot already scooped today
-        const bool swinging = link->mProcID == daAlink_c::PROC_BOTTLE_SWING &&
-                              link->mEquipItem == dItemNo_EMPTY_BOTTLE_e;
-        const bool started = swinging && !mSwinging;
-        mSwinging = swinging;
-        if (!started || !scoopedToday(mCampNode)) return;
-        const f32 dx = link->current.pos.x - current.pos.x, dz = link->current.pos.z - current.pos.z;
-        if (dx * dx + dz * dz > kScoopReach * kScoopReach) return;
-        mGreedySlot = travellers::summonGreedyGuard(mCampNode, link->current.pos, link->shape_angle.y,
-                                                    static_cast<s8>(dComIfGp_roomControl_getStayNo()));
-        if (mGreedySlot < 0) return;
-        mGreedyStep = 1;
-        mGreedyTimer = 0;
-        return;
-    }
-    case 1: {
-        // wait for him to exist (the big guy is created a frame or two later), then call Link over
-        fopAc_ac_c* guy = travellers::slotActor(mGreedySlot);
-        if (guy == NULL) {
-            if (++mGreedyTimer > 120) mGreedyStep = 0;
-            return;
-        }
-        if (++mGreedyTimer < 10) return;
-        mGreedyStep = 2;
-        mFlowStarted = false;
-        return;
-    }
-    case 2: {
-        fopAc_ac_c* guy = travellers::slotActor(mGreedySlot);
-        if (guy != NULL) {
-            // the conversation's camera looks at him, not the pot
-            attention_info.position = guy->current.pos;
-            attention_info.position.y += 150.0f;
-            eyePos = attention_info.position;
-        }
-        if (!eventInfo.checkCommandTalk()) {
-            if (guy == NULL || ++mGreedyTimer > 300) {   // he's gone, or the event never came
-                mGreedyStep = 0;
-                return;
-            }
-            eventInfo.onCondition(dEvtCnd_CANTALK_e);
-            fopAcM_orderSpeakEvent(this, 0, 0);
-            return;
-        }
-        if (!mFlowStarted) {
-            mFlow.init(this, greedyFlowNode(), 0, NULL);
-            mFlowStarted = true;
-        }
-        if (guy != NULL) {
-            fopAcM_OnStatus(guy, fopAcStts_NOPAUSE_e);   // he keeps moving (turning to Link) while he yells
-        }
-        if (mFlow.doFlow(this, NULL, 0) != 0) {
-            if (guy != NULL) fopAcM_OffStatus(guy, fopAcStts_NOPAUSE_e);
-            dComIfGp_event_reset();
-            mGreedyStep = 3;
-            mGreedyTimer = 0;
-        }
-        return;
-    }
-    default:
-        // a short pause so the swing that set it off can't set it off again
-        if (++mGreedyTimer > 60) {
-            mGreedyStep = 0;
-            mSwinging = true;
-        }
-        return;
-    }
+    if (mGreedyCooldown > 0) --mGreedyCooldown;
+    const bool swinging = link->mProcID == daAlink_c::PROC_BOTTLE_SWING;   // only ever an empty bottle
+    const bool started = swinging && !mSwinging;
+    mSwinging = swinging;
+    if (!started || mGreedyCooldown > 0 || !scoopedToday(mCampNode)) return;
+    const f32 dx = link->current.pos.x - current.pos.x, dz = link->current.pos.z - current.pos.z;
+    if (dx * dx + dz * dz > kScoopReach * kScoopReach) return;
+    cook::onGreedy(mCampNode, current.pos, shape_angle.y);
+    mGreedyCooldown = 60;
 }
 
 int psrFire_c::Execute() {
@@ -397,7 +338,7 @@ int psrFire_c::Draw() {
     for (int i = 0; i < kStoolMax; i++) {
         if (!travellers::campSeatInUse(mCampNode, i)) draw(mpStool[i]);   // a sitter draws its own
     }
-    if (!travellers::campSeatInUse(mCampNode, travellers::bigSeat())) draw(mpBigSeat);
+    draw(mpMat);
     for (J3DModel* m : mpDecor) draw(m);
     return 1;
 }
