@@ -22,6 +22,7 @@
 #include "spawner_actor.hpp"
 #include "spot_picker.hpp"
 #include "tent_actor.hpp"
+#include "soul_actor.hpp"
 #include "traveller_gear.hpp"
 #include "fighter_anim.hpp"
 #include "camp_fire.hpp"
@@ -125,16 +126,18 @@ constexpr std::array<f32, 3> kBridgeBulblinPos{-11500.0f, -1034.0f, 22400.0f};
 constexpr f32 kTalkTagRadius = 180.0f;
 constexpr int kStartingHealth = 3;
 constexpr int kQuartersPerHeart = 4;
-// Wind Waker style death: the final hit launches him up and away, tumbling head over heels,
-// and he bursts into smoke the moment he lands.
+// The death, borrowed from the Bokoblins: the final hit throws him back and away in the Bokoblin's
+// fly-back pose, he lands in its sprawl, lies there a moment, then goes up in the game's smoke puff
+// and his soul (soul_actor.cpp) floats out of it.
 constexpr int kDeathDuration = 90;          // safety limit if he never finds the ground
+constexpr int kDeathLie = 45;               // a second and a half on the ground after the sprawl
+constexpr int kDeathLimit = 240;            // never more than eight seconds dying, whatever happens
 constexpr f32 kLaunchSpeedXZ = 14.0f;       // away from the enemy that landed the hit
 constexpr f32 kLaunchSpeedY = 26.0f;
 constexpr f32 kLaunchGravity = 1.6f;
 constexpr f32 kLaunchDrag = 0.985f;
-constexpr s16 kTumbleSpeed = 0x0900;        // backflip speed, about 1.1 turns in the air
 constexpr f32 kTumblePivotY = 90.0f;        // spin around his middle, not his feet
-constexpr u16 kLaunchAnimation = 0x29;      // the startled flinch, held while he flies
+constexpr u16 kLaunchAnimation = 0x29;      // the startled flinch: only if the body has no fly-back pose
 constexpr u16 kTalkAnimation = 6;
 // The talk marker runs its flow in the stage's message file. Hyrule Field (F_SP121) uses group 8;
 // registering in group 0 left the node unresolved, so the talk opened with no text and never ended.
@@ -162,7 +165,9 @@ struct PasserState {
     f32 knockbackZ = 0.0f;
     bool dead = false;
     bool grounded = false;
-    s16 tumble = 0;  // backflip angle while flying
+    s16 tumble = 0;  // (unused now: no backflip)
+    bool deathLanded = false;
+    int deathLie = 0;
     bool talking = false;
     bool arrived = false;   // reached the end of the road; waits there until out of view
     bool cowering = false;  // finished running away; waits until it is safe, then walks on
@@ -800,6 +805,8 @@ void beginDeath(daNpcPasser_c* passer, PasserState& state) {
     state.grounded = false;
     state.talking = false;
     state.tumble = 0;
+    state.deathLanded = false;
+    state.deathLie = 0;
     passer->health = 0;
     passer->attention_info.flags = 0;
     passer->mCyl.OffTgSetBit();
@@ -825,9 +832,11 @@ void beginDeath(daNpcPasser_c* passer, PasserState& state) {
     passer->shape_angle.y = facing;
     passer->current.angle.y = facing;
 
-    auto* flinch = static_cast<J3DAnmTransformKey*>(passer->getAnmP(kLaunchAnimation, passer->getObjNum()));
-    if (flinch != nullptr) {
-        passer->setAnm(flinch, 1.0f, 3.0f, J3DFrameCtrl::EMode_NONE, 0, -1);
+    if (!fighter_anim::fall(passer, false)) {
+        auto* flinch = static_cast<J3DAnmTransformKey*>(passer->getAnmP(kLaunchAnimation, passer->getObjNum()));
+        if (flinch != nullptr) {
+            passer->setAnm(flinch, 1.0f, 3.0f, J3DFrameCtrl::EMode_NONE, 0, -1);
+        }
     }
 }
 
@@ -1124,6 +1133,7 @@ void onProfileExecutePost(ModContext*, void* args, void*, void*) {
         if (psr_tent::pushOff(passer, passer->mAcch)) {
             travellers::noteAct(passer, "stepped off a tent it had climbed");
         }
+        fighter_anim::forcedTick(passer);   // a hit reaction beats the fight moves
         fighterAnim(passer, *state);
         return;
     }
@@ -1131,7 +1141,8 @@ void onProfileExecutePost(ModContext*, void* args, void*, void*) {
         return;
     }
 
-    // Backflip around his middle (head toward where he is flying), with a slight sideways roll.
+    fighter_anim::forcedTick(passer);   // the fly-back pose, then the sprawl
+    // (No backflip any more: the fly-back pose does the work. tumble stays 0.)
     mDoMtx_stack_c::transS(passer->current.pos.x, passer->current.pos.y + kTumblePivotY,
                            passer->current.pos.z);
     mDoMtx_stack_c::YrotM(passer->shape_angle.y);
@@ -1412,28 +1423,39 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
 
     if (state->dead) {
         ++state->deathFrame;
-        state->tumble = static_cast<s16>(state->tumble + kTumbleSpeed);
-        passer->current.pos.x += state->knockbackX;
-        passer->current.pos.y += state->knockbackY;
-        passer->current.pos.z += state->knockbackZ;
-        state->knockbackX *= kLaunchDrag;
-        state->knockbackZ *= kLaunchDrag;
-        state->knockbackY -= kLaunchGravity;
-        passer->mAcch.CrrPos(dComIfG_Bgsp());
-        if (passer->mAcch.ChkWallHit()) {
-            // Slammed into a wall or cliff: drop straight down from there.
-            state->knockbackX = 0.0f;
-            state->knockbackZ = 0.0f;
+        if (!state->deathLanded) {
+            passer->current.pos.x += state->knockbackX;
+            passer->current.pos.y += state->knockbackY;
+            passer->current.pos.z += state->knockbackZ;
+            state->knockbackX *= kLaunchDrag;
+            state->knockbackZ *= kLaunchDrag;
+            state->knockbackY -= kLaunchGravity;
+            passer->mAcch.CrrPos(dComIfG_Bgsp());
+            if (passer->mAcch.ChkWallHit()) {
+                // Slammed into a wall or cliff: drop straight down from there.
+                state->knockbackX = 0.0f;
+                state->knockbackZ = 0.0f;
+            }
+            if (passer->mAcch.ChkRoofHit() && state->knockbackY > 0.0f) {
+                state->knockbackY = 0.0f;
+            }
+            const bool landed = state->knockbackY < 0.0f && passer->mAcch.ChkGroundHit();
+            if (landed || state->deathFrame >= kDeathDuration) {
+                // Down: the sprawl, then lie still for a moment.
+                state->deathLanded = true;
+                state->knockbackX = state->knockbackY = state->knockbackZ = 0.0f;
+                fighter_anim::fall(passer, true);
+            }
+        } else if (fighter_anim::forcedDone(passer)) {
+            ++state->deathLie;
         }
-        if (passer->mAcch.ChkRoofHit() && state->knockbackY > 0.0f) {
-            state->knockbackY = 0.0f;
-        }
-        const bool landed = state->knockbackY < 0.0f && passer->mAcch.ChkGroundHit();
-        if (landed || state->deathFrame >= kDeathDuration) {
-            // Lands and bursts into smoke, like a Wind Waker Bokoblin. The Poe particles live in
-            // Poe areas' own particle set and never show in Hyrule Field, so use the shared
-            // "monster defeated" burst (type 0, no item drop).
+        passer->speedF = 0.0f;
+        passer->speed.set(0.0f, 0.0f, 0.0f);
+        if ((state->deathLanded && state->deathLie >= kDeathLie) || state->deathFrame >= kDeathLimit) {
+            // Gone in the game's own smoke puff (the shared "monster defeated" burst, type 0, no item
+            // drop), and the soul rises out of it.
             fopAcM_createDisappear(passer, &passer->current.pos, 10, 0, 0xFF);
+            psr_soul::spawn(passer->current.pos, fopAcM_GetRoomNo(passer));
             travellers::onDeath(passer);
             fopAcM_delete(passer);
             state->actor = nullptr;
@@ -1548,7 +1570,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         passer->health = static_cast<s16>(state->health);
         travellers::noteHit(passer, damage, life);
         state->invuln = kHurtInvulnFrames;
-        fighter_anim::flinch(passer, attacker->current.pos);   // the blow shows
+        if (life > 0) fighter_anim::hit(passer, attacker->current.pos);   // the blow shows: a stagger
         if (byWolf) {
             // bitten: from now on it's like any other traveller with the wolf: runs from him, never fights
             fighter_anim::drop(passer);
@@ -1866,6 +1888,9 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     }
     if (psr_fire::registerActor() != MOD_OK) {
         return mods::set_error(error, MOD_ERROR, "failed to register the camp fire actor");
+    }
+    if (psr_soul::registerActor() != MOD_OK) {
+        return mods::set_error(error, MOD_ERROR, "failed to register the soul actor");
     }
     if (psr_tent::registerActor() != MOD_OK) {
         return mods::set_error(error, MOD_ERROR, "failed to register the tent actor");

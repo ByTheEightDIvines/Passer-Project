@@ -43,8 +43,17 @@ bool weaponMtx(const daNpcPasser_c* passer, Mtx out);
 // (and faded back in after). Returns false if the hook couldn't be installed.
 bool install();
 
-// Hit: a quick flinch on top of whatever it's doing, away from where the blow came from (any
-// traveller, not just fighters).
-void flinch(daNpcPasser_c* passer, const cXyz& from);
+// Hit (any traveller): the Bokoblin's stagger, from the front or either side depending on where the
+// blow came from, just under a second; it stops where it stands meanwhile, then carries on.
+void hit(daNpcPasser_c* passer, const cXyz& from);
+// The fall (the last blow): the Bokoblin's fly-back pose while in the air (landed=false), then its
+// landing sprawl (landed=true), held on the last frame. False if the body has no such animation.
+bool fall(daNpcPasser_c* passer, bool landed);
+// Once a frame, after the traveller's own code: keeps a hit or the fall playing. True while one is on.
+bool forcedTick(daNpcPasser_c* passer);
+// The hit or fall animation has played to its end (or there is none).
+bool forcedDone(const daNpcPasser_c* passer);
+// Mid hit reaction.
+bool hitting(const daNpcPasser_c* passer);
 
 }  // namespace fighter_anim

@@ -29,6 +29,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
 #include <cstring>
 
 namespace {
@@ -122,6 +123,73 @@ bool ours(const Body* b, J3DAnmTransform* a) {
     return a == anm(b->draw) || a == anm(b->sheathe);
 }
 
+
+// --- forced animations: hit reactions and the fall (any traveller, borrowed from the Bokoblins) ---
+// One per traveller. While one is on it beats everything else: whatever the game (or the fight code)
+// puts on is replaced again from the same frame, so it plays through exactly once.
+struct Forced {
+    fpc_ProcID owner = fpcM_ERROR_PROCESS_ID_e;
+    J3DAnmTransformKey* a = nullptr;
+    J3DAnmTransform* before = nullptr;   // a hit hands this back when it's over
+    f32 speed = 1.0f;
+    f32 frame = 0.0f;
+    bool restore = false;                // hit: give back `before` at the end; the fall: hold the last frame
+    cXyz pin;                            // a hit stops it where it stands
+    s16 pinYaw = 0;
+};
+std::array<Forced, travellers::kSlots> g_forced{};
+constexpr f32 kHitSpeed = 1.3f;          // the Bokoblin's 37 frames in just under a second
+
+Forced* forcedFor(const daNpcPasser_c* passer) {
+    const int i = travellers::slotIndex(passer);
+    if (i < 0 || i >= static_cast<int>(g_forced.size())) return nullptr;
+    return &g_forced[i];
+}
+Forced* activeForced(const daNpcPasser_c* passer) {
+    Forced* f = forcedFor(passer);
+    return f != nullptr && f->a != nullptr && f->owner == fopAcM_GetID(passer) ? f : nullptr;
+}
+
+// This body's version of a borrowed animation: psr_m_* for the men's 19-joint skeleton, psr_w_* for
+// the women's 21.
+J3DAnmTransformKey* borrowed(const daNpcPasser_c* passer, const char* what) {
+    if (passer->mpMorf == nullptr) return nullptr;
+    const int joints = passer->mpMorf->getModel()->getModelData()->getJointNum();
+    char name[32];
+    if (joints == 19) std::snprintf(name, sizeof(name), "psr_m_%s.bck", what);
+    else if (joints == 21) std::snprintf(name, sizeof(name), "psr_w_%s.bck", what);
+    else return nullptr;
+    return anm(name);
+}
+
+bool forcedAnm(J3DAnmTransform* a) {
+    if (a == nullptr) return false;
+    static const char* const kNames[] = {"psr_m_hit_f.bck", "psr_m_hit_l.bck", "psr_m_hit_r.bck", "psr_m_fly.bck",
+                                         "psr_m_land.bck",  "psr_w_hit_f.bck", "psr_w_hit_l.bck", "psr_w_hit_r.bck",
+                                         "psr_w_fly.bck",   "psr_w_land.bck"};
+    for (const char* n : kNames) {
+        if (a == anm(n)) return true;
+    }
+    return false;
+}
+
+bool startForced(daNpcPasser_c* passer, J3DAnmTransformKey* a, f32 speed, bool restore, f32 morf) {
+    Forced* f = forcedFor(passer);
+    if (f == nullptr || a == nullptr || passer->mpMorf == nullptr) return false;
+    J3DAnmTransform* current = passer->mpMorf->getAnm();
+    const bool already = f->a != nullptr && f->owner == fopAcM_GetID(passer);
+    if (!already || !forcedAnm(current)) f->before = forcedAnm(current) ? nullptr : current;
+    f->owner = fopAcM_GetID(passer);
+    f->a = a;
+    f->speed = speed;
+    f->frame = 0.0f;
+    f->restore = restore;
+    f->pin = passer->current.pos;
+    f->pinYaw = passer->shape_angle.y;
+    passer->mpMorf->setAnm(a, J3DFrameCtrl::EMode_NONE, morf, speed, 0, -1);
+    return true;
+}
+
 // Start an animation (a different one only: the same one keeps playing).
 void play(daNpcPasser_c* passer, J3DAnmTransformKey* a, bool loop, f32 morf) {
     if (a == nullptr || passer->mpMorf == nullptr) return;
@@ -207,6 +275,7 @@ bool weaponOut(const daNpcPasser_c* passer) {
 
 int update(daNpcPasser_c* passer, Want want, bool swing, bool turning) {
     if (!has(passer)) return 0;
+    if (activeForced(passer) != nullptr) return 0;   // being hit (or falling): that comes first
     Slot* sp = slotFor(passer, true);
     if (sp == nullptr) return 0;
     Slot& s = *sp;
@@ -372,6 +441,67 @@ bool weaponMtx(const daNpcPasser_c* passer, Mtx out) {
     return true;
 }
 
+
+void hit(daNpcPasser_c* passer, const cXyz& from) {
+    if (passer == nullptr || passer->mpMorf == nullptr) return;
+    // which way the blow came from, against the way it faces (+ is its left)
+    const s16 rel = static_cast<s16>(cLib_targetAngleY(&passer->current.pos, &from) - passer->shape_angle.y);
+    const int a = std::abs(static_cast<int>(rel));
+    const char* what = (a < 0x2800 || a > 0x5800) ? "hit_f" : (rel > 0 ? "hit_l" : "hit_r");
+    J3DAnmTransformKey* anim = borrowed(passer, what);
+    if (anim == nullptr) return;
+    // a fighter mid-swing loses the swing (it goes back on guard after)
+    if (Slot* s = slotFor(passer, false); s != nullptr && s->phase == Phase::Swinging) {
+        s->phase = Phase::Ready;
+        s->oneShot = nullptr;
+    }
+    startForced(passer, anim, kHitSpeed, true, 2.0f);
+}
+
+bool fall(daNpcPasser_c* passer, bool landed) {
+    if (passer == nullptr) return false;
+    J3DAnmTransformKey* anim = borrowed(passer, landed ? "land" : "fly");
+    return startForced(passer, anim, 1.0f, false, landed ? 2.0f : 4.0f);
+}
+
+bool forcedTick(daNpcPasser_c* passer) {
+    Forced* f = activeForced(passer);
+    if (f == nullptr || passer->mpMorf == nullptr) return false;
+    mDoExt_McaMorfSO* morf = passer->mpMorf;
+    if (morf->getAnm() != f->a) {
+        // something else went on: ours again, from where it had got to
+        morf->setAnm(f->a, J3DFrameCtrl::EMode_NONE, 0.0f, f->speed, 0, -1);
+        morf->setFrameF(f->frame);
+    }
+    f->frame = morf->getFrame();
+    const bool done = morf->isStop() || f->frame >= morf->getEndFrame() - 1.0f;
+    if (f->restore) {
+        // a hit holds it on the spot, facing the same way
+        passer->current.pos.x = f->pin.x;
+        passer->current.pos.z = f->pin.z;
+        passer->shape_angle.y = passer->current.angle.y = f->pinYaw;
+        passer->speedF = 0.0f;
+        if (done) {
+            if (f->before != nullptr) morf->setAnm(f->before, J3DFrameCtrl::EMode_LOOP, 6.0f, 1.0f, 0, -1);
+            f->a = nullptr;
+            if (travellers::campInfo(passer, nullptr, nullptr, nullptr)) travellers::refreshIdle(passer);
+            return false;
+        }
+    }
+    return true;
+}
+
+bool forcedDone(const daNpcPasser_c* passer) {
+    const Forced* f = activeForced(passer);
+    if (f == nullptr || passer->mpMorf == nullptr) return true;
+    return passer->mpMorf->getAnm() == f->a &&
+           (passer->mpMorf->isStop() || passer->mpMorf->getFrame() >= passer->mpMorf->getEndFrame() - 1.0f);
+}
+
+bool hitting(const daNpcPasser_c* passer) {
+    const Forced* f = activeForced(passer);
+    return f != nullptr && f->restore;
+}
 }  // namespace fighter_anim
 
 namespace {
@@ -388,30 +518,6 @@ int tweakSlot(daNpcCd2_c* npc) {
     if (cook::isBody(npc)) return travellers::kSlots;
     if (!travellers::isTraveller(npc)) return -1;
     return travellers::slotIndex(npc);
-}
-
-// A flinch when hit, played on top of whatever the body is doing: the upper body jolts back from
-// the blow and recovers. Per slot: frames left (counting down) and which way.
-std::array<int, travellers::kSlots + 1> g_flinch{};
-std::array<s8, travellers::kSlots + 1> g_flinchDir{};
-constexpr int kFlinchFrames = 16;
-constexpr int kFlinchPeak = 3;
-// degrees at the peak: backbone, neck, head (leaning away from the blow)
-constexpr f32 kFlinchDeg[3] = {20.0f, 8.0f, 10.0f};
-
-void g_flinchOwnerFix(daNpcCd2_c* npc, int slot) {
-    if (g_tweakOwner[slot] != fopAcM_GetID(npc)) {
-        g_tweakOwner[slot] = fopAcM_GetID(npc);
-        g_tweak[slot] = 1.0f;
-    }
-}
-
-f32 flinchWeight(int slot) {
-    const int left = g_flinch[slot];
-    if (left <= 0) return 0.0f;
-    const int t = kFlinchFrames - left;   // frames since the hit
-    return t < kFlinchPeak ? static_cast<f32>(t + 1) / kFlinchPeak
-                           : static_cast<f32>(kFlinchFrames - t) / (kFlinchFrames - kFlinchPeak);
 }
 
 // The game's own posture value for this body and joint (the same conversion the game uses).
@@ -436,20 +542,17 @@ HookAction onJointTweakPre(ModContext*, void* args, void* retval, void*) {
     if (g_tweakOwner[slot] != fopAcM_GetID(npc)) {
         g_tweakOwner[slot] = fopAcM_GetID(npc);
         g_tweak[slot] = 1.0f;
-        g_flinch[slot] = 0;
     }
     if (jnt == 0) {
         // once a frame (the first joint): fade the body's posture tweak toward none while one of
-        // our finished-pose animations plays, back to full after; and run the flinch on
-        const bool mine = b != nullptr && ours(b, npc->mpMorf->getAnm());
+        // our finished-pose animations plays (fight moves, hit reactions, the fall), back to full after
+        const bool mine = (b != nullptr && ours(b, npc->mpMorf->getAnm())) || forcedAnm(npc->mpMorf->getAnm());
         const f32 target = mine ? 0.0f : 1.0f;
         f32& w = g_tweak[slot];
         w = w < target ? std::min(target, w + kTweakFade) : std::max(target, w - kTweakFade);
-        if (g_flinch[slot] > 0) --g_flinch[slot];
     }
     const f32 w = g_tweak[slot];
-    const f32 fl = (jnt >= 1 && jnt <= 3) ? flinchWeight(slot) : 0.0f;
-    if (w >= 0.999f && fl <= 0.0f) return HOOK_CONTINUE;   // the game's own, untouched
+    if (w >= 0.999f) return HOOK_CONTINUE;   // the game's own, untouched
     cXyz tr;
     csXyz rot;
     gameTweak(npc->m_type, jnt, &tr, &rot);
@@ -458,12 +561,6 @@ HookAction onJointTweakPre(ModContext*, void* args, void* retval, void*) {
     mDoMtx_stack_c::copy(model->getAnmMtx(jnt));
     mDoMtx_stack_c::ZXYrotM(rot);
     mDoMtx_stack_c::transM(tr);
-    if (fl > 0.0f) {
-        // each of these joints' own Z axis runs side to side (the head's the other way round), so a
-        // turn about it leans the body back (or forward, hit from behind)
-        const f32 deg = kFlinchDeg[jnt - 1] * fl * g_flinchDir[slot] * (jnt == 3 ? -1.0f : 1.0f);
-        mDoMtx_stack_c::ZrotM(static_cast<s16>(DEG2S(deg)));
-    }
     model->setAnmMtx(jnt, mDoMtx_stack_c::get());
     cMtx_copy(mDoMtx_stack_c::get(), J3DSys::mCurrentMtx);
     if (retval != nullptr) *static_cast<int*>(retval) = 1;
@@ -475,14 +572,4 @@ HookAction onJointTweakPre(ModContext*, void* args, void* retval, void*) {
 namespace fighter_anim {
 bool install() { return mods::hook::add_pre<Cd2JointTweak>(onJointTweakPre) == MOD_OK; }
 
-void flinch(daNpcPasser_c* passer, const cXyz& from) {
-    if (passer == nullptr) return;
-    const int slot = tweakSlot(passer);
-    if (slot < 0 || slot > travellers::kSlots) return;
-    g_flinchOwnerFix(passer, slot);
-    const s16 toHit = cLib_targetAngleY(&passer->current.pos, &from);
-    const bool front = std::abs(static_cast<s16>(toHit - passer->shape_angle.y)) < 0x4000;
-    g_flinch[slot] = kFlinchFrames;
-    g_flinchDir[slot] = front ? 1 : -1;   // hit from the front: back; from behind: forward
-}
 }  // namespace fighter_anim
