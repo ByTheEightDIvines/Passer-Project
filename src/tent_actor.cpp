@@ -276,6 +276,10 @@ const ActorProfileDesc psrTent_c::sProfile = {
 namespace psr_tent {
 bool pushOff(fopAc_ac_c* npc, dBgS_Acch& acch) {
     if (npc == nullptr || !acch.ChkGroundHit()) return false;
+    // The game's own lookup stops the whole game (an assert) if the ground's index is out of range,
+    // which it can be for a frame (e.g. while new collision is being added): check it ourselves first.
+    const int bg = acch.m_gnd.GetBgIndex();
+    if (bg < 0 || bg >= 256 || dComIfG_Bgsp().GetBgWBasePointer(acch.m_gnd) == nullptr) return false;
     fopAc_ac_c* under = dComIfG_Bgsp().GetActorPointer(acch.m_gnd);
     if (under == nullptr || fopAcM_GetName(under) != psrTent_c::sProcName) return false;
     auto* tent = static_cast<psrTent_c*>(under);
