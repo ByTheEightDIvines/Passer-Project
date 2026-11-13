@@ -141,7 +141,9 @@ constexpr u16 kTalkAnimation = 6;
 constexpr u16 kTalkFlowGroup = 8;
 constexpr int kHurtInvulnFrames = 30;
 constexpr u8 kStrikeLinkPower = 2;       // a fighter's blow on Link (wolf): half a heart
-constexpr int kStuckFrames = 10;         // fleeing and pinned this long: step sideways
+constexpr int kStuckFrames = 10;
+constexpr int kFoeLostFrames = 30;       // a fighter stays on guard this long after losing sight of its enemy
+constexpr f32 kGravity = 5.0f, kMaxFall = 60.0f;         // fleeing and pinned this long: step sideways
 constexpr int kSidestepFrames = 20;
 constexpr f32 kReachAbove = 180.0f;      // fighters only square up to enemies within reach of the ground   // half a second untouchable after a hit, like Link
 constexpr std::array kLanguages{
@@ -180,9 +182,10 @@ struct PasserState {
     bool onGuard = false;   // this frame: a fighter with an enemy to face (draws and squares up)
     bool turning = false;   // this frame: still turning to face it (shuffles round instead of spinning)
     int stuck = 0;          // fleeing: frames pinned against something (a tent, a rock)
-    int sidestep = 0;       // fleeing: frames left of stepping sideways off it
+    int sidestep = 0;       // fleeing / walking: frames left of stepping sideways off something
+    s16 sideYaw = 0;        // the way it steps (along the thing it ran into)
+    int foeLost = 0;        // frames since a standing fighter last saw its enemy
     bool vsWolf = false;    // the one it's facing is wolf Link (its blows are aimed at him)
-    s8 sideSign = 1;
 };
 
 std::array<PasserState, 32> g_states{};
@@ -385,6 +388,9 @@ daNpcPasser_c* livePasser();
 bool lockedOnPasser(const fopAc_ac_c* enemy, const daNpcPasser_c* passer);
 bool holdsGround(const daNpcPasser_c* passer);
 void strike(daNpcPasser_c* passer, PasserState& state);
+void keepGrounded(daNpcPasser_c* passer, PasserState& state);
+bool startSidestep(daNpcPasser_c* passer, PasserState& state);
+void sidestepTick(daNpcPasser_c* passer, PasserState& state, f32 speed);
 bool swingOrStrike(daNpcPasser_c* passer, PasserState& state);
 void fighterAnim(daNpcPasser_c* passer, PasserState& state);
 
@@ -1006,19 +1012,11 @@ void onExecuteEscapePost(ModContext*, void* args, void*, void*) {
     // Running away straight into a tent (or a rock) pinned them there until they died: when it is
     // stuck against something, it steps sideways off it, then runs on.
     if (auto* state = findState(passer, false)) {
-        const bool pinned = passer->mAcch.ChkWallHit() && passer->current.pos.abs(passer->old.pos) < 3.0f;
+        const bool pinned = passer->mAcchCir.ChkWallHit() && passer->current.pos.abs(passer->old.pos) < 3.0f;
         if (state->sidestep > 0) {
-            --state->sidestep;
-            const s16 side = static_cast<s16>(passer->shape_angle.y + state->sideSign * 0x4000);
-            const f32 step = std::max(passer->speedF, Cd2_HIO_maxSpeed(passer->m_type)) * 0.8f;
-            passer->current.pos.x += cM_ssin(side) * step;
-            passer->current.pos.z += cM_scos(side) * step;
-            passer->mAcch.CrrPos(dComIfG_Bgsp());
-            if (state->sidestep == 0) state->stuck = 0;
+            sidestepTick(passer, *state, std::max(passer->speedF, Cd2_HIO_maxSpeed(passer->m_type)) * 0.8f);
         } else if (pinned) {
-            if (++state->stuck >= kStuckFrames) {
-                state->sidestep = kSidestepFrames;
-                state->sideSign = static_cast<s8>(-state->sideSign);   // the other way if that didn't do it
+            if (++state->stuck >= kStuckFrames && startSidestep(passer, *state)) {
                 travellers::noteAct(passer, "stepping off something it ran into");
             }
         } else if (state->stuck > 0) {
@@ -1075,6 +1073,22 @@ HookAction onReliefPre(ModContext*, void* args, void*, void*) {
     // Off screen, vanilla deletes it from the wall-bump pause; let it (the roster keeps the
     // traveller), unless an enemy is chasing it.
     keepIfChased(passer);
+    if (state->sidestep > 0) {
+        // walking round it: along the thing it bumped into, then back on its road
+        if (auto* walk = static_cast<J3DAnmTransformKey*>(passer->getAnmP(2, passer->getObjNum()))) {
+            passer->setAnm(walk, 1.0f, 6.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
+        }
+        sidestepTick(passer, *state, Cd2_HIO_walkMaxSpeed(passer->m_type));
+        if (state->sidestep == 0) {
+            state->reliefFrames = 0;
+            resumeRoute(passer, *state);
+        }
+        return HOOK_SKIP_ORIGINAL;
+    }
+    if (state->reliefFrames == 0 && !passer->checkFearSituation() && startSidestep(passer, *state)) {
+        travellers::noteAct(passer, "walking round something it bumped into");
+        return HOOK_SKIP_ORIGINAL;
+    }
     travellers::noteAct(passer, "stuck on a wall");
     if (++state->reliefFrames >= kSafeFramesToResume && !passer->checkFearSituation()) {
         state->reliefFrames = 0;
@@ -1106,6 +1120,7 @@ void onProfileExecutePost(ModContext*, void* args, void*, void*) {
     }
     if (!state->dead) {
         setDamageable(passer);
+        keepGrounded(passer, *state);
         if (psr_tent::pushOff(passer, passer->mAcch)) {
             travellers::noteAct(passer, "stepped off a tent it had climbed");
         }
@@ -1189,6 +1204,47 @@ void strike(daNpcPasser_c* passer, PasserState& state) {
     at.z += cM_scos(passer->shape_angle.y) * 90.0f;
     sph.SetC(at);
     dComIfG_Ccsp()->Set(&sph);
+}
+
+// The game's walking code is what pulls a traveller down onto the ground. While the mod holds a
+// traveller still (standing its ground, at camp, waiting at the end of its road) that code is off,
+// so they hung in the air over any dip: their own gravity then (not while sat on a stool).
+void keepGrounded(daNpcPasser_c* passer, PasserState& state) {
+    const bool heldByMod = state.standing || state.arrived || state.defending;
+    if (!heldByMod || state.talking) return;
+    const int slot = travellers::slotIndex(passer);
+    if (slot >= 0 && traveller_gear::sitting(slot)) return;
+    passer->speed.y = std::max(passer->speed.y - kGravity, -kMaxFall);
+    passer->current.pos.y += passer->speed.y;
+    passer->mAcch.CrrPos(dComIfG_Bgsp());
+    if (passer->mAcch.ChkGroundHit()) passer->speed.y = 0.0f;
+}
+
+// Bumped into something (a tree, a tent, a rock): step along it, the side nearer the way it was
+// going, for a moment. False if it isn't actually against anything.
+bool startSidestep(daNpcPasser_c* passer, PasserState& state) {
+    if (!passer->mAcchCir.ChkWallHit()) return false;
+    const s16 wall = passer->mAcchCir.GetWallAngleY();
+    const s16 a = static_cast<s16>(wall + 0x4000), b = static_cast<s16>(wall - 0x4000);
+    const s16 heading = passer->shape_angle.y;
+    s16 pick = std::abs(static_cast<s16>(a - heading)) <= std::abs(static_cast<s16>(b - heading)) ? a : b;
+    if (state.stuck >= 2 * kStuckFrames) pick = pick == a ? b : a;   // that way didn't work: the other
+    state.sideYaw = pick;
+    state.sidestep = kSidestepFrames;
+    return true;
+}
+
+void sidestepTick(daNpcPasser_c* passer, PasserState& state, f32 speed) {
+    --state.sidestep;
+    cLib_addCalcAngleS2(&passer->shape_angle.y, state.sideYaw, 3, 0x1000);
+    passer->current.angle.y = passer->shape_angle.y;
+    passer->current.pos.x += cM_ssin(passer->shape_angle.y) * speed;
+    passer->current.pos.z += cM_scos(passer->shape_angle.y) * speed;
+    passer->speed.y = std::max(passer->speed.y - kGravity, -kMaxFall);
+    passer->current.pos.y += passer->speed.y;
+    passer->mAcch.CrrPos(dComIfG_Bgsp());
+    if (passer->mAcch.ChkGroundHit()) passer->speed.y = 0.0f;
+    if (state.sidestep == 0) state.stuck = 0;
 }
 
 // A fighter in reach takes a swing: with its own animations the blows land on the swing's frames
@@ -1414,6 +1470,13 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         }
         state->vsWolf = enemy != nullptr && enemy == dComIfGp_getPlayer(0);
         if (enemy != nullptr) {
+            state->foeLost = 0;
+        } else if (state->standing && holdsGround(passer) && ++state->foeLost < kFoeLostFrames) {
+            // lost sight of it for a moment (it circled out, went behind something): stay on guard
+            state->onGuard = true;
+            passer->speedF = 0.0f;
+        }
+        if (enemy != nullptr) {
             state->onGuard = true;
             passer->speedF = 0.0f;
             const s16 toEnemy = cLib_targetAngleY(&passer->current.pos, &enemy->current.pos);
@@ -1426,8 +1489,11 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
                 state->standing = true;
                 travellers::noteAct(passer, "standing its ground");
                 travellers::noteStand(passer, enemy);
-                if (auto* idle = static_cast<J3DAnmTransformKey*>(passer->getAnmP(0, passer->getObjNum()))) {
-                    passer->setAnm(idle, 1.0f, 6.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
+                // fighters with their own animations square up (fighter_anim); the others stand idle
+                if (!fighter_anim::has(passer)) {
+                    if (auto* idle = static_cast<J3DAnmTransformKey*>(passer->getAnmP(0, passer->getObjNum()))) {
+                        passer->setAnm(idle, 1.0f, 6.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
+                    }
                 }
             }
             // in reach: swing at it (the blow lands on the swing's own frames)
@@ -1440,6 +1506,8 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
             } else {
                 state->strikeTimer = std::min(state->strikeTimer, 20);
             }
+        } else if (state->onGuard) {
+            // still on guard (see above)
         } else if (state->standing && fighter_anim::weaponOut(passer)) {
             passer->speedF = 0.0f;   // put the weapon away first, then walk on
         } else if (state->standing) {
@@ -1480,6 +1548,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         passer->health = static_cast<s16>(state->health);
         travellers::noteHit(passer, damage, life);
         state->invuln = kHurtInvulnFrames;
+        fighter_anim::flinch(passer, attacker->current.pos);   // the blow shows
         if (byWolf) {
             // bitten: from now on it's like any other traveller with the wolf: runs from him, never fights
             fighter_anim::drop(passer);

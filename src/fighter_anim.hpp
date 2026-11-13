@@ -43,4 +43,8 @@ bool weaponMtx(const daNpcPasser_c* passer, Mtx out);
 // (and faded back in after). Returns false if the hook couldn't be installed.
 bool install();
 
+// Hit: a quick flinch on top of whatever it's doing, away from where the blow came from (any
+// traveller, not just fighters).
+void flinch(daNpcPasser_c* passer, const cXyz& from);
+
 }  // namespace fighter_anim
