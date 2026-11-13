@@ -121,6 +121,10 @@ cPhs_Step psrFire_c::create() {
     if (!fopAcM_entrySolidHeap(this, createHeapCallBack, 0x40000)) {
         return cPhs_ERROR_e;
     }
+    // the cull box is measured from the fire itself (without this it sat at the world's origin and
+    // the whole camp was always "off screen": only the flame, a particle, ever showed)
+    placeModels();
+    fopAcM_SetMtx(this, mpPart[0]->getBaseTRMtx());
     fopAcM_setCullSizeBox(this, -600.0f, -60.0f, -600.0f, 600.0f, 260.0f, 600.0f);
     Execute();
     return cPhs_COMPLEATE_e;

@@ -136,6 +136,7 @@ constexpr u16 kTalkAnimation = 6;
 // The talk marker runs its flow in the stage's message file. Hyrule Field (F_SP121) uses group 8;
 // registering in group 0 left the node unresolved, so the talk opened with no text and never ended.
 constexpr u16 kTalkFlowGroup = 8;
+constexpr int kHurtInvulnFrames = 30;   // half a second untouchable after a hit, like Link
 constexpr std::array kLanguages{
     MESSAGE_LANGUAGE_ENGLISH, MESSAGE_LANGUAGE_GERMAN, MESSAGE_LANGUAGE_FRENCH,
     MESSAGE_LANGUAGE_SPANISH, MESSAGE_LANGUAGE_ITALIAN, MESSAGE_LANGUAGE_JAPANESE,
@@ -166,6 +167,7 @@ struct PasserState {
     int calmFrames = 0;
     int strikeTimer = 0;
     u8 anim = 0xFF;         // animation the camp guard last set (so it isn't restarted every frame)
+    int invuln = 0;         // frames left of the short invincible moment after being hit (like Link's)
 };
 
 std::array<PasserState, 32> g_states{};
@@ -1268,7 +1270,12 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         }
     }
 
-    if (passer->mCyl.ChkTgHit()) {
+    if (state->invuln > 0) {
+        --state->invuln;
+    }
+    if (passer->mCyl.ChkTgHit() && state->invuln > 0) {
+        passer->mCyl.ResetTgHit();   // the same swing is still touching: one swing, one hit
+    } else if (passer->mCyl.ChkTgHit()) {
         // Only enemies may hurt the passer. Link's sword, arrows, bombs, boomerang and
         // other player-owned actors all report a non-enemy attacker and are ignored.
         auto* attacker = passer->mCyl.GetTgHitAc();
@@ -1289,6 +1296,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         state->health = (life + kQuartersPerHeart - 1) / kQuartersPerHeart;
         passer->health = static_cast<s16>(state->health);
         travellers::noteHit(passer, damage, life);
+        state->invuln = kHurtInvulnFrames;
         if (life <= 0) {
             beginDeath(passer, *state);
         } else if (holdsGround(passer)) {
