@@ -925,7 +925,7 @@ Where restWhere(const Traveller& t, int slot) {
     Where w{};
     w.stage = n.stage;
     w.room = n.room;
-    // A camp seat: on a half-ring in front of the fire, away from the big tent behind it and the
+    // A camp seat: on a half-ring in front of the fire, away from the tents behind it and the
     // small tent at its side (see seatSpot). Anyone without a seat (resting at a road junction,
     // say) just spreads out around the spot by its slot.
     if (t.seat >= 0 && seatSpot(t.node, t.seat, &w.pos, &w.yaw)) {
@@ -1007,7 +1007,7 @@ f32 distToFootprint(const cXyz& at, s16 yaw, f32 hx, f32 hz, f32 px, f32 pz) {
     return std::sqrt(ox * ox + oz * oz);
 }
 
-constexpr f32 kFlatEnough = 30.0f;   // highest minus lowest ground under a big tent's whole floor
+constexpr int kCampTents = 3;          // small A-tents at every camp
 
 struct TentSpot {
     cXyz pos;
@@ -1143,25 +1143,16 @@ void updateCamps(int stage, const cXyz& link) {
                 findBeedleSpot(mid, face, &b);
                 spawnTent(c, PSR_TENT_BEEDLE, b.pos, b.yaw, n.room);
             } else {
-                // the big wall tent behind the fire, a small A-tent off to one side, doors inward
-                // (the seats sit on a half-ring 230 out in front, so the tents stand clear of them)
-                const f32 back = 470.0f, aside = 400.0f;
-                const cXyz wall(mid.x - cM_ssin(face) * back, mid.y, mid.z - cM_scos(face) * back);
-                const s16 side = static_cast<s16>(face + 0x4000);
-                const cXyz small(mid.x + cM_ssin(side) * aside, mid.y, mid.z + cM_scos(side) * aside);
                 spawnFire(c, cp.node | (soupLevel(n.stage, n.room) << 8), mid, face, n.room);
-                // ...unless that ground is bumpy: then each tent goes to the flattest open spot nearby
-                // The big wall tent only goes up where there is properly flat ground; camps without
-                // any just have the small tent.
+                // A few small A-tents (no big tent), each on the flattest open ground left around
+                // the fire, doors toward it, with a walkway between them.
                 std::vector<TentSpot> placed;
-                TentSpot w{wall, face, psr_tent::kFootX[PSR_TENT_WALL], psr_tent::kFootZ[PSR_TENT_WALL]};
-                const bool big = findTentSpot(cp.node, mid, face, PSR_TENT_WALL, placed, &w, kFlatEnough);
-                if (big) placed.push_back(w);
-                TentSpot a{small, static_cast<s16>(side + 0x8000), psr_tent::kFootX[PSR_TENT_A], psr_tent::kFootZ[PSR_TENT_A]};
-                findTentSpot(cp.node, mid, face, PSR_TENT_A, placed, &a);
-                if (big) spawnTent(c, PSR_TENT_WALL, w.pos, w.yaw, n.room);
-                else diag("tent    no flat ground for the big tent at camp node %d", cp.node);
-                spawnTent(c, PSR_TENT_A, a.pos, a.yaw, n.room);
+                for (int i = 0; i < kCampTents; i++) {
+                    TentSpot t{};
+                    if (!findTentSpot(cp.node, mid, face, PSR_TENT_A, placed, &t)) break;
+                    placed.push_back(t);
+                    spawnTent(c, PSR_TENT_A, t.pos, t.yaw, n.room);
+                }
             }
         } else if (!here && c.up) {
             c.ids.clear();          // the room unloaded and took the tents with it
