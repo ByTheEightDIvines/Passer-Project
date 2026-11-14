@@ -190,10 +190,15 @@ struct PasserState {
     int sidestep = 0;       // fleeing / walking: frames left of stepping sideways off something
     s16 sideYaw = 0;        // the way it steps (along the thing it ran into)
     int foeLost = 0;        // frames since a standing fighter last saw its enemy
+    bool blowPending = false;                          // a blow was thrown this frame: did it land?
+    fpc_ProcID blowTarget = fpcM_ERROR_PROCESS_ID_e;   // what the last landed blow hit
+    int blowCheck = 0;                                 // frames until we look at it again
+    int blowHpBefore = 0;
     bool vsWolf = false;    // the one it's facing is wolf Link (its blows are aimed at him)
 };
 
 std::array<PasserState, 32> g_states{};
+void blowTick(daNpcPasser_c* passer, PasserState& state);   // further down: the diary of blows
 // Fighters the wolf has bitten (by roster slot): for five minutes they're as scared of wolf Link as
 // any unarmed traveller and never go for him. Kept apart from the actor's state so it lasts when the
 // traveller walks out of range and back; real time, so it runs out while they're away too.
@@ -1135,6 +1140,7 @@ void onProfileExecutePost(ModContext*, void* args, void*, void*) {
         }
         fighter_anim::forcedTick(passer);   // a hit reaction beats the fight moves
         fighterAnim(passer, *state);
+        blowTick(passer, *state);
         return;
     }
     if (passer->mpMorf == nullptr) {
@@ -1215,6 +1221,54 @@ void strike(daNpcPasser_c* passer, PasserState& state) {
     at.z += cM_scos(passer->shape_angle.y) * 90.0f;
     sph.SetC(at);
     dComIfG_Ccsp()->Set(&sph);
+    state.blowPending = true;
+}
+
+// The diary's record of every blow a fighter throws: what it hit (and its health), or that it
+// missed; and a moment later, whether the target's health actually went down.
+void blowTick(daNpcPasser_c* passer, PasserState& state) {
+    const int i = static_cast<int>(&state - g_states.data());
+    if (i < 0 || i >= static_cast<int>(g_strike.size())) return;
+    char line[200];
+    if (state.blowPending) {
+        state.blowPending = false;
+        dCcD_Sph& sph = g_strike[i];
+        if (sph.ChkAtHit()) {
+            cCcD_Obj* obj = sph.GetAtHitObj();
+            fopAc_ac_c* who = obj != nullptr ? obj->GetAc() : nullptr;
+            if (who != nullptr) {
+                std::snprintf(line, sizeof(line), "landed on %u (%s) hp %d%s",
+                              static_cast<unsigned>(fopAcM_GetID(who)), fopAcM_getProcNameString(who), who->health,
+                              state.vsWolf ? " [wolf]" : "");
+                state.blowTarget = fopAcM_GetID(who);
+                state.blowHpBefore = who->health;
+                state.blowCheck = 8;
+            } else {
+                std::snprintf(line, sizeof(line), "landed on something with no actor");
+            }
+            sph.ClrAtHit();
+        } else {
+            fopAc_ac_c* foe = nearestEnemy(passer, 400.0f);
+            if (foe != nullptr) {
+                std::snprintf(line, sizeof(line), "missed; nearest enemy %u (%s) at %.0f, %.0f up",
+                              static_cast<unsigned>(fopAcM_GetID(foe)), fopAcM_getProcNameString(foe),
+                              passer->current.pos.absXZ(foe->current.pos), foe->current.pos.y - passer->current.pos.y);
+            } else {
+                std::snprintf(line, sizeof(line), "missed; no enemy within 400");
+            }
+        }
+        travellers::noteBlow(passer, line);
+    }
+    if (state.blowCheck > 0 && --state.blowCheck == 0) {
+        fopAc_ac_c* who = fopAcM_SearchByID(state.blowTarget);
+        if (who == nullptr) {
+            std::snprintf(line, sizeof(line), "after: target %u gone (dead?)", static_cast<unsigned>(state.blowTarget));
+        } else {
+            std::snprintf(line, sizeof(line), "after: %u (%s) hp %d -> %d", static_cast<unsigned>(state.blowTarget),
+                          fopAcM_getProcNameString(who), state.blowHpBefore, who->health);
+        }
+        travellers::noteBlow(passer, line);
+    }
 }
 
 // The game's walking code is what pulls a traveller down onto the ground. While the mod holds a

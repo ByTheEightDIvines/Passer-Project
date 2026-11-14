@@ -1367,6 +1367,11 @@ void onDeath(daNpcPasser_c* passer) {
     t.timer = rndRange(9000, 18000);   // someone new comes along later
 }
 
+void noteBlow(const fopAc_ac_c* passer, const char* what) {
+    const int slot = slotOf(passer);
+    if (slot >= 0) diag("blow    slot %d %s", slot, what);
+}
+
 void noteHit(const fopAc_ac_c* passer, int damage, int lifeLeft) {
     const int slot = slotOf(passer);
     if (slot >= 0) diag("hit     slot %d -%d quarters, %d left", slot, damage, lifeLeft);
