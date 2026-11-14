@@ -200,6 +200,7 @@ struct PasserState {
     cXyz progFrom;          // where it was at the start of the progress check
     int progFrames = 0;     // frames into the progress check
     int stuckRuns = 0;      // progress checks in a row it failed
+    int voiceWait = 0;      // frames until it may call out again (attack shout, hurt yelp)
     u8 fetching = 0;        // a fighter getting its torch back after a fight: 1 walking to it, 2 picking it up
     int fetchFrames = 0;
 };
@@ -1359,6 +1360,7 @@ void onProfileExecutePost(ModContext*, void* args, void*, void*) {
         fighter_anim::forcedTick(passer);   // a hit reaction beats the fight moves
         fighterAnim(passer, *state);
         blowTick(passer, *state);
+        if (state->voiceWait > 0) --state->voiceWait;
         progressCheck(passer, *state);
         torchTick(passer, *state);
         // at night, out on the roads (not settled at a camp fire): a torch or lantern
@@ -1539,16 +1541,26 @@ void sidestepTick(daNpcPasser_c* passer, PasserState& state, f32 speed) {
     if (state.sidestep == 0) state.stuck = 0;
 }
 
+// Their own voice (each townsfolk body has its own): a shout as they swing, a yelp when hit.
+constexpr int kVoiceShout = 3, kVoiceYelp = 1;   // the body's "hey!" and "surprise" lines
+void callOut(daNpcPasser_c* passer, PasserState& state, int line, int wait) {
+    if (state.voiceWait > 0) return;
+    passer->mCitizen.playVoice(line);
+    state.voiceWait = wait;
+}
+
 // A fighter in reach takes a swing: with its own animations the blows land on the swing's frames
 // (fighterAnim); without them (#29 for now) the blow lands at once, as before. False while it's
 // still busy (startled, drawing, mid-swing): try again next frame.
 bool swingOrStrike(daNpcPasser_c* passer, PasserState& state) {
     if (!fighter_anim::has(passer)) {
         strike(passer, state);
+        callOut(passer, state, kVoiceShout, 60);
         return true;
     }
     if (fighter_anim::busy(passer)) return false;
     state.swingReq = true;
+    callOut(passer, state, kVoiceShout, 60);
     return true;
 }
 
@@ -1866,6 +1878,8 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         travellers::noteHit(passer, damage, life);
         state->invuln = kHurtInvulnFrames;
         if (life > 0) fighter_anim::hit(passer, attacker->current.pos);   // the blow shows: a stagger
+        state->voiceWait = 0;
+        callOut(passer, *state, kVoiceYelp, 30);                           // and is heard
         if (byWolf) {
             // bitten: from now on it's like any other traveller with the wolf: runs from him, never fights
             fighter_anim::drop(passer);
