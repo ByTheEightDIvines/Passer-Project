@@ -10,7 +10,7 @@
 #include "dolphin/types.h"
 
 class fopAc_ac_c;
-class cXyz;
+struct cXyz;
 
 namespace psr_freeze {
 // Freeze this monster now (false if it can't be: already frozen, our effects not loaded yet).
