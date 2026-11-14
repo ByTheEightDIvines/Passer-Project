@@ -35,7 +35,8 @@ constexpr f32 kGravity = 5.0f, kMaxFall = 60.0f;
 constexpr f32 kChaseSpeed = 1.25f;             // his chase, part of a passer's full run
 constexpr u8 kSpoonPower = 4;             // a Bokoblin's club is 1: he hits HARD (two hearts)
 constexpr int kLastLine = 3;              // "THAT'S IT!" - and then the spoon
-constexpr u8 kAnmIdle = 0, kAnmWalk = 2, kAnmRun = 4, kAnmSit = 14;   // the same sit as every camper
+constexpr u8 kAnmIdle = 0, kAnmWalk = 2, kAnmRun = 4, kAnmSit = 17;   // m_sitwait_b: sitting on the ground
+constexpr f32 kSitLift = 15.0f;   // that sit puts his seat this far under his feet' level: up onto the mat
 constexpr f32 kMatAngle = 40.0f, kMatOut = 340.0f;   // his mat: front-right of the fire, past the stools
 
 enum State : u8 { S_ARRIVE, S_TALK, S_TO_MAT, S_SIT, S_GETUP, S_ATTACK, S_FLEE };
@@ -167,6 +168,7 @@ public:
         if (!mSitting) return;
         mSitting = false;
         g_cookSitting = false;
+        b->current.pos.y -= kSitLift * Cd2_HIO_objScale(kCookType);
         b->speed.y = 0.0f;
     }
 
@@ -270,9 +272,11 @@ public:
         case S_SIT:
             if (g_greedyAgain) { standUp(b); mState = S_GETUP; break; }
             if (!mSitting) {
-                // down on a seat on his mat, like the campers on theirs (the sit is made for one)
+                // down on his mat: the game's sit-on-the-ground (it used to be pushed a stool's
+                // height lower still, which sank him into the ground)
                 mSitting = true;
                 g_cookSitting = true;
+                b->current.pos.y += kSitLift * Cd2_HIO_objScale(kCookType);
             }
             anim(b, kAnmSit);
             break;

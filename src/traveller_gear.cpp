@@ -314,14 +314,7 @@ void onCreateHeapPost(ModContext*, void* args, void* retval, void*) {
         // the cook: his hat and spoon, no pack, belt or weapon
         g->hat = make("psr_chefhat.bmd");
         g->spoon = make("psr_spoon.bmd");
-        if (g->extras != nullptr) mDoExt_destroySolidHeap(g->extras);
-        g->extras = mDoExt_createSolidHeapFromGame(0x20000, 0x20);
-        if (g->extras != nullptr) {
-            JKRHeap* before = mDoExt_setCurrentHeap(g->extras);
-            g->seat = make("psr_seat.bmd");   // he sits on a seat on his mat, like the campers
-            mDoExt_setCurrentHeap(before);
-            mDoExt_adjustSolidHeap(g->extras);
-        }
+
         g->owner = fopAcM_GetID(passer);
         return;
     }
@@ -364,8 +357,7 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
         m->setBaseTRMtx(mDoMtx_stack_c::now);
         mDoExt_modelUpdateDL(m);
     };
-    const bool seated = cook::isBody(passer) ? cook::sitting()
-                                             : g->sitting && travellers::campInfo(passer, nullptr, nullptr, nullptr);
+    const bool seated = !cook::isBody(passer) && g->sitting && travellers::campInfo(passer, nullptr, nullptr, nullptr);
     if (g->seat != nullptr && seated) {
         // the vanilla stools put the seat 37.2 (men) / 55.9 (women) up, scaled like the person
         const f32 scale = Cd2_HIO_objScale(passer->m_type);

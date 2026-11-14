@@ -249,6 +249,7 @@ void psrFire_c::placeModels() {
         const f32 ground = dComIfG_Bgsp().GroundCross(&gnd);
         mDoMtx_stack_c::transS(at.x, ground != -G_CM3D_F_INF ? ground : current.pos.y, at.z);
         mDoMtx_stack_c::YrotM(yaw);
+        mDoMtx_stack_c::transM(0.0f, 0.0f, -35.0f);   // his ground sit leans back: the rug under him, not his feet
         mpMat->setBaseTRMtx(mDoMtx_stack_c::get());
     }
     for (int i = 0; i < kDecorNum; i++) {
