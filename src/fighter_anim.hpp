@@ -68,6 +68,13 @@ constexpr float kPickupGrab = 13.0f;   // the hand closes on the torch
 bool startPickup(daNpcPasser_c* passer);
 float pickupFrame(const daNpcPasser_c* passer);
 bool pickupDone(const daNpcPasser_c* passer);
+// The old women's freeze cast (per body): start it; its frame (-1: not playing); finished; and how
+// far into the thrust it is (0..1, the staff tips forward with it).
+constexpr float kCastFire = 16.0f;     // the spell leaves the lantern
+bool startCast(daNpcPasser_c* passer);
+float castFrame(const daNpcPasser_c* passer);
+bool castDone(const daNpcPasser_c* passer);
+float castReach(const daNpcPasser_c* passer);
 // The left hand's matrix (for the torch or lantern), false if there is no model yet.
 bool leftHandMtx(const daNpcPasser_c* passer, Mtx out);
 

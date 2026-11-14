@@ -745,9 +745,37 @@ void layerTick(daNpcPasser_c* passer, bool carryLight) {
 
     // the light arm
     L.hold = bodyAnm(passer, "hold");
-    const bool picking = cur != nullptr && cur == bodyAnm(passer, "pickup");
+    const bool picking = cur != nullptr && (cur == bodyAnm(passer, "pickup") || cur == bodyAnm(passer, "cast"));
     const bool wantArm = carryLight && !forced && !sitting && !picking && L.hold != nullptr;
     L.armW = std::clamp(L.armW + (wantArm ? kArmFade : -kArmFade), 0.0f, 1.0f);
+}
+
+bool startCast(daNpcPasser_c* passer) {
+    J3DAnmTransformKey* a = bodyAnm(passer, "cast");
+    if (a == nullptr || passer->mpMorf == nullptr) return false;
+    passer->mpMorf->setAnm(a, J3DFrameCtrl::EMode_NONE, 4.0f, 1.0f, 0, -1);
+    return true;
+}
+
+f32 castFrame(const daNpcPasser_c* passer) {
+    if (passer->mpMorf == nullptr || passer->mpMorf->getAnm() != bodyAnm(passer, "cast")) return -1.0f;
+    return passer->mpMorf->getFrame();
+}
+
+bool castDone(const daNpcPasser_c* passer) {
+    if (castFrame(passer) < 0.0f) return true;
+    return passer->mpMorf->isStop() || passer->mpMorf->getFrame() >= passer->mpMorf->getEndFrame() - 1.0f;
+}
+
+// How far into the thrust the cast is (0 at rest, 1 at full reach): the staff tips forward with it.
+f32 castReach(const daNpcPasser_c* passer) {
+    const f32 f = castFrame(passer);
+    if (f < 0.0f) return 0.0f;
+    auto ease = [](f32 x) { x = std::clamp(x, 0.0f, 1.0f); return x * x * (3.0f - 2.0f * x); };
+    if (f <= 14.0f) return ease(f / 14.0f) * 0.85f;
+    if (f <= 18.0f) return 0.85f + 0.15f * ease((f - 14.0f) / 4.0f);
+    if (f <= 26.0f) return 1.0f;
+    return 1.0f - ease((f - 26.0f) / 14.0f);
 }
 
 bool startPickup(daNpcPasser_c* passer) {

@@ -28,6 +28,7 @@
 #include "camp_cook.hpp"
 #include "fighter_anim.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstring>
@@ -124,6 +125,7 @@ struct Gear {
     J3DModel* staff = nullptr;    // the old women's hooked staff (their lantern hangs from it)
     bool torch = false;           // fighters: a torch; everyone else a lantern
     bool carrying = false;        // in hand (and lit, at night)
+    f32 staffGrip = 114.0f;       // the old women: hand height over the ground while walking with the staff
     bool onGround = false;        // a fighter's torch, put down to fight
     cXyz groundPos;               // where it lies (its handle end)
     s16 groundYaw = 0;
@@ -194,6 +196,28 @@ bool torchSpot(int type, f32* x, f32* z) {
     return false;
 }
 bool isOldWoman(int type) { return type == 20 || type == 27; }
+const Vec kStaffHook = {2.0f, 148.5f, 25.6f};   // where the lantern's handle hangs on the crook
+
+// The staff stands on the ground where the hand holds it; while she casts it is lifted with her hand
+// and tips forward toward the monster. Out: the staff's matrix, and the lantern's (hanging upright).
+void staffMtx(daNpcPasser_c* passer, const Mtx hand, f32 grip, Mtx staffOut, Mtx lanternOut) {
+    const f32 reach = fighter_anim::castReach(passer);
+    if (reach > 0.0f) {
+        mDoMtx_stack_c::transS(hand[0][3], hand[1][3], hand[2][3]);
+        mDoMtx_stack_c::YrotM(passer->shape_angle.y);
+        mDoMtx_stack_c::XrotM(static_cast<s16>(reach * 0x13E8));   // up to 28 degrees
+        mDoMtx_stack_c::transM(0.0f, -grip, 0.0f);
+    } else {
+        mDoMtx_stack_c::transS(hand[0][3], passer->current.pos.y, hand[2][3]);
+        mDoMtx_stack_c::YrotM(passer->shape_angle.y);
+    }
+    mDoMtx_copy(mDoMtx_stack_c::now, staffOut);
+    cXyz hook;
+    mDoMtx_stack_c::multVec(&kStaffHook, &hook);
+    mDoMtx_stack_c::transS(hook.x, hook.y - 44.2f, hook.z);
+    mDoMtx_stack_c::YrotM(passer->shape_angle.y);
+    mDoMtx_copy(mDoMtx_stack_c::now, lanternOut);
+}
 
 void cutLight(Gear& g) {
     if (g.lit) dKy_plight_cut(&g.glow);
@@ -353,14 +377,12 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
     const bool atFire = g->sitting || travellers::campInfo(passer, nullptr, nullptr, nullptr);
     if (g->staff != nullptr && !atFire && fighter_anim::leftHandMtx(passer, hand)) {
         // the staff stands upright on the ground where the hand holds it, the hook to the front
-        mDoMtx_stack_c::transS(hand[0][3], passer->current.pos.y, hand[2][3]);
-        mDoMtx_stack_c::YrotM(passer->shape_angle.y);
-        Mtx staffAt;
-        mDoMtx_copy(mDoMtx_stack_c::now, staffAt);
+        Mtx staffAt, lanternAt;
+        staffMtx(passer, hand, g->staffGrip, staffAt, lanternAt);
+        mDoMtx_copy(staffAt, mDoMtx_stack_c::now);
         drawModel(g->staff);
         if (g->light != nullptr) {
-            mDoMtx_copy(staffAt, mDoMtx_stack_c::now);
-            mDoMtx_stack_c::transM(kStaffLantern.x, kStaffLantern.y, kStaffLantern.z);
+            mDoMtx_copy(lanternAt, mDoMtx_stack_c::now);
             drawModel(g->light);
         }
     } else if (g->light != nullptr && g->onGround) {
@@ -422,6 +444,9 @@ bool lightTick(daNpcPasser_c* passer, bool night, bool atCamp) {
     if (!night) g->onGround = false;   // morning: put away
     g->carrying = night && !atCamp && !g->onGround && g->light != nullptr && haveHand;
     const bool staffOut = g->staff != nullptr && !atCamp && haveHand;
+    if (staffOut && fighter_anim::castReach(passer) <= 0.0f && fighter_anim::castFrame(passer) < 0.0f) {
+        g->staffGrip = std::max(40.0f, hand[1][3] - passer->current.pos.y);   // how high she holds it
+    }
     // the flame: on the torch's tip, in the lantern (in hand or on the staff's hook)
     cXyz flame;
     bool burning = night && g->light != nullptr && (g->carrying || g->onGround);
@@ -431,10 +456,9 @@ bool lightTick(daNpcPasser_c* passer, bool night, bool atCamp) {
         mDoMtx_stack_c::transM(-10.0f, 0.0f, 0.0f);
         mDoMtx_stack_c::multVec(&kTorchTip, &flame);
     } else if (burning && staffOut) {
-        mDoMtx_stack_c::transS(hand[0][3], passer->current.pos.y, hand[2][3]);
-        mDoMtx_stack_c::YrotM(passer->shape_angle.y);
-        const Vec at = {kStaffLantern.x, kStaffLantern.y + kLanternFlame, kStaffLantern.z};
-        mDoMtx_stack_c::multVec(&at, &flame);
+        Mtx staffAt, lanternAt;
+        staffMtx(passer, hand, g->staffGrip, staffAt, lanternAt);
+        flame.set(lanternAt[0][3], lanternAt[1][3] + kLanternFlame, lanternAt[2][3]);
     } else if (burning && g->torch) {
         mDoMtx_copy(hand, mDoMtx_stack_c::now);
         mDoMtx_stack_c::concat(kTorchGrip);
@@ -462,6 +486,15 @@ bool lightTick(daNpcPasser_c* passer, bool night, bool atCamp) {
     }
     // the arm holds up whatever is in it: the staff all day, a torch or lantern at night
     return staffOut || g->carrying;
+}
+
+bool lanternMtx(daNpcPasser_c* passer, Mtx out) {
+    Gear* g = travellerLook(passer) != nullptr ? gearFor(passer) : nullptr;
+    Mtx hand, staffAt;
+    if (g == nullptr || g->owner != fopAcM_GetID(passer) || g->staff == nullptr ||
+        !fighter_anim::leftHandMtx(passer, hand)) return false;
+    staffMtx(passer, hand, g->staffGrip, staffAt, out);
+    return true;
 }
 
 bool torchInHand(daNpcPasser_c* passer) {

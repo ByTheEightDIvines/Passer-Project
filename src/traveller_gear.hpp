@@ -19,4 +19,6 @@ void dropTorch(daNpcPasser_c* passer);
 // Lying on the ground: where to stand (and face) to pick it up.
 bool torchOnGround(daNpcPasser_c* passer, cXyz* standAt, s16* yaw);
 void takeTorch(daNpcPasser_c* passer);
+// The old women: where the lantern on the staff hangs (its base), false if she has no staff.
+bool lanternMtx(daNpcPasser_c* passer, Mtx out);
 }

@@ -28,6 +28,7 @@
 #include "camp_fire.hpp"
 #include "camp_cook.hpp"
 #include "travellers.hpp"
+#include "freeze.hpp"
 
 #include <algorithm>
 #include <array>
@@ -201,6 +202,13 @@ struct PasserState {
     int progFrames = 0;     // frames into the progress check
     int stuckRuns = 0;      // progress checks in a row it failed
     int voiceWait = 0;      // frames until it may call out again (attack shout, hurt yelp)
+    // the old women's freeze spell
+    int hitsThisFight = 0;  // blows taken since it was last quiet
+    int quietFrames = 0;
+    int castCooldown = 0;   // frames until she can cast again
+    u8 casting = 0;         // 1 turning to face it, 2 casting
+    bool castFired = false;
+    fpc_ProcID castTarget = fpcM_ERROR_PROCESS_ID_e;
     u8 fetching = 0;        // a fighter getting its torch back after a fight: 1 walking to it, 2 picking it up
     int fetchFrames = 0;
 };
@@ -930,7 +938,7 @@ bool gateAction(daNpcPasser_c* passer) {
     // him step up like Link.
     passer->mAcchCir.SetWallH(kWallCheckHeight);
     const auto* state = findState(passer, false);
-    return state != nullptr && (state->dead || state->talking || state->arrived);
+    return state != nullptr && (state->dead || state->talking || state->arrived || state->casting != 0);
 }
 
 bool isOldWoman(const daNpcPasser_c* passer) {
@@ -1202,6 +1210,66 @@ HookAction onCheckObstaclePre(ModContext*, void* args, void* retval, void*) {
 // A fighter puts its torch down to fight (it lies there burning) and, once the weapon is away again,
 // walks back to it, crouches and picks it up. Far away (or out of sight) it just has it back.
 void stepToward(daNpcPasser_c* passer, const cXyz& to, f32 speed);   // (camp guard, further down)
+void callOut(daNpcPasser_c* passer, PasserState& state, int line, int wait);   // (further down)
+
+// The old women's freeze spell: turn to the monster that hit her twice, raise the staff and thrust
+// (psr_cast_<body>); at the thrust it is frozen in Link's ice (freeze.cpp). Then she runs; a minute
+// before she can do it again.
+constexpr int kCastCooldown = 1800;
+constexpr int kQuietToForget = 300;   // ten seconds with no monster near: the hits are forgotten
+constexpr f32 kCastReach = 1500.0f;
+void castTick(daNpcPasser_c* passer, PasserState& state) {
+    if (state.castCooldown > 0) --state.castCooldown;
+    if (state.hitsThisFight > 0 && nearestEnemy(passer, kThreatRadius) == nullptr &&
+        ++state.quietFrames > kQuietToForget) {
+        state.hitsThisFight = 0;
+    }
+    if (state.casting == 0) return;
+    fopAc_ac_c* foe = fopAcM_SearchByID(state.castTarget);
+    auto finish = [&]() {
+        state.casting = 0;
+        if (nearestEnemy(passer, kThreatRadius) != nullptr) passer->setAction(daNpcPasser_c::MODE_1);   // and off she goes
+    };
+    if ((foe == nullptr || passer->current.pos.absXZ(foe->current.pos) > kCastReach) && !state.castFired) {
+        finish();
+        return;
+    }
+    passer->speedF = 0.0f;
+    if (foe != nullptr && !state.castFired) {
+        const s16 yaw = cLib_targetAngleY(&passer->current.pos, &foe->current.pos);
+        cLib_addCalcAngleS2(&passer->current.angle.y, yaw, 2, 0x1800);
+        passer->shape_angle.y = passer->current.angle.y;
+    }
+    if (state.casting == 1) {
+        if (fighter_anim::hitting(passer)) return;   // the stagger first
+        if (foe != nullptr &&
+            std::abs(static_cast<s16>(passer->shape_angle.y - cLib_targetAngleY(&passer->current.pos, &foe->current.pos))) < 0x800) {
+            if (!fighter_anim::startCast(passer)) {
+                finish();
+                return;
+            }
+            state.casting = 2;
+            state.voiceWait = 0;
+            callOut(passer, state, 3, 60);
+        }
+        return;
+    }
+    if (!state.castFired && fighter_anim::castFrame(passer) >= fighter_anim::kCastFire) {
+        state.castFired = true;
+        state.castCooldown = kCastCooldown;
+        state.hitsThisFight = 0;
+        Mtx lantern;
+        if (traveller_gear::lanternMtx(passer, lantern)) {   // a burst of frost off the lantern
+            cXyz at(lantern[0][3], lantern[1][3] + 23.0f, lantern[2][3]);
+            dComIfGp_particle_set(ID_ZI_J_COLHIT_ICE, &at, nullptr, nullptr);
+        }
+        if (foe != nullptr && psr_freeze::freeze(foe)) {
+            travellers::noteAct(passer, "froze a monster");
+            dComIfGp_particle_set(ID_ZI_J_COLHIT_ICE, &foe->eyePos, nullptr, nullptr);
+        }
+    }
+    if (fighter_anim::castDone(passer)) finish();
+}
 constexpr f32 kFetchMax = 1200.0f;
 constexpr int kFetchGiveUp = 300;   // ten seconds of walking without getting there
 void torchTick(daNpcPasser_c* passer, PasserState& state) {
@@ -1363,6 +1431,8 @@ void onProfileExecutePost(ModContext*, void* args, void*, void*) {
         if (state->voiceWait > 0) --state->voiceWait;
         progressCheck(passer, *state);
         torchTick(passer, *state);
+        psr_freeze::loadEffects();
+        castTick(passer, *state);
         // at night, out on the roads (not settled at a camp fire): a torch or lantern
         const int hour = dKy_getdaytime_hour();
         const bool night = hour >= 19 || hour < 6;
@@ -1504,7 +1574,7 @@ void blowTick(daNpcPasser_c* passer, PasserState& state) {
 // traveller still (standing its ground, at camp, waiting at the end of its road) that code is off,
 // so they hung in the air over any dip: their own gravity then (not while sat on a stool).
 void keepGrounded(daNpcPasser_c* passer, PasserState& state) {
-    const bool heldByMod = state.standing || state.arrived || state.defending || state.fetching;
+    const bool heldByMod = state.standing || state.arrived || state.defending || state.fetching || state.casting;
     if (!heldByMod || state.talking) return;
     const int slot = travellers::slotIndex(passer);
     if (slot >= 0 && traveller_gear::sitting(slot)) return;
@@ -1897,6 +1967,21 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
             passer->setAction(daNpcPasser_c::MODE_1);
             return HOOK_CONTINUE;
         }
+        if (life > 0 && isOldWoman(passer) && !travellers::campInfo(passer, nullptr, nullptr, nullptr)) {
+            // the old women: the second blow in a fight, and she turns and freezes whoever dealt it
+            state->quietFrames = 0;
+            if (++state->hitsThisFight >= 2 && state->castCooldown == 0 && state->casting == 0) {
+                state->casting = 1;
+                state->castFired = false;
+                state->castTarget = fopAcM_GetID(attacker);
+                state->standing = false;
+                state->arrived = false;
+                state->cowering = false;
+                passer->speedF = 0.0f;
+                travellers::noteAct(passer, "turning to freeze what hit her");
+                return HOOK_CONTINUE;
+            }
+        }
         if (life <= 0) {
             beginDeath(passer, *state);
         } else if (holdsGround(passer)) {
@@ -2188,6 +2273,9 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     }
     if (mods::hook::add_pre<PathObstacle>(onCheckObstaclePre) != MOD_OK) {
         svc_log->info(mod_ctx, "path obstacle hook unavailable; travellers keep the game's own sidestepping");
+    }
+    if (!psr_freeze::install()) {
+        svc_log->info(mod_ctx, "actor update hook unavailable; the old women can't freeze monsters");
     }
     if (mods::hook::add_post<BulblinGetPla>(onGetPlaPost) != MOD_OK) {
         svc_log->info(mod_ctx, "Bulblin get_pla hook unavailable; Bulblins target whoever is closer");
