@@ -19,6 +19,7 @@
 #include "d/d_particle_name.h"
 #include "f_op/f_op_actor_mng.h"
 #include "m_Do/m_Do_ext.h"
+#include "JSystem/JKernel/JKRSolidHeap.h"
 #include "m_Do/m_Do_mtx.h"
 #include "mods/service.hpp"
 #include "mods/svc/hook.hpp"
@@ -121,6 +122,7 @@ struct Gear {
     J3DModel* hat = nullptr;      // the cook's chef's hat
     J3DModel* spoon = nullptr;    // the cook's wooden spoon
     bool sitting = false;
+    JKRSolidHeap* extras = nullptr;   // the torch/lantern and staff live here: the actor's own heap has no room
     J3DModel* light = nullptr;    // its torch or lantern (copies of Rusl's torch and Link's lantern)
     J3DModel* staff = nullptr;    // the old women's hooked staff (their lantern hangs from it)
     bool torch = false;           // fighters: a torch; everyone else a lantern
@@ -270,6 +272,7 @@ HookAction onRemoveResrcPre(ModContext*, void* args, void* retval, void*) {
     dComIfG_resDelete(&npc->mPhase3, specialArc(type));
     if (g != nullptr && g->owner == fopAcM_GetID(npc)) {
         cutLight(*g);
+        if (g->extras != nullptr) mDoExt_destroySolidHeap(g->extras);
         if (g->packLoaded) dComIfG_resDelete(&g->packPhase, kPackArc);
         *g = Gear{};
     }
@@ -311,6 +314,14 @@ void onCreateHeapPost(ModContext*, void* args, void* retval, void*) {
         // the cook: his hat and spoon, no pack, belt or weapon
         g->hat = make("psr_chefhat.bmd");
         g->spoon = make("psr_spoon.bmd");
+        if (g->extras != nullptr) mDoExt_destroySolidHeap(g->extras);
+        g->extras = mDoExt_createSolidHeapFromGame(0x20000, 0x20);
+        if (g->extras != nullptr) {
+            JKRHeap* before = mDoExt_setCurrentHeap(g->extras);
+            g->seat = make("psr_seat.bmd");   // he sits on a seat on his mat, like the campers
+            mDoExt_setCurrentHeap(before);
+            mDoExt_adjustSolidHeap(g->extras);
+        }
         g->owner = fopAcM_GetID(passer);
         return;
     }
@@ -318,8 +329,17 @@ void onCreateHeapPost(ModContext*, void* args, void* retval, void*) {
     g->sitting = false;
     // fighters carry a torch, everyone else a lantern; the old women hang theirs on a hooked staff
     g->torch = travellers::isFighter(passer);
-    g->light = make(g->torch ? "psr_torch.bmd" : "psr_lantern.bmd");
-    g->staff = isOldWoman(passer->m_type) ? make("psr_staff.bmd") : nullptr;
+    // The game sizes a townsfolk's heap for its own body; the torch, lantern and staff don't fit in
+    // it (they silently failed to be made). They get a heap of their own, freed with the traveller.
+    if (g->extras != nullptr) mDoExt_destroySolidHeap(g->extras);   // (made twice: the game retried)
+    g->extras = mDoExt_createSolidHeapFromGame(0x40000, 0x20);
+    if (g->extras != nullptr) {
+        JKRHeap* before = mDoExt_setCurrentHeap(g->extras);
+        g->light = make(g->torch ? "psr_torch.bmd" : "psr_lantern.bmd");
+        g->staff = isOldWoman(passer->m_type) ? make("psr_staff.bmd") : nullptr;
+        mDoExt_setCurrentHeap(before);
+        mDoExt_adjustSolidHeap(g->extras);
+    }
     g->carrying = false;
     g->onGround = false;
     g->lit = false;
@@ -344,7 +364,9 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
         m->setBaseTRMtx(mDoMtx_stack_c::now);
         mDoExt_modelUpdateDL(m);
     };
-    if (g->seat != nullptr && g->sitting && travellers::campInfo(passer, nullptr, nullptr, nullptr)) {
+    const bool seated = cook::isBody(passer) ? cook::sitting()
+                                             : g->sitting && travellers::campInfo(passer, nullptr, nullptr, nullptr);
+    if (g->seat != nullptr && seated) {
         // the vanilla stools put the seat 37.2 (men) / 55.9 (women) up, scaled like the person
         const f32 scale = Cd2_HIO_objScale(passer->m_type);
         const f32 height = (passer->m_type < 16 ? 37.2f : 55.9f) * scale;
@@ -374,7 +396,9 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
         mDoExt_modelUpdateDL(m);
     };
     Mtx hand;
-    const bool atFire = g->sitting || travellers::campInfo(passer, nullptr, nullptr, nullptr);
+    // at a camp the staff is put down, except while she casts with it
+    const bool atFire = (g->sitting || travellers::campInfo(passer, nullptr, nullptr, nullptr)) &&
+                        fighter_anim::castFrame(passer) < 0.0f;
     if (g->staff != nullptr && !atFire && fighter_anim::leftHandMtx(passer, hand)) {
         // the staff stands upright on the ground where the hand holds it, the hook to the front
         Mtx staffAt, lanternAt;
@@ -427,8 +451,8 @@ bool sit(daNpcPasser_c* passer, bool on) {
     if (on) {
         // the townsfolk "sit and wait" loop (the heavyset men have their own); asked for with no
         // held object so the game doesn't swap in its standing fallback
-        const bool stocky = passer->m_type == 1 || passer->m_type == 9;   // the heavyset men (MAD)
-        auto* anm = static_cast<J3DAnmTransformKey*>(passer->getAnmP(stocky ? 17 : 14, 0));
+        // the same sit as everyone (the heavyset men too)
+        auto* anm = static_cast<J3DAnmTransformKey*>(passer->getAnmP(14, 0));
         if (anm == nullptr) on = false;
         else passer->setAnm(anm, 1.0f, 12.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
     }
@@ -443,7 +467,7 @@ bool lightTick(daNpcPasser_c* passer, bool night, bool atCamp) {
     const bool haveHand = fighter_anim::leftHandMtx(passer, hand);
     if (!night) g->onGround = false;   // morning: put away
     g->carrying = night && !atCamp && !g->onGround && g->light != nullptr && haveHand;
-    const bool staffOut = g->staff != nullptr && !atCamp && haveHand;
+    const bool staffOut = g->staff != nullptr && (!atCamp || fighter_anim::castFrame(passer) >= 0.0f) && haveHand;
     if (staffOut && fighter_anim::castReach(passer) <= 0.0f && fighter_anim::castFrame(passer) < 0.0f) {
         g->staffGrip = std::max(40.0f, hand[1][3] - passer->current.pos.y);   // how high she holds it
     }

@@ -209,7 +209,8 @@ struct PasserState {
     u8 casting = 0;         // 1 turning to face it, 2 casting
     bool castFired = false;
     fpc_ProcID castTarget = fpcM_ERROR_PROCESS_ID_e;
-    u8 fetching = 0;        // a fighter getting its torch back after a fight: 1 walking to it, 2 picking it up
+    u8 fetching = 0;
+    bool toSeat = false;    // a camper walking back to its seat (only sits once it's there)        // a fighter getting its torch back after a fight: 1 walking to it, 2 picking it up
     int fetchFrames = 0;
 };
 
@@ -1228,7 +1229,10 @@ void castTick(daNpcPasser_c* passer, PasserState& state) {
     fopAc_ac_c* foe = fopAcM_SearchByID(state.castTarget);
     auto finish = [&]() {
         state.casting = 0;
-        if (nearestEnemy(passer, kThreatRadius) != nullptr) passer->setAction(daNpcPasser_c::MODE_1);   // and off she goes
+        state.anim = 0xFF;   // (at a camp: back to cowering by the fire, the camp guard's pose)
+        if (!travellers::campInfo(passer, nullptr, nullptr, nullptr) && nearestEnemy(passer, kThreatRadius) != nullptr) {
+            passer->setAction(daNpcPasser_c::MODE_1);   // out on the road: and off she goes
+        }
     };
     if ((foe == nullptr || passer->current.pos.absXZ(foe->current.pos) > kCastReach) && !state.castFired) {
         finish();
@@ -1493,7 +1497,7 @@ const dCcD_SrcSph kStrikeSrc = {
 };
 
 void guardAnim(daNpcPasser_c* passer, PasserState& state, u8 anm, f32 morf = 8.0f) {
-    if (state.anim == anm) return;
+    if (state.anim == anm && !traveller_gear::sitting(travellers::slotIndex(passer))) return;
     state.anim = anm;
     traveller_gear::sit(passer, false);   // up off its log
     if (auto* a = static_cast<J3DAnmTransformKey*>(passer->getAnmP(anm, passer->getObjNum()))) {
@@ -1574,7 +1578,8 @@ void blowTick(daNpcPasser_c* passer, PasserState& state) {
 // traveller still (standing its ground, at camp, waiting at the end of its road) that code is off,
 // so they hung in the air over any dip: their own gravity then (not while sat on a stool).
 void keepGrounded(daNpcPasser_c* passer, PasserState& state) {
-    const bool heldByMod = state.standing || state.arrived || state.defending || state.fetching || state.casting;
+    const bool heldByMod = state.standing || state.arrived || state.defending || state.fetching || state.casting ||
+                           state.toSeat;
     if (!heldByMod || state.talking) return;
     const int slot = travellers::slotIndex(passer);
     if (slot >= 0 && traveller_gear::sitting(slot)) return;
@@ -1674,6 +1679,32 @@ void fighterAnim(daNpcPasser_c* passer, PasserState& state) {
     }
 }
 
+// A camper away from its seat (a stagger, running off, a fight) walks back to it on its feet and only
+// then sits: it used to sit down where it stood and slide over to the fire, stool and all.
+constexpr f32 kAtSeat = 40.0f;
+bool walkBackToSeat(daNpcPasser_c* passer, PasserState& state, const cXyz& seat, s16 seatYaw) {
+    if (passer->mActionIdx == daNpcPasser_c::MODE_1 || fighter_anim::hitting(passer) || state.talking) return false;
+    const f32 dx = seat.x - passer->current.pos.x;
+    const f32 dz = seat.z - passer->current.pos.z;
+    if (dx * dx + dz * dz > kAtSeat * kAtSeat) {
+        if (!state.toSeat) travellers::noteCamp(passer, "walks back to its seat", nullptr);
+        state.toSeat = true;
+        passer->speedF = 0.0f;
+        guardAnim(passer, state, kAnmWalk);
+        stepToward(passer, seat, Cd2_HIO_walkMaxSpeed(passer->m_type));
+        return true;
+    }
+    if (state.toSeat) {
+        state.toSeat = false;
+        passer->current.pos.x = seat.x;
+        passer->current.pos.z = seat.z;
+        passer->current.angle.y = passer->shape_angle.y = seatYaw;
+        state.anim = 0xFF;
+        travellers::refreshIdle(passer);   // and sit down
+    }
+    return false;
+}
+
 bool campGuard(daNpcPasser_c* passer, PasserState& state) {
     cXyz center, seat;
     s16 seatYaw = 0;
@@ -1682,6 +1713,7 @@ bool campGuard(daNpcPasser_c* passer, PasserState& state) {
         state.campCower = false;
         return false;
     }
+    if (state.casting != 0) return true;   // an old woman casting: that comes first
     const bool fighter = travellers::isFighter(passer);
     const f32 guardRadius = state.defending ? kCampLeashRadius : kCampGuardRadius;
     auto* enemy = nearestEnemyAt(center, guardRadius, fighter ? kReachAbove : 1.0e9f);
@@ -1755,7 +1787,7 @@ bool campGuard(daNpcPasser_c* passer, PasserState& state) {
             travellers::refreshIdle(passer);
             travellers::noteCamp(passer, "is back at the fire", nullptr);
         }
-        return false;
+        return walkBackToSeat(passer, state, seat, seatYaw);
     }
 
     // everyone else cowers where they sit until it's been quiet for a few seconds
@@ -1777,7 +1809,7 @@ bool campGuard(daNpcPasser_c* passer, PasserState& state) {
         travellers::refreshIdle(passer);
         travellers::noteCamp(passer, "calms down", nullptr);
     }
-    return false;
+    return walkBackToSeat(passer, state, seat, seatYaw);
 }
 
 HookAction onExecutePre(ModContext*, void* args, void*, void*) {
@@ -1967,7 +1999,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
             passer->setAction(daNpcPasser_c::MODE_1);
             return HOOK_CONTINUE;
         }
-        if (life > 0 && isOldWoman(passer) && !travellers::campInfo(passer, nullptr, nullptr, nullptr)) {
+        if (life > 0 && isOldWoman(passer)) {
             // the old women: the second blow in a fight, and she turns and freezes whoever dealt it
             state->quietFrames = 0;
             if (++state->hitsThisFight >= 2 && state->castCooldown == 0 && state->casting == 0) {
@@ -1978,6 +2010,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
                 state->arrived = false;
                 state->cowering = false;
                 passer->speedF = 0.0f;
+                traveller_gear::sit(passer, false);
                 travellers::noteAct(passer, "turning to freeze what hit her");
                 return HOOK_CONTINUE;
             }

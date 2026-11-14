@@ -29,6 +29,8 @@ void matSpot(const cXyz& fire, s16 campYaw, cXyz* pos, s16* yaw);
 bool isBody(const fopAc_ac_c* actor);
 // The spoon: out (in his hand, swung with the fighters' swing) or not.
 bool spoonOut();
+// Sat down by the fire (on a seat on his mat).
+bool sitting();
 ModResult registerActor();
 }  // namespace cook
 

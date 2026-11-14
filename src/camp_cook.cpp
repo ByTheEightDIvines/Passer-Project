@@ -35,7 +35,7 @@ constexpr f32 kGravity = 5.0f, kMaxFall = 60.0f;
 constexpr f32 kChaseSpeed = 1.25f;             // his chase, part of a passer's full run
 constexpr u8 kSpoonPower = 4;             // a Bokoblin's club is 1: he hits HARD (two hearts)
 constexpr int kLastLine = 3;              // "THAT'S IT!" - and then the spoon
-constexpr u8 kAnmIdle = 0, kAnmWalk = 2, kAnmRun = 4, kAnmSit = 17;   // 17: the heavyset sit
+constexpr u8 kAnmIdle = 0, kAnmWalk = 2, kAnmRun = 4, kAnmSit = 14;   // the same sit as every camper
 constexpr f32 kMatAngle = 40.0f, kMatOut = 340.0f;   // his mat: front-right of the fire, past the stools
 
 enum State : u8 { S_ARRIVE, S_TALK, S_TO_MAT, S_SIT, S_GETUP, S_ATTACK, S_FLEE };
@@ -44,6 +44,7 @@ fpc_ProcID g_brain = fpcM_ERROR_PROCESS_ID_e;
 fpc_ProcID g_body = fpcM_ERROR_PROCESS_ID_e;
 int g_lines = 0;                // lines he has yelled since he turned up
 bool g_spoonOut = false;
+bool g_cookSitting = false;     // on his seat by the fire (traveller_gear draws it under him)
 bool g_greedyAgain = false;     // Link tried again while he was on his way to (or on) his mat
 // where the brain should go: set by onGreedy just before it is created
 int g_camp = -1;
@@ -165,7 +166,7 @@ public:
     void standUp(daNpcPasser_c* b) {
         if (!mSitting) return;
         mSitting = false;
-        b->current.pos.y += 37.2f * Cd2_HIO_objScale(kCookType);   // back up off the mat
+        g_cookSitting = false;
         b->speed.y = 0.0f;
     }
 
@@ -269,9 +270,9 @@ public:
         case S_SIT:
             if (g_greedyAgain) { standUp(b); mState = S_GETUP; break; }
             if (!mSitting) {
-                // down on his mat: the sitting pose is made for a stool, so he sits that much lower
+                // down on a seat on his mat, like the campers on theirs (the sit is made for one)
                 mSitting = true;
-                b->current.pos.y -= 37.2f * Cd2_HIO_objScale(kCookType);
+                g_cookSitting = true;
             }
             anim(b, kAnmSit);
             break;
@@ -413,6 +414,7 @@ bool isBody(const fopAc_ac_c* actor) {
 }
 
 bool spoonOut() { return g_spoonOut; }
+bool sitting() { return g_cookSitting; }
 
 ModResult registerActor() { return svc_actor->register_actor(mod_ctx, &kProfile, &s_procName, &s_handle); }
 

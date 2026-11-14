@@ -827,8 +827,10 @@ void syncFromActor(Traveller& t, daNpcPasser_c* p) {
 
 void setIdle(daNpcPasser_c* p) {
     p->speedF = 0.0f;
-    // at its own seat by a camp fire: sit down on its log
-    if (campInfo(p, nullptr, nullptr, nullptr) && traveller_gear::sit(p, true)) return;
+    // at its own seat by a camp fire: sit down on its log (only once it's really there: away from it,
+    // the camp guard walks it back first)
+    cXyz seat;
+    if (campInfo(p, nullptr, &seat, nullptr) && p->current.pos.absXZ(seat) <= 40.0f && traveller_gear::sit(p, true)) return;
     traveller_gear::sit(p, false);
     if (auto* idle = static_cast<J3DAnmTransformKey*>(p->getAnmP(0, p->getObjNum()))) {
         p->setAnm(idle, 1.0f, 12.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
