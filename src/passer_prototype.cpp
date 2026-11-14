@@ -1167,6 +1167,7 @@ constexpr f32 kCampGuardRadius = 1500.0f;   // an enemy this close to the fire w
 constexpr f32 kCampLeashRadius = 2200.0f;   // a defender chases it this far from the fire
 constexpr f32 kStrikeReach = 150.0f;
 constexpr f32 kLimpSpeed = 0.6f;
+constexpr f32 kHurtFleeSpeed = 0.65f;       // fleeing on the last heart: this much of a full run
 constexpr s16 kGuardTurn = 0x300;           // turning on guard: about 4 degrees a frame, shuffling
 constexpr s16 kTurnShuffle = 0x800;         // more than ~11 degrees off: shuffle round to face it            // limping on the last heart, part of a walk
 constexpr int kStrikeEvery = 75;            // frames between swings (each swing is two blows)
@@ -1355,6 +1356,11 @@ void fighterAnim(daNpcPasser_c* passer, PasserState& state) {
     if (want == Want::HurtWalk) {
         // limping: slower than a walk (the limp's feet keep up)
         const f32 cap = Cd2_HIO_walkMaxSpeed(passer->m_type) * kLimpSpeed;
+        passer->speedF = std::min(passer->speedF, cap);
+        passer->field_0xb14 = std::min(passer->field_0xb14, cap);
+    } else if (want == Want::Flee) {
+        // fleeing hurt: the injured limp-run, slower than a full run (the animation slows with it)
+        const f32 cap = Cd2_HIO_maxSpeed(passer->m_type) * 1.5f * kHurtFleeSpeed;
         passer->speedF = std::min(passer->speedF, cap);
         passer->field_0xb14 = std::min(passer->field_0xb14, cap);
     }

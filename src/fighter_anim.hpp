@@ -13,7 +13,7 @@ enum class Want : unsigned char {
     Keep,       // don't touch anything this frame (vanilla is playing its own startle)
     Ready,      // an enemy close by: draw and square up, swing when asked
     Chase,      // going after an enemy: run with the weapon out
-    Flee,       // last heart, running away: run with the weapon out
+    Flee,       // last heart, running away: the injured limp-run (slower than a run)
     HurtWait,   // last heart, got away: catch breath, weapon still out
     HurtWalk,   // last heart, walking on: weapon away, limp
 };

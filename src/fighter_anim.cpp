@@ -5,7 +5,8 @@
 //   psr_draw_<body>     hip draw, per body (the hand takes the grip on frame 6)
 //   psr_squareup        on guard, weapon out (loop); psr_squareup_step a guarded shuffle
 //   psr_s_fight_a       a two-blow attack (blows land on frames 4 and 20)
-//   psr_run             running with the weapon out (chasing, or fleeing on the last heart)
+//   psr_run             running with the weapon out (chasing)
+//   psr_injury_run      fleeing on the last heart: a staggering limp-run, clutching its side
 //   psr_injury_wait     catching breath after getting away; psr_injury_walk limping on
 //   psr_sheathe_<body>  putting it back (the hand lets go on frame 15, 13 for belt-loop weapons)
 //
@@ -116,7 +117,7 @@ bool ours(const Body* b, J3DAnmTransform* a) {
     if (a == nullptr) return false;
     static const char* const kNames[] = {"psr_surprised.bck", "psr_squareup.bck", "psr_squareup_step.bck",
                                          "psr_s_fight_a.bck", "psr_run.bck", "psr_injury_wait.bck",
-                                         "psr_injury_walk.bck"};
+                                         "psr_injury_walk.bck", "psr_injury_run.bck"};
     for (const char* n : kNames) {
         if (a == anm(n)) return true;
     }
@@ -313,6 +314,8 @@ int update(daNpcPasser_c* passer, Want want, bool swing, bool turning) {
             if (armed) {
                 s.hopDone = 0.0f;
                 startPhase(passer, s, Phase::Surprised, anm("psr_surprised.bck"), 3.0f);
+            } else if (want == Want::Flee) {
+                play(passer, anm("psr_injury_run.bck"), true, 6.0f);
             } else if (want == Want::HurtWait) {
                 play(passer, anm("psr_injury_wait.bck"), true, 8.0f);
             } else if (want == Want::HurtWalk) {
@@ -349,8 +352,10 @@ int update(daNpcPasser_c* passer, Want want, bool swing, bool turning) {
                 } else {
                     play(passer, anm("psr_squareup.bck"), true, 6.0f);
                 }
-            } else if (want == Want::Chase || want == Want::Flee) {
+            } else if (want == Want::Chase) {
                 play(passer, anm("psr_run.bck"), true, 6.0f);
+            } else if (want == Want::Flee) {
+                play(passer, anm("psr_injury_run.bck"), true, 6.0f);   // weapon still in hand
             } else if (want == Want::HurtWait) {
                 play(passer, anm("psr_injury_wait.bck"), true, 8.0f);
             } else {
@@ -393,7 +398,7 @@ bool ownSpeed(const daNpcPasser_c* passer) {
     const Body* b = bodyFor(passer->m_type);
     J3DAnmTransform* a = passer->mpMorf->getAnm();
     if (b == nullptr || !ours(b, a)) return false;
-    if (a == anm("psr_injury_walk.bck")) return false;
+    if (a == anm("psr_injury_walk.bck") || a == anm("psr_injury_run.bck")) return false;
     return !(a == anm("psr_run.bck") && passer->mActionIdx == daNpcPasser_c::MODE_1);
 }
 
