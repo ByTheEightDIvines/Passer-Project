@@ -195,6 +195,11 @@ struct PasserState {
     int blowCheck = 0;                                 // frames until we look at it again
     int blowHpBefore = 0;
     bool vsWolf = false;    // the one it's facing is wolf Link (its blows are aimed at him)
+    fpc_ProcID avoidId = fpcM_ERROR_PROCESS_ID_e;   // who it is stepping round (keeps to one side of them)
+    s8 avoidSide = 0;                               // +1 passes them on its left, -1 on its right
+    cXyz progFrom;          // where it was at the start of the progress check
+    int progFrames = 0;     // frames into the progress check
+    int stuckRuns = 0;      // progress checks in a row it failed
 };
 
 std::array<PasserState, 32> g_states{};
@@ -859,6 +864,7 @@ DEFINE_HOOK(&daNpcPasser_c::executeFear, PasserExecuteFear);
 DEFINE_HOOK(&daNpcPasser_c::executeRelief, PasserExecuteRelief);
 DEFINE_HOOK(&daNpcPasser_c::initEscape, PasserInitEscape);
 DEFINE_HOOK(&dPath_GetRoomPath, RoomPathLookup);
+DEFINE_HOOK(&PathTrace_c::checkObstacle, PathObstacle);
 // Bulblins (E_rd) already know how to fight something other than Link: in the escort mission
 // get_pla() targets the wagon (NPC_COACH) whenever it is closer than Link. While a Bulblin is
 // updating near the passer, answer its wagon lookup with the passer so it attacks him instead.
@@ -1112,6 +1118,142 @@ HookAction onReliefPre(ModContext*, void* args, void*, void*) {
     return HOOK_CONTINUE;
 }
 
+// --- getting round people, and not getting stuck --------------------------------------------------
+// The game's own avoidance (PathTrace_c::checkObstacle) treats Link or any passer anywhere near the
+// line to the next road point as in the way, and aims at a spot 250 units beside them that moves
+// with them. Close to Link, or with other travellers fleeing alongside, they circled round and
+// round instead of getting anywhere. Ours: only someone close and actually ahead counts, it keeps
+// to the same side of them until it is past, and a fleeing traveller only steps round Link (the
+// others are running too). Everyone else (town folk, the cook) keeps the game's own.
+constexpr f32 kAvoidNear = 220.0f;          // only someone this close is in the way
+constexpr s16 kAvoidCone = 0x2800;          // ... and within about 56 degrees of the way it is going
+constexpr f32 kAvoidPass = 160.0f;          // aim this far out to the side of them
+constexpr f32 kAvoidAhead = 120.0f;         // ... and this far past them
+constexpr int kProgressFrames = 90;         // every three seconds on the move ...
+constexpr f32 kProgressMin = 60.0f;         // ... it must have got at least this far from where it was
+
+struct AvoidSearch {
+    daNpcPasser_c* self;
+    cXyz target;
+    bool fleeing;
+    fopAc_ac_c* best;
+    f32 bestDist;
+};
+
+void* avoidCandidate(void* proc, void* data) {
+    auto* s = static_cast<AvoidSearch*>(data);
+    if (!fopAcM_IsActor(proc) || proc == s->self) return nullptr;
+    auto* ac = static_cast<fopAc_ac_c*>(proc);
+    const s16 name = fopAcM_GetName(ac);
+    const bool isLink = name == fpcNm_ALINK_e && !dKy_darkworld_check();
+    const bool isPerson = name == fpcNm_NPC_CD3_e || name == fpcNm_NPC_PASSER_e || name == fpcNm_NPC_GUARD_e ||
+                          name == fpcNm_NPC_FGUARD_e;
+    if (!isLink && !(isPerson && !s->fleeing)) return nullptr;
+    const cXyz& me = s->self->current.pos;
+    const f32 d = me.absXZ(ac->current.pos);
+    if (d > kAvoidNear || d >= me.absXZ(s->target) || d >= s->bestDist) return nullptr;
+    const s16 toThem = cLib_targetAngleY(&me, &ac->current.pos);
+    const s16 toGoal = cLib_targetAngleY(&me, &s->target);
+    if (std::abs(static_cast<s16>(toThem - toGoal)) > kAvoidCone) return nullptr;   // beside or behind it
+    s->best = ac;
+    s->bestDist = d;
+    return nullptr;
+}
+
+HookAction onCheckObstaclePre(ModContext*, void* args, void* retval, void*) {
+    auto* trace = mods::arg<PathTrace_c*>(args, 0);
+    auto* me = mods::arg<fopAc_ac_c*>(args, 1);
+    if (trace == nullptr || me == nullptr || !isPrototypePasser(me) || !trace->isPath()) return HOOK_CONTINUE;
+    auto* passer = static_cast<daNpcPasser_c*>(me);
+    trace->mMyself = me;
+    trace->mObstacle = nullptr;
+    PasserState* state = findState(passer, false);
+    if (state != nullptr && !fopAcM_CheckCondition(me, 4)) {
+        AvoidSearch s{passer, trace->getPoint(static_cast<u16>(trace->field_0x20)),
+                      passer->mActionIdx == daNpcPasser_c::MODE_1, nullptr, kAvoidNear};
+        fpcM_Search(avoidCandidate, &s);
+        if (s.best != nullptr) {
+            const cXyz& at = passer->current.pos;
+            const s16 toThem = cLib_targetAngleY(&at, &s.best->current.pos);
+            if (state->avoidId != fopAcM_GetID(s.best) || state->avoidSide == 0) {
+                // first time round this one: the side the road already leans to (as the game does)
+                const s16 diff = static_cast<s16>(toThem - cLib_targetAngleY(&at, &s.target));
+                state->avoidId = fopAcM_GetID(s.best);
+                state->avoidSide = diff > 0 ? -1 : 1;
+            }
+            const s16 side = static_cast<s16>(toThem + state->avoidSide * 0x4000);
+            const cXyz& them = s.best->current.pos;
+            trace->mAvoidPoint.x = them.x + cM_ssin(side) * kAvoidPass + cM_ssin(toThem) * kAvoidAhead;
+            trace->mAvoidPoint.y = them.y;
+            trace->mAvoidPoint.z = them.z + cM_scos(side) * kAvoidPass + cM_scos(toThem) * kAvoidAhead;
+            trace->mObstacle = s.best;
+        } else {
+            state->avoidId = fpcM_ERROR_PROCESS_ID_e;
+            state->avoidSide = 0;
+        }
+    }
+    if (retval != nullptr) *static_cast<fopAc_ac_c**>(retval) = trace->mObstacle;
+    return HOOK_SKIP_ORIGINAL;
+}
+
+// Backup for anything the above doesn't catch: a traveller on the move (running away or walking its
+// road) that hasn't got anywhere in three seconds gives up on the road point it was making for and
+// heads for the next; if that doesn't help either, a runner picks a new way to run from here and a
+// walker goes back to its road. Each time goes in the diary with what was around it.
+void progressCheck(daNpcPasser_c* passer, PasserState& state) {
+    const bool fleeing = passer->mActionIdx == daNpcPasser_c::MODE_1 && passer->field_0xb1c == 1;
+    const bool walking = passer->mActionIdx == daNpcPasser_c::MODE_0 && passer->field_0xb1c == 2 &&
+                         passer->mPathMode != 1;
+    const bool held = state.standing || state.defending || state.talking || state.arrived || state.cowering ||
+                      state.sidestep > 0 || fighter_anim::hitting(passer) ||
+                      travellers::campInfo(passer, nullptr, nullptr, nullptr);
+    if ((!fleeing && !walking) || held || !passer->m_path.isPath()) {
+        state.progFrames = 0;
+        state.stuckRuns = 0;
+        return;
+    }
+    if (state.progFrames++ == 0) {
+        state.progFrom = passer->current.pos;
+        return;
+    }
+    if (state.progFrames < kProgressFrames) return;
+    state.progFrames = 0;
+    const f32 moved = passer->current.pos.absXZ(state.progFrom);
+    if (moved >= kProgressMin) {
+        state.stuckRuns = 0;
+        return;
+    }
+    ++state.stuckRuns;
+    const int pt = passer->m_path.field_0x20;
+    const int num = passer->m_path.mPath->m_num;
+    const cXyz next = passer->m_path.getPoint(static_cast<u16>(pt));
+    fopAc_ac_c* player = dComIfGp_getPlayer(0);
+    fopAc_ac_c* avoiding = state.avoidId != fpcM_ERROR_PROCESS_ID_e ? fopAcM_SearchByID(state.avoidId) : nullptr;
+    char line[220];
+    std::snprintf(line, sizeof(line),
+                  "%s, moved %.0f in 3 s at (%.0f %.0f %.0f) pt %d/%d %.0f away, wall %d, link %.0f, round %s; %s",
+                  fleeing ? "fleeing" : "walking", moved, passer->current.pos.x, passer->current.pos.y,
+                  passer->current.pos.z, pt, num, passer->current.pos.absXZ(next),
+                  passer->mAcchCir.ChkWallHit() ? 1 : 0,
+                  player != nullptr ? passer->current.pos.absXZ(player->current.pos) : -1.0f,
+                  avoiding != nullptr ? fopAcM_getProcNameString(avoiding) : "nobody",
+                  state.stuckRuns == 1 ? "skips to the next point" : (fleeing ? "picks a new way to run" : "back to its road"));
+    travellers::noteStuck(passer, line);
+    if (state.stuckRuns == 1) {
+        passer->m_path.setNextPoint(passer->current.pos);
+        return;
+    }
+    state.stuckRuns = 0;
+    if (fleeing) {
+        cXyz threat = passer->current.pos;
+        if (auto* enemy = nearestEnemy(passer, kChasedRadius)) threat = enemy->current.pos;
+        else if (player != nullptr) threat = player->current.pos;
+        travellers::startFlee(passer, threat);
+    } else {
+        resumeRoute(passer, state);
+    }
+}
+
 void onRoomPathPost(ModContext*, void* args, void* retval, void*) {
     // Only our own walkers get a traveller path: the lookup is opened just while one of them sets
     // its path up. Every other actor gets the game's normal answer.
@@ -1141,6 +1283,7 @@ void onProfileExecutePost(ModContext*, void* args, void*, void*) {
         fighter_anim::forcedTick(passer);   // a hit reaction beats the fight moves
         fighterAnim(passer, *state);
         blowTick(passer, *state);
+        progressCheck(passer, *state);
         return;
     }
     if (passer->mpMorf == nullptr) {
@@ -1945,6 +2088,9 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     }
     if (mods::hook::add_pre<PasserProfileDelete>(onProfileDeletePre) != MOD_OK) {
         svc_log->info(mod_ctx, "passer delete hook unavailable; vanished travellers won't be traced");
+    }
+    if (mods::hook::add_pre<PathObstacle>(onCheckObstaclePre) != MOD_OK) {
+        svc_log->info(mod_ctx, "path obstacle hook unavailable; travellers keep the game's own sidestepping");
     }
     if (mods::hook::add_post<BulblinGetPla>(onGetPlaPost) != MOD_OK) {
         svc_log->info(mod_ctx, "Bulblin get_pla hook unavailable; Bulblins target whoever is closer");

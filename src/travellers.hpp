@@ -47,6 +47,7 @@ int slotIndex(const fopAc_ac_c* actor);
 void noteHit(const fopAc_ac_c* passer, int damage, int lifeLeft);
 // A fighter blow: what it hit, or that it missed (one diary line).
 void noteBlow(const fopAc_ac_c* passer, const char* what);
+void noteStuck(const fopAc_ac_c* passer, const char* what);   // diary: a traveller not getting anywhere
 // Settled at a camp for the night (seated): camp centre, its seat and the way it faces.
 bool campInfo(const fopAc_ac_c* passer, cXyz* center, cXyz* seat, s16* seatYaw);
 // The seats around a camp's fire (campNode = the camp's road node), for the fire to draw its stumps.
