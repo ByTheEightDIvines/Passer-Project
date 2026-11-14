@@ -171,11 +171,11 @@ namespace psr_freeze {
 
 void loadEffects() {
     if (g_pack != nullptr) return;
-    const void* src = dComIfG_getObjectRes("PsrPack", "psr_freeze.jpc");
+    const void* src = dComIfG_getObjectRes("PsrPack", "psr_fx.jpc");
     if (src == nullptr) return;
-    constexpr u32 size = 5632;   // psr_freeze.jpc, exactly
+    constexpr u32 size = 15456;   // psr_fx.jpc, exactly: Link's freeze (Snowpeak's pack) and the chest puff (dungeons')
     if (std::memcmp(src, "JPAC2-10", 8) != 0) return;
-    g_heap = mDoExt_createSolidHeapFromSystem(0x8000, 0x20);
+    g_heap = mDoExt_createSolidHeapFromSystem(0x10000, 0x20);
     if (g_heap == nullptr) return;
     void* copy = g_heap->alloc(size, 0x20);   // ours to keep: the effects point into it
     if (copy == nullptr) return;
@@ -184,6 +184,8 @@ void loadEffects() {
 }
 
 bool isFrozen(const fopAc_ac_c* actor) { return frozenFor(actor) != nullptr; }
+
+bool effect(u16 id, const cXyz& pos, s16 yaw, const cXyz& scale) { return emit(id, pos, yaw, scale) != nullptr; }
 
 bool freeze(fopAc_ac_c* enemy) {
     if (enemy == nullptr || isFrozen(enemy) || !ensureSlot()) return false;

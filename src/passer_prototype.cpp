@@ -23,6 +23,7 @@
 #include "spot_picker.hpp"
 #include "tent_actor.hpp"
 #include "soul_actor.hpp"
+#include "note_actor.hpp"
 #include "traveller_gear.hpp"
 #include "fighter_anim.hpp"
 #include "camp_fire.hpp"
@@ -212,7 +213,8 @@ struct PasserState {
     u8 fetching = 0;
     bool toSeat = false;    // a camper walking back to its seat (only sits once it's there)
     bool playing = false;   // the bard, playing by the fire
-    int songFrames = 0;     // a camper singing along: frames left (0 not singing)        // a fighter getting its torch back after a fight: 1 walking to it, 2 picking it up
+    int songFrames = 0;     // a camper singing along: frames left (0 not singing)
+    int noteWait = 0;       // frames until the next music note floats off it        // a fighter getting its torch back after a fight: 1 walking to it, 2 picking it up
     int fetchFrames = 0;
 };
 
@@ -1463,6 +1465,17 @@ void onProfileExecutePost(ModContext*, void* args, void*, void*) {
     passer->mpMorf->modelCalc();
 }
 
+// A music note off a musician's head every so often (note_actor).
+void noteTick(daNpcPasser_c* passer, PasserState& state, int every) {
+    if (--state.noteWait > 0) return;
+    state.noteWait = every + static_cast<int>(cM_rndF(static_cast<f32>(every)));
+    cXyz head = passer->eyePos;
+    head.y += 25.0f;
+    head.x += cM_rndFX(12.0f);
+    head.z += cM_rndFX(12.0f);
+    psr_note::spawn(head, fopAcM_GetRoomNo(passer));
+}
+
 // --- music at the fire -----------------------------------------------------------------------
 // At night the bard (MAN_b) plays the game's own guitar sitting on his stool (m_playm, the Castle
 // Town band's seated strum) with the band's guitar part and its vocal: he sings as he plays. While
@@ -1512,6 +1525,7 @@ void musicTick(daNpcPasser_c* passer, PasserState& state, bool busy) {
         g_bardCamp = static_cast<int>(center.x * 0.01f) ^ static_cast<int>(center.z * 0.01f);
         passer->mCitizen.startCreatureVoiceLevel(Z2SE_CSL_TOWN_BAND_GT_1, -1);
         passer->mCitizen.startCreatureVoiceLevel(Z2SE_CSL_TOWN_BAND_VOCAL, -1);
+        noteTick(passer, state, 14);   // a note about every half second
         return;
     }
     // everyone else who doesn't fight: sing along now and then while the bard at this fire plays
@@ -1527,6 +1541,7 @@ void musicTick(daNpcPasser_c* passer, PasserState& state, bool busy) {
         if (auto* sing = static_cast<J3DAnmTransformKey*>(passer->getAnmP(53, 0))) {
             if (passer->mpMorf->getAnm() != sing) passer->setAnm(sing, 1.0f, 12.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
         }
+        noteTick(passer, state, 24);   // fewer than the bard's
         return;
     }
     if (sameFire && traveller_gear::sitting(slot) && cM_rndF(1.0f) < 1.0f / 900.0f) {   // about every 30 s
@@ -1934,9 +1949,9 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
                 cXyz at(passer->current.pos.x, passer->current.pos.y + 55.0f, passer->current.pos.z);
                 csXyz rot = passer->shape_angle;
                 cXyz scale(1.0f, 1.0f, 1.0f);
-                for (u16 id : kChestPuff) {
-                    dComIfGp_particle_set(id, &at, &rot, &scale, 0xFF, nullptr, -1, nullptr, nullptr, nullptr);
-                }
+                // (the puff only exists in dungeon particle packs: ours carries a copy, so it shows in
+                // the field too, in full)
+                for (u16 id : kChestPuff) psr_freeze::effect(id, at, rot.y, scale);
                 mDoAud_seStart(Z2SE_OBJ_T_BOX_EMERGE, &at, 0, dComIfGp_getReverb(fopAcM_GetRoomNo(passer)));
             }
             psr_soul::spawn(passer->current.pos, fopAcM_GetRoomNo(passer));
@@ -2397,6 +2412,9 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     }
     if (psr_fire::registerActor() != MOD_OK) {
         return mods::set_error(error, MOD_ERROR, "failed to register the camp fire actor");
+    }
+    if (psr_note::registerActor() != MOD_OK) {
+        svc_log->info(mod_ctx, "music note actor unavailable; no notes over the music");
     }
     if (psr_soul::registerActor() != MOD_OK) {
         return mods::set_error(error, MOD_ERROR, "failed to register the soul actor");

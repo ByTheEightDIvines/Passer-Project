@@ -7,6 +7,7 @@
 // third pack slot for it, next to the always-loaded pack and the stage's. Nothing of the game's own
 // packs is touched.
 #include "global.h"
+#include "dolphin/types.h"
 
 class fopAc_ac_c;
 class cXyz;
@@ -15,7 +16,10 @@ namespace psr_freeze {
 // Freeze this monster now (false if it can't be: already frozen, our effects not loaded yet).
 bool freeze(fopAc_ac_c* enemy);
 bool isFrozen(const fopAc_ac_c* actor);
-// Our copy of the effects, from PsrPack.arc (call while a traveller has it loaded).
+// One of the game effects in our own pack (psr_fx.jpc), shown anywhere: the freeze ice and its
+// breaking (0x8818-0x881A) and the treasure chest's appear puff (0x8840-0x8845).
+bool effect(u16 id, const cXyz& pos, s16 yaw, const cXyz& scale);
+// Our copy of the effects (psr_fx.jpc in PsrPack.arc; call while a traveller has it loaded).
 void loadEffects();
 bool install();
 }  // namespace psr_freeze
