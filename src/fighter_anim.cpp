@@ -27,9 +27,12 @@
 #include "fighter_anim.hpp"
 #include "travellers.hpp"
 #include "camp_cook.hpp"
+#include "traveller_gear.hpp"
+#include "JSystem/JUtility/JUTNameTab.h"
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -246,6 +249,185 @@ void startSheathe(daNpcPasser_c* passer, Slot& s, const Body* b) {
     startPhase(passer, s, Phase::Sheathing, anm(b->sheathe), 6.0f);
 }
 
+
+// --- layering: legs that keep walking, an arm that holds a light ---------------------------------
+// Per traveller, worked out once a frame (layerTick) and applied joint by joint as the body is
+// posed (the joint callback below). Weights fade in and out so nothing snaps.
+struct Layer {
+    fpc_ProcID owner = fpcM_ERROR_PROCESS_ID_e;
+    f32 speed = 0.0f;                   // smoothed ground speed (units a frame)
+    f32 legW = 0.0f;                    // 0: the legs do what the animation says; 1: walk/run legs
+    J3DAnmTransformKey* loco = nullptr; // the walk or run the legs take
+    f32 locoFrame = 0.0f;
+    f32 armW = 0.0f;                    // 0: free arm; 1: holding the light up
+    f32 armFrame = 0.0f;
+};
+std::array<Layer, travellers::kSlots> g_layer{};
+constexpr f32 kLegFade = 1.0f / 6.0f;
+constexpr f32 kArmFade = 1.0f / 10.0f;
+constexpr f32 kMovingSpeed = 0.9f;      // faster than this (smoothed) counts as on the move
+
+// Joint roles per skeleton (men 19, women 21 joints), found by name: parents and which are legs
+// and which the light arm.
+enum : u8 { kRoleNone, kRoleLeg, kRoleArm };
+struct Skel {
+    const J3DModelData* data = nullptr;
+    int n = 0;
+    s8 parent[32];
+    u8 role[32];
+};
+std::array<Skel, 8> g_skel{};
+
+void walkTree(Skel& k, J3DJoint* j, int parent) {
+    for (; j != nullptr; j = j->getYounger()) {
+        const int no = j->getJntNo();
+        if (no < 32) k.parent[no] = static_cast<s8>(parent);
+        walkTree(k, j->getChild(), no);
+    }
+}
+
+const Skel* skelFor(J3DModelData* data) {
+    for (Skel& k : g_skel) {
+        if (k.data == data) return &k;
+    }
+    for (Skel& k : g_skel) {
+        if (k.data != nullptr) continue;
+        k.data = data;
+        k.n = std::min<int>(data->getJointNum(), 32);
+        std::fill(std::begin(k.parent), std::end(k.parent), -1);
+        std::fill(std::begin(k.role), std::end(k.role), kRoleNone);
+        walkTree(k, data->getJointNodePointer(0), -1);
+        static const char* const kLegs[] = {"waist", "legL1", "legL2", "footL", "legR1",
+                                            "legR2", "footR", "skirtL", "skirtR"};
+        static const char* const kArm[] = {"shoulderL", "armL1", "armL2", "handL"};
+        JUTNameTab* names = data->getJointName();
+        for (int i = 0; i < k.n && names != nullptr; ++i) {
+            const char* nm = names->getName(static_cast<u16>(i));
+            if (nm == nullptr) continue;
+            for (const char* l : kLegs) if (std::strcmp(nm, l) == 0) k.role[i] = kRoleLeg;
+            for (const char* a : kArm) if (std::strcmp(nm, a) == 0) k.role[i] = kRoleArm;
+        }
+        return &k;
+    }
+    return nullptr;   // (never more than a handful of bodies)
+}
+
+// Small matrix helpers (3x4, rotation part orthonormal up to a uniform scale).
+void mtxMul(const Mtx a, const Mtx b, Mtx out) {
+    Mtx r;
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 4; ++j) {
+            r[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j] + (j == 3 ? a[i][3] : 0.0f);
+        }
+    }
+    std::memcpy(out, r, sizeof(Mtx));
+}
+bool mtxInv(const Mtx m, Mtx out) {
+    const f32 a = m[0][0], b = m[0][1], c = m[0][2], d = m[1][0], e = m[1][1], f = m[1][2], g = m[2][0],
+              h = m[2][1], i = m[2][2];
+    const f32 A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g;
+    const f32 det = a * A + b * B + c * C;
+    if (std::fabs(det) < 1e-12f) return false;
+    const f32 k = 1.0f / det;
+    Mtx r;
+    r[0][0] = A * k; r[0][1] = -(b * i - c * h) * k; r[0][2] = (b * f - c * e) * k;
+    r[1][0] = B * k; r[1][1] = (a * i - c * g) * k;  r[1][2] = -(a * f - c * d) * k;
+    r[2][0] = C * k; r[2][1] = -(a * h - b * g) * k; r[2][2] = (a * e - b * d) * k;
+    for (int row = 0; row < 3; ++row) {
+        r[row][3] = -(r[row][0] * m[0][3] + r[row][1] * m[1][3] + r[row][2] * m[2][3]);
+    }
+    std::memcpy(out, r, sizeof(Mtx));
+    return true;
+}
+struct Quat { f32 w, x, y, z; };
+Quat toQuat(const Mtx m) {
+    // normalise the columns first (in case of scale)
+    f32 c[3][3];
+    for (int j = 0; j < 3; ++j) {
+        const f32 l = std::sqrt(m[0][j] * m[0][j] + m[1][j] * m[1][j] + m[2][j] * m[2][j]);
+        const f32 k = l > 1e-6f ? 1.0f / l : 1.0f;
+        for (int i = 0; i < 3; ++i) c[i][j] = m[i][j] * k;
+    }
+    Quat q;
+    const f32 tr = c[0][0] + c[1][1] + c[2][2];
+    if (tr > 0.0f) {
+        const f32 s = std::sqrt(tr + 1.0f) * 2.0f;
+        q = {0.25f * s, (c[2][1] - c[1][2]) / s, (c[0][2] - c[2][0]) / s, (c[1][0] - c[0][1]) / s};
+    } else if (c[0][0] > c[1][1] && c[0][0] > c[2][2]) {
+        const f32 s = std::sqrt(1.0f + c[0][0] - c[1][1] - c[2][2]) * 2.0f;
+        q = {(c[2][1] - c[1][2]) / s, 0.25f * s, (c[0][1] + c[1][0]) / s, (c[0][2] + c[2][0]) / s};
+    } else if (c[1][1] > c[2][2]) {
+        const f32 s = std::sqrt(1.0f + c[1][1] - c[0][0] - c[2][2]) * 2.0f;
+        q = {(c[0][2] - c[2][0]) / s, (c[0][1] + c[1][0]) / s, 0.25f * s, (c[1][2] + c[2][1]) / s};
+    } else {
+        const f32 s = std::sqrt(1.0f + c[2][2] - c[0][0] - c[1][1]) * 2.0f;
+        q = {(c[1][0] - c[0][1]) / s, (c[0][2] + c[2][0]) / s, (c[1][2] + c[2][1]) / s, 0.25f * s};
+    }
+    return q;
+}
+Quat nlerp(Quat a, Quat b, f32 t) {
+    if (a.w * b.w + a.x * b.x + a.y * b.y + a.z * b.z < 0.0f) b = {-b.w, -b.x, -b.y, -b.z};
+    Quat q = {a.w + (b.w - a.w) * t, a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t};
+    const f32 l = std::sqrt(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z);
+    return {q.w / l, q.x / l, q.y / l, q.z / l};
+}
+void fromQuat(const Quat& q, const Vec& t, Mtx out) {
+    const f32 w = q.w, x = q.x, y = q.y, z = q.z;
+    out[0][0] = 1 - 2 * (y * y + z * z); out[0][1] = 2 * (x * y - z * w); out[0][2] = 2 * (x * z + y * w);
+    out[1][0] = 2 * (x * y + z * w); out[1][1] = 1 - 2 * (x * x + z * z); out[1][2] = 2 * (y * z - x * w);
+    out[2][0] = 2 * (x * z - y * w); out[2][1] = 2 * (y * z + x * w); out[2][2] = 1 - 2 * (x * x + y * y);
+    out[0][3] = t.x; out[1][3] = t.y; out[2][3] = t.z;
+}
+// local matrix of joint `jnt` in animation `a` at `frame`
+void animLocal(J3DAnmTransformKey* a, f32 frame, int jnt, Mtx out) {
+    J3DTransformInfo info;
+    a->calcTransform(frame, static_cast<u16>(jnt), &info);
+    J3DGetTranslateRotateMtx(info, out);
+}
+
+// Applied inside the joint callback, before the posture tweak: replaces this joint's matrix with
+// the layered one (parent's final matrix x blended local).
+void applyLayer(daNpcCd2_c* npc, J3DModel* model, int jnt) {
+    const int slot = travellers::slotIndex(npc);
+    if (slot < 0 || slot >= static_cast<int>(g_layer.size())) return;
+    const Layer& L = g_layer[slot];
+    if (L.owner != fopAcM_GetID(npc) || (L.legW <= 0.001f && L.armW <= 0.001f)) return;
+    const Skel* k = skelFor(model->getModelData());
+    if (k == nullptr || jnt >= k->n || k->parent[jnt] < 0) return;
+    const u8 role = k->role[jnt];
+    const bool leg = role == kRoleLeg && L.legW > 0.001f && L.loco != nullptr;
+    J3DAnmTransformKey* torch = role == kRoleArm && L.armW > 0.001f ? anm("psr_wait_torch.bck") : nullptr;
+    if (!leg && torch == nullptr) return;
+    Mtx P, Pinv, La, Lo, Lb, out;
+    std::memcpy(P, model->getAnmMtx(k->parent[jnt]), sizeof(Mtx));
+    if (!mtxInv(P, Pinv)) return;
+    mtxMul(Pinv, model->getAnmMtx(jnt), La);   // what the animation itself gives this joint
+    Vec t;
+    f32 w;
+    if (leg) {
+        animLocal(L.loco, L.locoFrame, jnt, Lo);
+        w = L.legW;
+        t = {La[0][3] + (Lo[0][3] - La[0][3]) * w, La[1][3] + (Lo[1][3] - La[1][3]) * w,
+             La[2][3] + (Lo[2][3] - La[2][3]) * w};
+    } else {
+        animLocal(torch, L.armFrame, jnt, Lo);   // the men's joint numbers: the arm is 4..7 on both
+        w = L.armW;
+        t = {La[0][3], La[1][3], La[2][3]};      // its own bone lengths
+    }
+    fromQuat(nlerp(toQuat(La), toQuat(Lo), w), t, Lb);
+    mtxMul(P, Lb, out);
+    model->setAnmMtx(jnt, out);
+    cMtx_copy(out, J3DSys::mCurrentMtx);
+}
+
+bool isLoco(daNpcPasser_c* passer, J3DAnmTransform* a) {
+    if (a == nullptr) return false;
+    const int obj = passer->getObjNum();
+    for (int idx : {2, 3, 4, 5}) {
+        if (a == passer->getAnmP(idx, obj)) return true;
+    }
+    return a == anm("psr_run.bck") || a == anm("psr_injury_run.bck") || a == anm("psr_injury_walk.bck");
+}
 }  // namespace
 
 namespace fighter_anim {
@@ -474,7 +656,10 @@ bool forcedTick(daNpcPasser_c* passer) {
     if (f == nullptr || passer->mpMorf == nullptr) return false;
     mDoExt_McaMorfSO* morf = passer->mpMorf;
     if (morf->getAnm() != f->a) {
-        // something else went on: ours again, from where it had got to
+        // something else went on (it started running away, say): that is what it goes back to
+        // afterwards, not what it was doing before the hit (a stood-still pose sliding along).
+        // Then ours again, from where it had got to.
+        if (!forcedAnm(morf->getAnm())) f->before = morf->getAnm();
         morf->setAnm(f->a, J3DFrameCtrl::EMode_NONE, 0.0f, f->speed, 0, -1);
         morf->setFrameF(f->frame);
     }
@@ -507,7 +692,62 @@ bool hitting(const daNpcPasser_c* passer) {
     const Forced* f = activeForced(passer);
     return f != nullptr && f->restore;
 }
+void layerTick(daNpcPasser_c* passer, bool carryLight) {
+    const int slot = travellers::slotIndex(passer);
+    if (slot < 0 || slot >= static_cast<int>(g_layer.size()) || passer->mpMorf == nullptr) return;
+    Layer& L = g_layer[slot];
+    if (L.owner != fopAcM_GetID(passer)) {
+        L = Layer{};
+        L.owner = fopAcM_GetID(passer);
+    }
+    const f32 moved = passer->current.pos.absXZ(passer->old.pos);
+    L.speed = L.speed * 0.6f + std::min(moved, 40.0f) * 0.4f;
+    J3DAnmTransform* cur = passer->mpMorf->getAnm();
+    const bool forced = forcedAnm(cur) || cur == anm("psr_surprised.bck");
+    const bool sitting = traveller_gear::sitting(slot);
+
+    // legs: on the move with something that isn't a walk or run
+    const bool wantLegs = L.speed > kMovingSpeed && !isLoco(passer, cur) && !forced && !sitting;
+    const f32 walkMax = Cd2_HIO_walkMaxSpeed(passer->m_type);
+    const bool run = L.speed > walkMax * 1.25f;
+    auto* loco = static_cast<J3DAnmTransformKey*>(passer->getAnmP(run ? 4 : 2, passer->getObjNum()));
+    if (loco != nullptr && loco != L.loco) {
+        // keep the step's phase when switching between walk and run
+        const f32 phase = L.loco != nullptr ? L.locoFrame / std::max(1.0f, static_cast<f32>(L.loco->getFrameMax())) : 0.0f;
+        L.loco = loco;
+        L.locoFrame = phase * static_cast<f32>(loco->getFrameMax());
+    }
+    if (L.loco != nullptr) {
+        const f32 top = run ? Cd2_HIO_maxSpeed(passer->m_type) * 1.5f : walkMax;
+        const f32 play = run ? Cd2_HIO_anmPlaySpeed(passer->m_type) * 1.5f : Cd2_HIO_walkAnmPlaySpeed(passer->m_type);
+        const f32 rate = std::clamp(play * std::min(1.0f, L.speed / std::max(0.1f, top)), 0.6f, 2.0f);
+        const f32 end = std::max(1.0f, static_cast<f32>(L.loco->getFrameMax()));
+        L.locoFrame = std::fmod(L.locoFrame + rate, end);
+    }
+    L.legW = std::clamp(L.legW + (wantLegs ? kLegFade : -kLegFade), 0.0f, 1.0f);
+
+    // the light arm
+    const bool wantArm = carryLight && !forced && !sitting && anm("psr_wait_torch.bck") != nullptr;
+    L.armW = std::clamp(L.armW + (wantArm ? kArmFade : -kArmFade), 0.0f, 1.0f);
+    if (auto* t = anm("psr_wait_torch.bck")) L.armFrame = std::fmod(L.armFrame + 1.0f, std::max(1.0f, static_cast<f32>(t->getFrameMax())));
+}
+
+bool leftHandMtx(const daNpcPasser_c* passer, Mtx out) {
+    if (passer == nullptr || passer->mpMorf == nullptr) return false;
+    J3DModel* m = passer->mpMorf->getModel();
+    const Skel* k = skelFor(m->getModelData());
+    if (k == nullptr) return false;
+    for (int i = 0; i < k->n; ++i) {
+        if (k->role[i] == kRoleArm && (i + 1 >= k->n || k->role[i + 1] != kRoleArm)) {   // the last arm joint: the hand
+            mDoMtx_copy(m->getAnmMtx(i), out);
+            return true;
+        }
+    }
+    return false;
+}
+
 }  // namespace fighter_anim
+
 
 namespace {
 
@@ -544,6 +784,7 @@ HookAction onJointTweakPre(ModContext*, void* args, void* retval, void*) {
     if (slot < 0 || slot > travellers::kSlots) return HOOK_CONTINUE;
     const Body* b = npc->m_type < 16 ? bodyFor(npc->m_type) : nullptr;
     const int jnt = joint->getJntNo();
+    if (slot < travellers::kSlots) applyLayer(npc, model, jnt);   // running legs, the light arm
     if (g_tweakOwner[slot] != fopAcM_GetID(npc)) {
         g_tweakOwner[slot] = fopAcM_GetID(npc);
         g_tweak[slot] = 1.0f;

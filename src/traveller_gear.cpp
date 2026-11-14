@@ -16,6 +16,7 @@
 #include "d/actor/d_a_npc_passer.h"
 #include "d/d_com_inf_game.h"
 #include "d/d_kankyo.h"
+#include "d/d_particle_name.h"
 #include "f_op/f_op_actor_mng.h"
 #include "m_Do/m_Do_ext.h"
 #include "m_Do/m_Do_mtx.h"
@@ -119,6 +120,12 @@ struct Gear {
     J3DModel* hat = nullptr;      // the cook's chef's hat
     J3DModel* spoon = nullptr;    // the cook's wooden spoon
     bool sitting = false;
+    J3DModel* light = nullptr;    // its torch or lantern (copies of Rusl's torch and Link's lantern)
+    bool torch = false;           // which of the two
+    bool carrying = false;
+    bool lit = false;             // its point light is registered
+    LIGHT_INFLUENCE glow{};
+    u32 flame = 0;                // the flame particle
 };
 std::array<Gear, 32> g_gear{};
 
@@ -157,6 +164,18 @@ void rememberLoaded(fpc_ProcID id, const Look* look, Gear* gear) {
     }
     if (l == nullptr) return;   // (never more than a few dozen at once)
     *l = {id, look, gear};
+}
+
+// Torch: Rusl's own, held the way he holds it (his hand's frame turned onto ours: a quarter turn
+// about x); the flame sits on its tip. Lantern: hangs upright from the hand by its handle.
+const Mtx kTorchGrip = {{1.0f, 0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 1.0f, 0.0f}, {0.0f, -1.0f, 0.0f, 0.0f}};
+const Vec kTorchTip = {11.0f, 76.0f, 4.0f};      // in the hand's frame
+constexpr f32 kLanternDrop = 47.0f;              // handle (top) to the model's origin (its base)
+constexpr f32 kLanternFlame = 24.0f;             // the flame, this far below the hand
+
+void cutLight(Gear& g) {
+    if (g.lit) dKy_plight_cut(&g.glow);
+    g.lit = false;
 }
 
 DEFINE_HOOK(&daNpcCd2_c::loadResrc, Cd2LoadResrc);
@@ -204,6 +223,7 @@ HookAction onRemoveResrcPre(ModContext*, void* args, void* retval, void*) {
     dComIfG_resDelete(&npc->mPhase2, generalArc(type));
     dComIfG_resDelete(&npc->mPhase3, specialArc(type));
     if (g != nullptr && g->owner == fopAcM_GetID(npc)) {
+        cutLight(*g);
         if (g->packLoaded) dComIfG_resDelete(&g->packPhase, kPackArc);
         *g = Gear{};
     }
@@ -250,6 +270,12 @@ void onCreateHeapPost(ModContext*, void* args, void* retval, void*) {
     }
     g->seat = make("psr_seat.bmd");
     g->sitting = false;
+    // fighters carry a torch, the others half a torch, half a lantern
+    const int slot = travellers::slotIndex(passer);
+    g->torch = travellers::isFighter(passer) || (slot & 1) != 0;
+    g->light = make(g->torch ? "psr_torch.bmd" : "psr_lantern.bmd");
+    g->carrying = false;
+    g->lit = false;
     if (const Kit* kit = kitFor(look)) {
         g->belt = make(kit->belt);
         g->weapon = make(kit->weapon);
@@ -295,6 +321,19 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
         g_env_light.setLightTevColorType_MAJI(g->spoon, &passer->tevStr);
         mDoExt_modelUpdateDL(g->spoon);
     }
+    Mtx hand;
+    if (g->light != nullptr && g->carrying && fighter_anim::leftHandMtx(passer, hand)) {
+        if (g->torch) {
+            mDoMtx_copy(hand, mDoMtx_stack_c::now);
+            mDoMtx_stack_c::concat(kTorchGrip);
+        } else {
+            mDoMtx_stack_c::transS(hand[0][3], hand[1][3] - kLanternDrop, hand[2][3]);
+            mDoMtx_stack_c::YrotM(passer->shape_angle.y);
+        }
+        g->light->setBaseTRMtx(mDoMtx_stack_c::now);
+        g_env_light.setLightTevColorType_MAJI(g->light, &passer->tevStr);
+        mDoExt_modelUpdateDL(g->light);
+    }
     drawOn(g->pack, kBackbone, nullptr);
     drawOn(g->belt, kWaist, nullptr);
     Mtx inHand;
@@ -329,6 +368,40 @@ bool sit(daNpcPasser_c* passer, bool on) {
     }
     if (g != nullptr) g->sitting = on;
     return on;
+}
+
+bool lightTick(daNpcPasser_c* passer, bool wanted) {
+    Gear* g = travellerLook(passer) != nullptr ? gearFor(passer) : nullptr;
+    if (g == nullptr || g->owner != fopAcM_GetID(passer)) return false;
+    Mtx hand;
+    g->carrying = wanted && g->light != nullptr && fighter_anim::leftHandMtx(passer, hand);
+    if (!g->carrying) {
+        cutLight(*g);
+        return false;
+    }
+    cXyz flame;
+    if (g->torch) {
+        mDoMtx_copy(hand, mDoMtx_stack_c::now);
+        mDoMtx_stack_c::concat(kTorchGrip);
+        mDoMtx_stack_c::multVec(&kTorchTip, &flame);
+    } else {
+        flame.set(hand[0][3], hand[1][3] - kLanternFlame, hand[2][3]);
+    }
+    // the flame (Link's lantern fire; a bigger one on a torch) and a warm light round it
+    const cXyz scale = g->torch ? cXyz(1.8f, 1.8f, 1.8f) : cXyz(1.0f, 1.0f, 1.0f);
+    g->flame = dComIfGp_particle_set(g->flame, ID_ZI_J_KANTERA_FIRE, &flame, &passer->tevStr, nullptr, &scale, 0xFF,
+                                     nullptr, -1, nullptr, nullptr, nullptr);
+    g->glow.mPosition = flame;
+    g->glow.mColor.r = 188;
+    g->glow.mColor.g = 110;
+    g->glow.mColor.b = 60;
+    g->glow.mPow = g->torch ? 300.0f : 220.0f;
+    g->glow.mFluctuation = g->torch ? 1.0f : 0.5f;
+    if (!g->lit) {
+        dKy_plight_set(&g->glow);
+        g->lit = true;
+    }
+    return true;
 }
 
 bool install() {

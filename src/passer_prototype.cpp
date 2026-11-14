@@ -1284,12 +1284,19 @@ void onProfileExecutePost(ModContext*, void* args, void*, void*) {
         fighterAnim(passer, *state);
         blowTick(passer, *state);
         progressCheck(passer, *state);
+        // at night, out on the roads (not settled at a camp fire): a torch or lantern
+        const int hour = dKy_getdaytime_hour();
+        const bool night = hour >= 19 || hour < 6;
+        const bool light = traveller_gear::lightTick(
+            passer, night && !travellers::campInfo(passer, nullptr, nullptr, nullptr));
+        fighter_anim::layerTick(passer, light);
         return;
     }
     if (passer->mpMorf == nullptr) {
         return;
     }
 
+    traveller_gear::lightTick(passer, false);   // dead: the light goes out
     fighter_anim::forcedTick(passer);   // the fly-back pose, then the sprawl
     // (No backflip any more: the fly-back pose does the work. tumble stays 0.)
     mDoMtx_stack_c::transS(passer->current.pos.x, passer->current.pos.y + kTumblePivotY,

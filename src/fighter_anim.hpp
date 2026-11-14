@@ -56,4 +56,14 @@ bool forcedDone(const daNpcPasser_c* passer);
 // Mid hit reaction.
 bool hitting(const daNpcPasser_c* passer);
 
+
+// --- layering (any traveller) ---
+// Once a frame, after everything else has picked its animation: on the move with an animation that
+// isn't a walk or run (drawing, swinging, a pose left over from standing), the legs take the
+// traveller's own walk or run instead, so it never slides along in a standing pose. carryLight: the
+// left arm holds a torch or lantern up (whatever the rest of the body is doing).
+void layerTick(daNpcPasser_c* passer, bool carryLight);
+// The left hand's matrix (for the torch or lantern), false if there is no model yet.
+bool leftHandMtx(const daNpcPasser_c* passer, Mtx out);
+
 }  // namespace fighter_anim
