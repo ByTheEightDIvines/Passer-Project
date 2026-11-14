@@ -125,6 +125,8 @@ struct Gear {
     JKRSolidHeap* extras = nullptr;   // the torch/lantern and staff live here: the actor's own heap has no room
     J3DModel* light = nullptr;    // its torch or lantern (copies of Rusl's torch and Link's lantern)
     J3DModel* staff = nullptr;    // the old women's hooked staff (their lantern hangs from it)
+    J3DModel* guitar = nullptr;   // the bard's: the game's own j_guitar (the Castle Town band's)
+    bool playing = false;
     bool torch = false;           // fighters: a torch; everyone else a lantern
     bool carrying = false;        // in hand (and lit, at night)
     f32 staffGrip = 114.0f;       // the old women: hand height over the ground while walking with the staff
@@ -198,6 +200,7 @@ bool torchSpot(int type, f32* x, f32* z) {
     return false;
 }
 bool isOldWoman(int type) { return type == 20 || type == 27; }
+constexpr int kBardType = 4;   // MAN_b, the tall hat: the bard
 const Vec kStaffHook = {2.0f, 148.5f, 25.6f};   // where the lantern's handle hangs on the crook
 
 // The staff stands on the ground where the hand holds it; while she casts it is lifted with her hand
@@ -330,6 +333,11 @@ void onCreateHeapPost(ModContext*, void* args, void* retval, void*) {
         JKRHeap* before = mDoExt_setCurrentHeap(g->extras);
         g->light = make(g->torch ? "psr_torch.bmd" : "psr_lantern.bmd");
         g->staff = isOldWoman(passer->m_type) ? make("psr_staff.bmd") : nullptr;
+        if (passer->m_type == kBardType) {   // the townsfolk's own object archive, already loaded
+            if (auto* data = static_cast<J3DModelData*>(dComIfG_getObjectRes("object", "j_guitar.bmd"))) {
+                g->guitar = mDoExt_J3DModel__create(data, 0x80000, 0x11000084);
+            }
+        }
         mDoExt_setCurrentHeap(before);
         mDoExt_adjustSolidHeap(g->extras);
     }
@@ -415,6 +423,15 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
             mDoMtx_stack_c::YrotM(passer->shape_angle.y);
         }
         drawModel(g->light);
+    }
+    if (g->guitar != nullptr && g->playing) {
+        // where the game puts it on a band member: the chest joint, at the body's object scale
+        const f32 k = Cd2_HIO_objScale(passer->m_type);
+        mDoMtx_copy(body->getAnmMtx(kBackbone), mDoMtx_stack_c::now);
+        mDoMtx_stack_c::scaleM(k, k, k);
+        g->guitar->setBaseTRMtx(mDoMtx_stack_c::now);
+        g_env_light.setLightTevColorType_MAJI(g->guitar, &passer->tevStr);
+        mDoExt_modelUpdateDL(g->guitar);
     }
     drawOn(g->pack, kBackbone, nullptr);
     drawOn(g->belt, kWaist, nullptr);
@@ -511,6 +528,13 @@ bool lanternMtx(daNpcPasser_c* passer, Mtx out) {
         !fighter_anim::leftHandMtx(passer, hand)) return false;
     staffMtx(passer, hand, g->staffGrip, staffAt, out);
     return true;
+}
+
+bool isBard(const daNpcPasser_c* passer) { return passer != nullptr && passer->m_type == kBardType; }
+
+void setPlaying(daNpcPasser_c* passer, bool on) {
+    Gear* g = travellerLook(passer) != nullptr ? gearFor(passer) : nullptr;
+    if (g != nullptr && g->owner == fopAcM_GetID(passer)) g->playing = on && g->guitar != nullptr;
 }
 
 bool torchInHand(daNpcPasser_c* passer) {

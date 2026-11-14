@@ -210,7 +210,9 @@ struct PasserState {
     bool castFired = false;
     fpc_ProcID castTarget = fpcM_ERROR_PROCESS_ID_e;
     u8 fetching = 0;
-    bool toSeat = false;    // a camper walking back to its seat (only sits once it's there)        // a fighter getting its torch back after a fight: 1 walking to it, 2 picking it up
+    bool toSeat = false;    // a camper walking back to its seat (only sits once it's there)
+    bool playing = false;   // the bard, playing by the fire
+    int songFrames = 0;     // a camper singing along: frames left (0 not singing)        // a fighter getting its torch back after a fight: 1 walking to it, 2 picking it up
     int fetchFrames = 0;
 };
 
@@ -1461,6 +1463,79 @@ void onProfileExecutePost(ModContext*, void* args, void*, void*) {
     passer->mpMorf->modelCalc();
 }
 
+// --- music at the fire -----------------------------------------------------------------------
+// At night the bard (MAN_b) plays the game's own guitar sitting on his stool (m_playm, the Castle
+// Town band's seated strum) with the band's guitar part and its vocal: he sings as he plays. While
+// he does, now and then someone at his fire who doesn't fight gets up by their stool and sings
+// along for a while (the townsfolk's own sing), then sits back down.
+constexpr int kSongMin = 600, kSongMax = 1200;   // a sing-along lasts 20-40 seconds
+fpc_ProcID g_bardPlaying = fpcM_ERROR_PROCESS_ID_e;
+int g_bardCamp = -1;
+bool musicTime() { const int h = dKy_getdaytime_hour(); return h >= 19 || h < 5; }
+
+void stopMusic(daNpcPasser_c* passer, PasserState& state) {
+    if (state.playing) {
+        state.playing = false;
+        traveller_gear::setPlaying(passer, false);
+        if (g_bardPlaying == fopAcM_GetID(passer)) g_bardPlaying = fpcM_ERROR_PROCESS_ID_e;
+        state.anim = 0xFF;
+        travellers::refreshIdle(passer);
+    }
+    if (state.songFrames > 0) {
+        state.songFrames = 0;
+        state.anim = 0xFF;
+        travellers::refreshIdle(passer);   // back onto its stool
+    }
+}
+
+void musicTick(daNpcPasser_c* passer, PasserState& state, bool busy) {
+    cXyz center;
+    const bool atFire = travellers::campInfo(passer, &center, nullptr, nullptr) && !busy && musicTime() &&
+                        !state.campCower && !state.defending && !state.toSeat && state.casting == 0 &&
+                        !fighter_anim::hitting(passer);
+    const int slot = travellers::slotIndex(passer);
+    if (!atFire) {
+        stopMusic(passer, state);
+        return;
+    }
+    if (traveller_gear::isBard(passer)) {
+        if (!traveller_gear::sitting(slot) && !state.playing) return;   // not on his stool yet
+        auto* strum = static_cast<J3DAnmTransformKey*>(dComIfG_getObjectRes("Mspecial", "m_playm.bck"));
+        if (strum == nullptr) return;
+        if (!state.playing) {
+            state.playing = true;
+            traveller_gear::setPlaying(passer, true);
+            travellers::noteCamp(passer, "picks up his guitar", nullptr);
+        }
+        if (passer->mpMorf->getAnm() != strum) passer->setAnm(strum, 1.0f, 12.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
+        g_bardPlaying = fopAcM_GetID(passer);
+        g_bardCamp = static_cast<int>(center.x * 0.01f) ^ static_cast<int>(center.z * 0.01f);
+        passer->mCitizen.startCreatureVoiceLevel(Z2SE_CSL_TOWN_BAND_GT_1, -1);
+        passer->mCitizen.startCreatureVoiceLevel(Z2SE_CSL_TOWN_BAND_VOCAL, -1);
+        return;
+    }
+    // everyone else who doesn't fight: sing along now and then while the bard at this fire plays
+    if (travellers::isFighter(passer)) return;
+    fopAc_ac_c* bard = g_bardPlaying != fpcM_ERROR_PROCESS_ID_e ? fopAcM_SearchByID(g_bardPlaying) : nullptr;
+    const bool sameFire = bard != nullptr && bard->current.pos.absXZ(center) < 600.0f;
+    if (state.songFrames > 0) {
+        if (!sameFire || --state.songFrames == 0) {
+            state.songFrames = 1;
+            stopMusic(passer, state);
+            return;
+        }
+        if (auto* sing = static_cast<J3DAnmTransformKey*>(passer->getAnmP(53, 0))) {
+            if (passer->mpMorf->getAnm() != sing) passer->setAnm(sing, 1.0f, 12.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
+        }
+        return;
+    }
+    if (sameFire && traveller_gear::sitting(slot) && cM_rndF(1.0f) < 1.0f / 900.0f) {   // about every 30 s
+        traveller_gear::sit(passer, false);   // up off the stool, right there
+        state.songFrames = kSongMin + static_cast<int>(cM_rndF(static_cast<f32>(kSongMax - kSongMin)));
+        travellers::noteCamp(passer, "sings along", nullptr);
+    }
+}
+
 // --- camp guard --------------------------------------------------------------------------------
 // Only for travellers settled at a camp for the night. Enemies leave them alone; when an enemy
 // comes near the fire, fighters get up and go after it (and come back to their seat once it's
@@ -1891,6 +1966,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
     if (!state->talking && !state->cowering) {
         campHandled = campGuard(passer, *state);
     }
+    musicTick(passer, *state, campHandled || state->talking);
 
     // Fighters stop, face the enemy and stand their ground while they're healthy.
     if (!campHandled && !state->talking && !state->cowering &&
