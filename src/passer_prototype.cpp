@@ -1506,9 +1506,18 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         passer->speedF = 0.0f;
         passer->speed.set(0.0f, 0.0f, 0.0f);
         if ((state->deathLanded && state->deathLie >= kDeathLie) || state->deathFrame >= kDeathLimit) {
-            // Gone in the game's own smoke puff (the shared "monster defeated" burst, type 0, no item
-            // drop), and the soul rises out of it.
-            fopAcM_createDisappear(passer, &passer->current.pos, 10, 0, 0xFF);
+            // Gone in a puff of smoke: the same puff a treasure chest appears in (the game's own,
+            // always-loaded effect), and the soul rises out of it.
+            {
+                static const u16 kChestPuff[6] = {0x8840, 0x8841, 0x8842, 0x8843, 0x8844, 0x8845};
+                cXyz at(passer->current.pos.x, passer->current.pos.y + 55.0f, passer->current.pos.z);
+                csXyz rot = passer->shape_angle;
+                cXyz scale(1.0f, 1.0f, 1.0f);
+                for (u16 id : kChestPuff) {
+                    dComIfGp_particle_set(id, &at, &rot, &scale, 0xFF, nullptr, -1, nullptr, nullptr, nullptr);
+                }
+                mDoAud_seStart(Z2SE_OBJ_T_BOX_EMERGE, &at, 0, dComIfGp_getReverb(fopAcM_GetRoomNo(passer)));
+            }
             psr_soul::spawn(passer->current.pos, fopAcM_GetRoomNo(passer));
             travellers::onDeath(passer);
             fopAcM_delete(passer);
