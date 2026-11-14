@@ -250,6 +250,24 @@ void startSheathe(daNpcPasser_c* passer, Slot& s, const Body* b) {
 }
 
 
+// The body each stock passer type wears (traveller_gear's looks), for the per-body animations.
+const char* modelFor(int type) {
+    static const char* const kNames[30] = {
+        nullptr, nullptr, nullptr, "mon_a", "man_b", nullptr, "mas_a", "mbn_a", "man_a2", "mad_a2",
+        nullptr, "mon_a2", nullptr, "man_c2", "mas_a2", "mbn_a2", nullptr, nullptr, nullptr, nullptr,
+        "won_a", nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, "won_a2", "wgn_a2", "wan_b2"};
+    return type >= 0 && type < 30 ? kNames[type] : nullptr;
+}
+// psr_hold_<body>: the left arm holding its torch, lantern or staff, fitted to that body (posture
+// included). psr_pickup_<body>: crouch, take the torch off the ground (on frame 13), stand up.
+J3DAnmTransformKey* bodyAnm(const daNpcPasser_c* passer, const char* what) {
+    const char* m = modelFor(passer->m_type);
+    if (m == nullptr) return nullptr;
+    char name[40];
+    std::snprintf(name, sizeof(name), "psr_%s_%s.bck", what, m);
+    return anm(name);
+}
+
 // --- layering: legs that keep walking, an arm that holds a light ---------------------------------
 // Per traveller, worked out once a frame (layerTick) and applied joint by joint as the body is
 // posed (the joint callback below). Weights fade in and out so nothing snaps.
@@ -260,7 +278,7 @@ struct Layer {
     J3DAnmTransformKey* loco = nullptr; // the walk or run the legs take
     f32 locoFrame = 0.0f;
     f32 armW = 0.0f;                    // 0: free arm; 1: holding the light up
-    f32 armFrame = 0.0f;
+    J3DAnmTransformKey* hold = nullptr; // this body's hold
 };
 std::array<Layer, travellers::kSlots> g_layer{};
 constexpr f32 kLegFade = 1.0f / 6.0f;
@@ -396,7 +414,7 @@ void applyLayer(daNpcCd2_c* npc, J3DModel* model, int jnt) {
     if (k == nullptr || jnt >= k->n || k->parent[jnt] < 0) return;
     const u8 role = k->role[jnt];
     const bool leg = role == kRoleLeg && L.legW > 0.001f && L.loco != nullptr;
-    J3DAnmTransformKey* torch = role == kRoleArm && L.armW > 0.001f ? anm("psr_wait_torch.bck") : nullptr;
+    J3DAnmTransformKey* torch = role == kRoleArm && L.armW > 0.001f ? L.hold : nullptr;
     if (!leg && torch == nullptr) return;
     Mtx P, Pinv, La, Lo, Lb, out;
     std::memcpy(P, model->getAnmMtx(k->parent[jnt]), sizeof(Mtx));
@@ -407,10 +425,9 @@ void applyLayer(daNpcCd2_c* npc, J3DModel* model, int jnt) {
     if (leg) {
         animLocal(L.loco, L.locoFrame, jnt, Lo);
         w = L.legW;
-        t = {La[0][3] + (Lo[0][3] - La[0][3]) * w, La[1][3] + (Lo[1][3] - La[1][3]) * w,
-             La[2][3] + (Lo[2][3] - La[2][3]) * w};
+        t = {La[0][3], La[1][3], La[2][3]};      // its own bone lengths (the game never uses the animation's)
     } else {
-        animLocal(torch, L.armFrame, jnt, Lo);   // the men's joint numbers: the arm is 4..7 on both
+        animLocal(torch, 0.0f, jnt, Lo);         // fitted to this very body
         w = L.armW;
         t = {La[0][3], La[1][3], La[2][3]};      // its own bone lengths
     }
@@ -727,9 +744,27 @@ void layerTick(daNpcPasser_c* passer, bool carryLight) {
     L.legW = std::clamp(L.legW + (wantLegs ? kLegFade : -kLegFade), 0.0f, 1.0f);
 
     // the light arm
-    const bool wantArm = carryLight && !forced && !sitting && anm("psr_wait_torch.bck") != nullptr;
+    L.hold = bodyAnm(passer, "hold");
+    const bool picking = cur != nullptr && cur == bodyAnm(passer, "pickup");
+    const bool wantArm = carryLight && !forced && !sitting && !picking && L.hold != nullptr;
     L.armW = std::clamp(L.armW + (wantArm ? kArmFade : -kArmFade), 0.0f, 1.0f);
-    if (auto* t = anm("psr_wait_torch.bck")) L.armFrame = std::fmod(L.armFrame + 1.0f, std::max(1.0f, static_cast<f32>(t->getFrameMax())));
+}
+
+bool startPickup(daNpcPasser_c* passer) {
+    J3DAnmTransformKey* a = bodyAnm(passer, "pickup");
+    if (a == nullptr || passer->mpMorf == nullptr) return false;
+    passer->mpMorf->setAnm(a, J3DFrameCtrl::EMode_NONE, 5.0f, 1.0f, 0, -1);
+    return true;
+}
+
+f32 pickupFrame(const daNpcPasser_c* passer) {
+    if (passer->mpMorf == nullptr || passer->mpMorf->getAnm() != bodyAnm(passer, "pickup")) return -1.0f;
+    return passer->mpMorf->getFrame();
+}
+
+bool pickupDone(const daNpcPasser_c* passer) {
+    if (pickupFrame(passer) < 0.0f) return true;
+    return passer->mpMorf->isStop() || passer->mpMorf->getFrame() >= passer->mpMorf->getEndFrame() - 1.0f;
 }
 
 bool leftHandMtx(const daNpcPasser_c* passer, Mtx out) {
@@ -798,10 +833,13 @@ HookAction onJointTweakPre(ModContext*, void* args, void* retval, void*) {
         w = w < target ? std::min(target, w + kTweakFade) : std::max(target, w - kTweakFade);
     }
     const f32 w = g_tweak[slot];
-    if (w >= 0.999f) return HOOK_CONTINUE;   // the game's own, untouched
+    // Our dwarves (MON_a, MON_a2) without the game's forearm twist, which turns their palms backwards.
+    const bool noTwist = slot < travellers::kSlots && (npc->m_type == 3 || npc->m_type == 11) && (jnt == 6 || jnt == 10);
+    if (w >= 0.999f && !noTwist) return HOOK_CONTINUE;   // the game's own, untouched
     cXyz tr;
     csXyz rot;
     gameTweak(npc->m_type, jnt, &tr, &rot);
+    if (noTwist) rot.x = 0;
     tr *= w;
     rot.set(static_cast<s16>(rot.x * w), static_cast<s16>(rot.y * w), static_cast<s16>(rot.z * w));
     mDoMtx_stack_c::copy(model->getAnmMtx(jnt));

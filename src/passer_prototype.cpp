@@ -200,6 +200,8 @@ struct PasserState {
     cXyz progFrom;          // where it was at the start of the progress check
     int progFrames = 0;     // frames into the progress check
     int stuckRuns = 0;      // progress checks in a row it failed
+    u8 fetching = 0;        // a fighter getting its torch back after a fight: 1 walking to it, 2 picking it up
+    int fetchFrames = 0;
 };
 
 std::array<PasserState, 32> g_states{};
@@ -949,7 +951,7 @@ HookAction onExecutePathPre(ModContext*, void* args, void*, void*) {
     if (gateAction(passer)) {
         return HOOK_SKIP_ORIGINAL;
     }
-    if (const auto* state = findState(passer, false); state != nullptr && state->standing) {
+    if (const auto* state = findState(passer, false); state != nullptr && (state->standing || state->fetching)) {
         return HOOK_SKIP_ORIGINAL;
     }
     if (!isPrototypePasser(passer) || passer->mPathMode != 2 || !passer->m_path.isPath()) {
@@ -1196,6 +1198,79 @@ HookAction onCheckObstaclePre(ModContext*, void* args, void* retval, void*) {
     return HOOK_SKIP_ORIGINAL;
 }
 
+// A fighter puts its torch down to fight (it lies there burning) and, once the weapon is away again,
+// walks back to it, crouches and picks it up. Far away (or out of sight) it just has it back.
+void stepToward(daNpcPasser_c* passer, const cXyz& to, f32 speed);   // (camp guard, further down)
+constexpr f32 kFetchMax = 1200.0f;
+constexpr int kFetchGiveUp = 300;   // ten seconds of walking without getting there
+void torchTick(daNpcPasser_c* passer, PasserState& state) {
+    if (!travellers::isFighter(passer)) return;
+    const bool fighting = state.onGuard || state.standing || state.defending || fighter_anim::weaponOut(passer);
+    if (fighting && traveller_gear::torchInHand(passer)) {
+        traveller_gear::dropTorch(passer);
+        travellers::noteAct(passer, "put its torch down to fight");
+    }
+    cXyz standAt;
+    s16 yaw = 0;
+    const bool onGround = traveller_gear::torchOnGround(passer, &standAt, &yaw);
+    auto stopFetch = [&](bool takeIt) {
+        if (takeIt) traveller_gear::takeTorch(passer);
+        if (state.fetching != 0) {
+            state.fetching = 0;
+            if (!state.arrived && passer->mActionIdx == daNpcPasser_c::MODE_0) resumeRoute(passer, state);
+        }
+    };
+    if (!onGround) {
+        if (state.fetching != 0) stopFetch(false);
+        return;
+    }
+    if (fighting || state.talking || passer->mActionIdx != daNpcPasser_c::MODE_0 || fighter_anim::hitting(passer)) {
+        // a new fight, or running away: the torch stays where it is for now
+        if (state.fetching == 2 && fighter_anim::pickupFrame(passer) >= fighter_anim::kPickupGrab) stopFetch(true);
+        else if (state.fetching != 0) state.fetching = 0;
+        return;
+    }
+    const f32 far = passer->current.pos.absXZ(standAt);
+    if (state.fetching == 0) {
+        if (far > kFetchMax || fopAcM_CheckCondition(passer, fopAcCnd_NODRAW_e) ||
+            travellers::campInfo(passer, nullptr, nullptr, nullptr)) {
+            stopFetch(true);   // too far to bother, or nobody's watching: it just has it again
+            return;
+        }
+        state.fetching = 1;
+        state.fetchFrames = 0;
+        travellers::noteAct(passer, "going back for its torch");
+        if (auto* walk = static_cast<J3DAnmTransformKey*>(passer->getAnmP(2, passer->getObjNum()))) {
+            passer->setAnm(walk, 1.0f, 8.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
+        }
+    }
+    if (state.fetching == 1) {
+        if (++state.fetchFrames > kFetchGiveUp) {
+            stopFetch(true);
+            return;
+        }
+        if (far > 8.0f) {
+            stepToward(passer, standAt, std::min(far, Cd2_HIO_walkMaxSpeed(passer->m_type)));
+            return;
+        }
+        cLib_addCalcAngleS2(&passer->current.angle.y, yaw, 3, 0x800);
+        passer->shape_angle.y = passer->current.angle.y;
+        if (std::abs(static_cast<s16>(passer->shape_angle.y - yaw)) < 0x400 && fighter_anim::startPickup(passer)) {
+            state.fetching = 2;
+        } else if (std::abs(static_cast<s16>(passer->shape_angle.y - yaw)) < 0x400) {
+            stopFetch(true);   // (no pick-up animation for this body)
+        }
+        return;
+    }
+    // state.fetching == 2: crouched for it; in hand from the grab frame on, then walk on
+    passer->speedF = 0.0f;
+    if (fighter_anim::pickupFrame(passer) >= fighter_anim::kPickupGrab) traveller_gear::takeTorch(passer);
+    if (fighter_anim::pickupDone(passer)) {
+        traveller_gear::takeTorch(passer);
+        stopFetch(false);
+    }
+}
+
 // Backup for anything the above doesn't catch: a traveller on the move (running away or walking its
 // road) that hasn't got anywhere in three seconds gives up on the road point it was making for and
 // heads for the next; if that doesn't help either, a runner picks a new way to run from here and a
@@ -1205,6 +1280,7 @@ void progressCheck(daNpcPasser_c* passer, PasserState& state) {
     const bool walking = passer->mActionIdx == daNpcPasser_c::MODE_0 && passer->field_0xb1c == 2 &&
                          passer->mPathMode != 1;
     const bool held = state.standing || state.defending || state.talking || state.arrived || state.cowering ||
+                      state.fetching != 0 ||
                       state.sidestep > 0 || fighter_anim::hitting(passer) ||
                       travellers::campInfo(passer, nullptr, nullptr, nullptr);
     if ((!fleeing && !walking) || held || !passer->m_path.isPath()) {
@@ -1284,19 +1360,19 @@ void onProfileExecutePost(ModContext*, void* args, void*, void*) {
         fighterAnim(passer, *state);
         blowTick(passer, *state);
         progressCheck(passer, *state);
+        torchTick(passer, *state);
         // at night, out on the roads (not settled at a camp fire): a torch or lantern
         const int hour = dKy_getdaytime_hour();
         const bool night = hour >= 19 || hour < 6;
-        const bool light = traveller_gear::lightTick(
-            passer, night && !travellers::campInfo(passer, nullptr, nullptr, nullptr));
-        fighter_anim::layerTick(passer, light);
+        const bool hold = traveller_gear::lightTick(passer, night, travellers::campInfo(passer, nullptr, nullptr, nullptr));
+        fighter_anim::layerTick(passer, hold);
         return;
     }
     if (passer->mpMorf == nullptr) {
         return;
     }
 
-    traveller_gear::lightTick(passer, false);   // dead: the light goes out
+    traveller_gear::lightTick(passer, false, true);   // dead: the light goes out
     fighter_anim::forcedTick(passer);   // the fly-back pose, then the sprawl
     // (No backflip any more: the fly-back pose does the work. tumble stays 0.)
     mDoMtx_stack_c::transS(passer->current.pos.x, passer->current.pos.y + kTumblePivotY,
@@ -1426,7 +1502,7 @@ void blowTick(daNpcPasser_c* passer, PasserState& state) {
 // traveller still (standing its ground, at camp, waiting at the end of its road) that code is off,
 // so they hung in the air over any dip: their own gravity then (not while sat on a stool).
 void keepGrounded(daNpcPasser_c* passer, PasserState& state) {
-    const bool heldByMod = state.standing || state.arrived || state.defending;
+    const bool heldByMod = state.standing || state.arrived || state.defending || state.fetching;
     if (!heldByMod || state.talking) return;
     const int slot = travellers::slotIndex(passer);
     if (slot >= 0 && traveller_gear::sitting(slot)) return;

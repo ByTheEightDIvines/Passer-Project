@@ -63,6 +63,11 @@ bool hitting(const daNpcPasser_c* passer);
 // traveller's own walk or run instead, so it never slides along in a standing pose. carryLight: the
 // left arm holds a torch or lantern up (whatever the rest of the body is doing).
 void layerTick(daNpcPasser_c* passer, bool carryLight);
+// The torch pick-up (per body): start it; the frame it is on (-1: not playing); finished.
+constexpr float kPickupGrab = 13.0f;   // the hand closes on the torch
+bool startPickup(daNpcPasser_c* passer);
+float pickupFrame(const daNpcPasser_c* passer);
+bool pickupDone(const daNpcPasser_c* passer);
 // The left hand's matrix (for the torch or lantern), false if there is no model yet.
 bool leftHandMtx(const daNpcPasser_c* passer, Mtx out);
 

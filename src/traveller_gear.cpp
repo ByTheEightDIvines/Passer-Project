@@ -121,8 +121,12 @@ struct Gear {
     J3DModel* spoon = nullptr;    // the cook's wooden spoon
     bool sitting = false;
     J3DModel* light = nullptr;    // its torch or lantern (copies of Rusl's torch and Link's lantern)
-    bool torch = false;           // which of the two
-    bool carrying = false;
+    J3DModel* staff = nullptr;    // the old women's hooked staff (their lantern hangs from it)
+    bool torch = false;           // fighters: a torch; everyone else a lantern
+    bool carrying = false;        // in hand (and lit, at night)
+    bool onGround = false;        // a fighter's torch, put down to fight
+    cXyz groundPos;               // where it lies (its handle end)
+    s16 groundYaw = 0;
     bool lit = false;             // its point light is registered
     LIGHT_INFLUENCE glow{};
     u32 flame = 0;                // the flame particle
@@ -169,9 +173,27 @@ void rememberLoaded(fpc_ProcID id, const Look* look, Gear* gear) {
 // Torch: Rusl's own, held the way he holds it (his hand's frame turned onto ours: a quarter turn
 // about x); the flame sits on its tip. Lantern: hangs upright from the hand by its handle.
 const Mtx kTorchGrip = {{1.0f, 0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 1.0f, 0.0f}, {0.0f, -1.0f, 0.0f, 0.0f}};
-const Vec kTorchTip = {11.0f, 76.0f, 4.0f};      // in the hand's frame
+const Vec kTorchTip = {11.0f, -3.7f, 74.0f};    // the flame, on the torch model's own tip
 constexpr f32 kLanternDrop = 47.0f;              // handle (top) to the model's origin (its base)
-constexpr f32 kLanternFlame = 24.0f;             // the flame, this far below the hand
+constexpr f32 kLanternFlame = 23.0f;             // the flame, this far up from the lantern's base
+const Vec kStaffLantern = {2.0f, 104.3f, 25.6f}; // the lantern's base, hanging from the staff's hook
+// Where a fighter puts its torch down: in front of it and a little to the left, the spot its pick-up
+// reaches for (body units, scaled with the body).
+struct Spot { int type; f32 x, z; };
+const Spot kTorchSpots[] = {{3, 14.2f, 37.8f}, {6, 10.6f, 28.3f}, {8, 14.9f, 39.8f}, {9, 18.6f, 49.6f},
+                            {11, 14.2f, 37.8f}, {13, 12.8f, 34.1f}, {14, 10.6f, 28.3f}, {29, 12.1f, 32.4f}};
+bool torchSpot(int type, f32* x, f32* z) {
+    for (const Spot& sp : kTorchSpots) {
+        if (sp.type == type) {
+            const f32 k = Cd2_HIO_objScale(type);
+            *x = sp.x * k;
+            *z = sp.z * k;
+            return true;
+        }
+    }
+    return false;
+}
+bool isOldWoman(int type) { return type == 20 || type == 27; }
 
 void cutLight(Gear& g) {
     if (g.lit) dKy_plight_cut(&g.glow);
@@ -270,11 +292,12 @@ void onCreateHeapPost(ModContext*, void* args, void* retval, void*) {
     }
     g->seat = make("psr_seat.bmd");
     g->sitting = false;
-    // fighters carry a torch, the others half a torch, half a lantern
-    const int slot = travellers::slotIndex(passer);
-    g->torch = travellers::isFighter(passer) || (slot & 1) != 0;
+    // fighters carry a torch, everyone else a lantern; the old women hang theirs on a hooked staff
+    g->torch = travellers::isFighter(passer);
     g->light = make(g->torch ? "psr_torch.bmd" : "psr_lantern.bmd");
+    g->staff = isOldWoman(passer->m_type) ? make("psr_staff.bmd") : nullptr;
     g->carrying = false;
+    g->onGround = false;
     g->lit = false;
     if (const Kit* kit = kitFor(look)) {
         g->belt = make(kit->belt);
@@ -321,8 +344,31 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
         g_env_light.setLightTevColorType_MAJI(g->spoon, &passer->tevStr);
         mDoExt_modelUpdateDL(g->spoon);
     }
+    auto drawModel = [&](J3DModel* m) {
+        m->setBaseTRMtx(mDoMtx_stack_c::now);
+        g_env_light.setLightTevColorType_MAJI(m, &passer->tevStr);
+        mDoExt_modelUpdateDL(m);
+    };
     Mtx hand;
-    if (g->light != nullptr && g->carrying && fighter_anim::leftHandMtx(passer, hand)) {
+    const bool atFire = g->sitting || travellers::campInfo(passer, nullptr, nullptr, nullptr);
+    if (g->staff != nullptr && !atFire && fighter_anim::leftHandMtx(passer, hand)) {
+        // the staff stands upright on the ground where the hand holds it, the hook to the front
+        mDoMtx_stack_c::transS(hand[0][3], passer->current.pos.y, hand[2][3]);
+        mDoMtx_stack_c::YrotM(passer->shape_angle.y);
+        Mtx staffAt;
+        mDoMtx_copy(mDoMtx_stack_c::now, staffAt);
+        drawModel(g->staff);
+        if (g->light != nullptr) {
+            mDoMtx_copy(staffAt, mDoMtx_stack_c::now);
+            mDoMtx_stack_c::transM(kStaffLantern.x, kStaffLantern.y, kStaffLantern.z);
+            drawModel(g->light);
+        }
+    } else if (g->light != nullptr && g->onGround) {
+        mDoMtx_stack_c::transS(g->groundPos.x, g->groundPos.y + 10.0f, g->groundPos.z);   // lying flat
+        mDoMtx_stack_c::YrotM(g->groundYaw);
+        mDoMtx_stack_c::transM(-10.0f, 0.0f, 0.0f);
+        drawModel(g->light);
+    } else if (g->light != nullptr && g->carrying && fighter_anim::leftHandMtx(passer, hand)) {
         if (g->torch) {
             mDoMtx_copy(hand, mDoMtx_stack_c::now);
             mDoMtx_stack_c::concat(kTorchGrip);
@@ -330,9 +376,7 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
             mDoMtx_stack_c::transS(hand[0][3], hand[1][3] - kLanternDrop, hand[2][3]);
             mDoMtx_stack_c::YrotM(passer->shape_angle.y);
         }
-        g->light->setBaseTRMtx(mDoMtx_stack_c::now);
-        g_env_light.setLightTevColorType_MAJI(g->light, &passer->tevStr);
-        mDoExt_modelUpdateDL(g->light);
+        drawModel(g->light);
     }
     drawOn(g->pack, kBackbone, nullptr);
     drawOn(g->belt, kWaist, nullptr);
@@ -370,38 +414,92 @@ bool sit(daNpcPasser_c* passer, bool on) {
     return on;
 }
 
-bool lightTick(daNpcPasser_c* passer, bool wanted) {
+bool lightTick(daNpcPasser_c* passer, bool night, bool atCamp) {
     Gear* g = travellerLook(passer) != nullptr ? gearFor(passer) : nullptr;
     if (g == nullptr || g->owner != fopAcM_GetID(passer)) return false;
     Mtx hand;
-    g->carrying = wanted && g->light != nullptr && fighter_anim::leftHandMtx(passer, hand);
-    if (!g->carrying) {
-        cutLight(*g);
-        return false;
-    }
+    const bool haveHand = fighter_anim::leftHandMtx(passer, hand);
+    if (!night) g->onGround = false;   // morning: put away
+    g->carrying = night && !atCamp && !g->onGround && g->light != nullptr && haveHand;
+    const bool staffOut = g->staff != nullptr && !atCamp && haveHand;
+    // the flame: on the torch's tip, in the lantern (in hand or on the staff's hook)
     cXyz flame;
-    if (g->torch) {
+    bool burning = night && g->light != nullptr && (g->carrying || g->onGround);
+    if (burning && g->onGround) {
+        mDoMtx_stack_c::transS(g->groundPos.x, g->groundPos.y + 10.0f, g->groundPos.z);
+        mDoMtx_stack_c::YrotM(g->groundYaw);
+        mDoMtx_stack_c::transM(-10.0f, 0.0f, 0.0f);
+        mDoMtx_stack_c::multVec(&kTorchTip, &flame);
+    } else if (burning && staffOut) {
+        mDoMtx_stack_c::transS(hand[0][3], passer->current.pos.y, hand[2][3]);
+        mDoMtx_stack_c::YrotM(passer->shape_angle.y);
+        const Vec at = {kStaffLantern.x, kStaffLantern.y + kLanternFlame, kStaffLantern.z};
+        mDoMtx_stack_c::multVec(&at, &flame);
+    } else if (burning && g->torch) {
         mDoMtx_copy(hand, mDoMtx_stack_c::now);
         mDoMtx_stack_c::concat(kTorchGrip);
         mDoMtx_stack_c::multVec(&kTorchTip, &flame);
+    } else if (burning) {
+        flame.set(hand[0][3], hand[1][3] - kLanternDrop + kLanternFlame, hand[2][3]);
+    }
+    if (!burning) {
+        cutLight(*g);
     } else {
-        flame.set(hand[0][3], hand[1][3] - kLanternFlame, hand[2][3]);
+        // Link's lantern fire (a bigger one on a torch) and a warm light round it
+        const cXyz scale = g->torch ? cXyz(1.8f, 1.8f, 1.8f) : cXyz(1.0f, 1.0f, 1.0f);
+        g->flame = dComIfGp_particle_set(g->flame, ID_ZI_J_KANTERA_FIRE, &flame, &passer->tevStr, nullptr, &scale,
+                                         0xFF, nullptr, -1, nullptr, nullptr, nullptr);
+        g->glow.mPosition = flame;
+        g->glow.mColor.r = 188;
+        g->glow.mColor.g = 110;
+        g->glow.mColor.b = 60;
+        g->glow.mPow = g->torch ? 300.0f : 220.0f;
+        g->glow.mFluctuation = g->torch ? 1.0f : 0.5f;
+        if (!g->lit) {
+            dKy_plight_set(&g->glow);
+            g->lit = true;
+        }
     }
-    // the flame (Link's lantern fire; a bigger one on a torch) and a warm light round it
-    const cXyz scale = g->torch ? cXyz(1.8f, 1.8f, 1.8f) : cXyz(1.0f, 1.0f, 1.0f);
-    g->flame = dComIfGp_particle_set(g->flame, ID_ZI_J_KANTERA_FIRE, &flame, &passer->tevStr, nullptr, &scale, 0xFF,
-                                     nullptr, -1, nullptr, nullptr, nullptr);
-    g->glow.mPosition = flame;
-    g->glow.mColor.r = 188;
-    g->glow.mColor.g = 110;
-    g->glow.mColor.b = 60;
-    g->glow.mPow = g->torch ? 300.0f : 220.0f;
-    g->glow.mFluctuation = g->torch ? 1.0f : 0.5f;
-    if (!g->lit) {
-        dKy_plight_set(&g->glow);
-        g->lit = true;
+    // the arm holds up whatever is in it: the staff all day, a torch or lantern at night
+    return staffOut || g->carrying;
+}
+
+bool torchInHand(daNpcPasser_c* passer) {
+    Gear* g = travellerLook(passer) != nullptr ? gearFor(passer) : nullptr;
+    return g != nullptr && g->owner == fopAcM_GetID(passer) && g->torch && g->carrying;
+}
+
+bool torchOnGround(daNpcPasser_c* passer, cXyz* standAt, s16* yaw) {
+    Gear* g = travellerLook(passer) != nullptr ? gearFor(passer) : nullptr;
+    if (g == nullptr || g->owner != fopAcM_GetID(passer) || !g->onGround) return false;
+    f32 x = 0.0f, z = 0.0f;
+    torchSpot(passer->m_type, &x, &z);
+    // stand so the spot is where the pick-up reaches: (x left, z ahead) of its feet
+    const s16 a = g->groundYaw;
+    if (standAt != nullptr) {
+        standAt->set(g->groundPos.x - (cM_scos(a) * x + cM_ssin(a) * z), g->groundPos.y,
+                     g->groundPos.z - (-cM_ssin(a) * x + cM_scos(a) * z));
     }
+    if (yaw != nullptr) *yaw = a;
     return true;
+}
+
+void dropTorch(daNpcPasser_c* passer) {
+    Gear* g = travellerLook(passer) != nullptr ? gearFor(passer) : nullptr;
+    if (g == nullptr || g->owner != fopAcM_GetID(passer) || !g->torch || !g->carrying) return;
+    f32 x = 0.0f, z = 0.0f;
+    if (!torchSpot(passer->m_type, &x, &z)) return;
+    const s16 a = passer->shape_angle.y;
+    g->groundYaw = a;
+    g->groundPos.set(passer->current.pos.x + cM_scos(a) * x + cM_ssin(a) * z, passer->current.pos.y,
+                     passer->current.pos.z - cM_ssin(a) * x + cM_scos(a) * z);
+    g->onGround = true;
+    g->carrying = false;
+}
+
+void takeTorch(daNpcPasser_c* passer) {
+    Gear* g = travellerLook(passer) != nullptr ? gearFor(passer) : nullptr;
+    if (g != nullptr && g->owner == fopAcM_GetID(passer)) g->onGround = false;
 }
 
 bool install() {
