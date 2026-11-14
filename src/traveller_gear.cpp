@@ -130,6 +130,35 @@ Gear* gearFor(daNpcCd2_c* npc) {
     return slot >= 0 && slot < static_cast<int>(g_gear.size()) ? &g_gear[slot] : nullptr;
 }
 
+// Which look (and gear slot) each traveller actor loaded, remembered by its process ID. Removal must
+// undo exactly what loading did, but by the time the game removes a dying or despawned traveller
+// its slot has already been let go (so it no longer counts as a traveller); without this the game's
+// own removal ran instead and released the wrong archives, one of which another NPC was still
+// using (a crash in that NPC's eye animation a little later).
+struct Loaded {
+    fpc_ProcID id = fpcM_ERROR_PROCESS_ID_e;
+    const Look* look = nullptr;
+    Gear* gear = nullptr;
+};
+std::array<Loaded, 48> g_loaded{};
+
+Loaded* loadedFor(fpc_ProcID id) {
+    for (auto& l : g_loaded) {
+        if (l.id == id && l.look != nullptr) return &l;
+    }
+    return nullptr;
+}
+void rememberLoaded(fpc_ProcID id, const Look* look, Gear* gear) {
+    Loaded* l = loadedFor(id);
+    if (l == nullptr) {
+        for (auto& e : g_loaded) {
+            if (e.look == nullptr) { l = &e; break; }
+        }
+    }
+    if (l == nullptr) return;   // (never more than a few dozen at once)
+    *l = {id, look, gear};
+}
+
 DEFINE_HOOK(&daNpcCd2_c::loadResrc, Cd2LoadResrc);
 DEFINE_HOOK(&daNpcCd2_c::removeResrc, Cd2RemoveResrc);
 DEFINE_HOOK(&daNpcCd2_c::getNpcMdlDataP, Cd2GetModel);
@@ -146,28 +175,35 @@ HookAction onLoadResrcPre(ModContext*, void* args, void* retval, void*) {
     if (result == cPhs_COMPLEATE_e) result = dComIfG_resLoad(&npc->mPhase4, "object");
     if (result == cPhs_COMPLEATE_e) result = dComIfG_resLoad(&npc->mPhase2, generalArc(type));
     if (result == cPhs_COMPLEATE_e) result = dComIfG_resLoad(&npc->mPhase3, specialArc(type));
+    Gear* g = gearFor(npc);
     if (result == cPhs_COMPLEATE_e) {
-        if (Gear* g = gearFor(npc)) {
+        if (g != nullptr) {
             result = dComIfG_resLoad(&g->packPhase, kPackArc);
             g->packLoaded = result == cPhs_COMPLEATE_e;
             g->owner = fopAcM_GetID(npc);
             g->pack = nullptr;
         }
     }
+    rememberLoaded(fopAcM_GetID(npc), look, g);
     *static_cast<int*>(retval) = result;
     return HOOK_SKIP_ORIGINAL;
 }
 
 HookAction onRemoveResrcPre(ModContext*, void* args, void* retval, void*) {
     auto* npc = mods::arg<daNpcCd2_c*>(args, 0);
-    const Look* look = travellerLook(npc);
-    if (look == nullptr || retval == nullptr) return HOOK_CONTINUE;
+    if (npc == nullptr || retval == nullptr) return HOOK_CONTINUE;
+    // what this actor loaded (still known after its traveller slot is gone)
+    Loaded* rec = loadedFor(fopAcM_GetID(npc));
+    const Look* look = rec != nullptr ? rec->look : travellerLook(npc);
+    if (look == nullptr) return HOOK_CONTINUE;   // not one of ours: the game's own
+    Gear* g = rec != nullptr ? rec->gear : gearFor(npc);
+    if (rec != nullptr) *rec = Loaded{};
     const int type = npc->m_type;
     dComIfG_resDelete(&npc->mPhase1, look->arc);
     dComIfG_resDelete(&npc->mPhase4, "object");
     dComIfG_resDelete(&npc->mPhase2, generalArc(type));
     dComIfG_resDelete(&npc->mPhase3, specialArc(type));
-    if (Gear* g = gearFor(npc); g != nullptr && g->owner == fopAcM_GetID(npc)) {
+    if (g != nullptr && g->owner == fopAcM_GetID(npc)) {
         if (g->packLoaded) dComIfG_resDelete(&g->packPhase, kPackArc);
         *g = Gear{};
     }
