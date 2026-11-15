@@ -1,10 +1,13 @@
 #pragma once
-// The townsfolk's voices (their "hey", "whoa", screams...) and the Castle Town band live in Castle
-// Town's own sound banks, which the game only loads there: out in the field every call to them was
-// silent. While travellers are about, those two banks are loaded too; they are let go again just
-// before the game loads the next area's sounds, so they never crowd that area's own out.
+// The travellers' voices. The game keeps the townsfolk's voice lines in Castle Town's own sound
+// banks (only loaded there), and many characters have no clip at all for some lines. So the mod
+// ships the clips itself (res/voices/, cut from those banks) and registers them over their slots
+// in the always-loaded sound-effect bank; each traveller type plays its own line where the game has
+// one, and a shared man's or woman's line where it doesn't (voice_table.inc).
+class daNpcPasser_c;
 namespace voice_banks {
-// Once a frame while travellers are out (cheap: only acts when a bank isn't loaded yet).
-void tick();
 bool install();
+void tick();   // (once: notes in the diary how many clips registered)
+// line: 0 away, 1 surprise, 2 fear, 3 hey, 4 laugh, 5 hmm
+void play(daNpcPasser_c* passer, int line);
 }  // namespace voice_banks

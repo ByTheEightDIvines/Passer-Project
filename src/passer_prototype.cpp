@@ -1957,7 +1957,7 @@ void sidestepTick(daNpcPasser_c* passer, PasserState& state, f32 speed) {
 void callOut(daNpcPasser_c* passer, PasserState& state, int line, int wait) {
     if (state.voiceWait > 0) return;
     travellers::diagLine("voice   slot %d type %d line %d", travellers::slotIndex(passer), passer->m_type, line);
-    passer->mCitizen.playVoice(line);
+    voice_banks::play(passer, line);
     state.voiceWait = wait;
 }
 
@@ -2675,7 +2675,7 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
         svc_log->info(mod_ctx, "path obstacle hook unavailable; travellers keep the game's own sidestepping");
     }
     if (!voice_banks::install()) {
-        svc_log->info(mod_ctx, "sound bank hook unavailable; travellers stay quiet outside Castle Town");
+        svc_log->info(mod_ctx, "voice clips could not be registered; travellers stay quiet");
     }
     if (!psr_freeze::install()) {
         svc_log->info(mod_ctx, "actor update hook unavailable; the old women can't freeze monsters");
