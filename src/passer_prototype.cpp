@@ -25,6 +25,7 @@
 #include "voice_banks.hpp"
 #include "soul_actor.hpp"
 #include "note_actor.hpp"
+#include "bubble_actor.hpp"
 #include "traveller_gear.hpp"
 #include "fighter_anim.hpp"
 #include "camp_fire.hpp"
@@ -227,9 +228,71 @@ struct PasserState {
     int songFrames = 0;     // a camper singing along: frames left (0 not singing)
     int noteWait = 0;       // frames until the next music note floats off it        // a fighter getting its torch back after a fight: 1 walking to it, 2 picking it up
     int fetchFrames = 0;
+    // needs (1 full, 0 empty): they drain, and a seated camper acts on the lowest (needTick, chatTick)
+    f32 hunger = -1.0f;     // -1: not rolled yet
+    f32 thirst = 1.0f;
+    f32 social = 1.0f;
+    int pending = 0;        // an action thought of, waiting for its bubble: 1 eat, 2 drink, 3 chat
+    int pendingWait = 0;
+    bool mealIsFood = false;
+    // its bubble (bubble_actor): the one over its head, how much it matters, and per-icon rests
+    fpc_ProcID bubble = fpcM_ERROR_PROCESS_ID_e;
+    int bubblePri = 0;
+    std::array<s16, psr_bubble::kCount> bubbleRest{};
 };
 
 std::array<PasserState, 32> g_states{};
+
+// --- bubbles and needs --------------------------------------------------------------------
+// One bubble at a time over a traveller: fear and fighting beat everything, a muddle beats a need.
+int bubblePriority(int icon) {
+    using namespace psr_bubble;
+    switch (icon) {
+    case kScared: case kAngry: case kAttack: case kFlee: case kDefend: case kSurprised: return 3;
+    case kConfused: case kSad: return 2;
+    default: return 1;
+    }
+}
+constexpr s16 kBubbleRest = 240;   // the same bubble no more than every 8 seconds
+void say(daNpcPasser_c* passer, PasserState& state, int icon) {
+    if (icon < 0 || icon >= psr_bubble::kCount || state.bubbleRest[icon] > 0) return;
+    const int pri = bubblePriority(icon);
+    if (psr_bubble::follow(state.bubble, passer->eyePos) && state.bubblePri > pri) return;
+    psr_bubble::remove(state.bubble);
+    cXyz pos = passer->eyePos;
+    pos.y += 38.0f;
+    state.bubble = psr_bubble::spawn(pos, fopAcM_GetRoomNo(passer), icon);
+    state.bubblePri = pri;
+    state.bubbleRest[icon] = kBubbleRest;
+}
+void bubbleTick(daNpcPasser_c* passer, PasserState& state) {
+    for (s16& r : state.bubbleRest) if (r > 0) --r;
+    if (state.bubble == fpcM_ERROR_PROCESS_ID_e) return;
+    cXyz pos = passer->eyePos;
+    pos.y += 38.0f;
+    if (!psr_bubble::follow(state.bubble, pos)) {
+        state.bubble = fpcM_ERROR_PROCESS_ID_e;
+        state.bubblePri = 0;
+    }
+}
+// How fast each need drains, by who they are (personality comes with the character type).
+// Full to empty in about two minutes of hunger, a minute and a half of thirst, a minute of company.
+void needTick(daNpcPasser_c* passer, PasserState& state) {
+    if (state.hunger < 0.0f) {   // everyone arrives a little different
+        state.hunger = 0.55f + cM_rndF(0.45f);
+        state.thirst = 0.55f + cM_rndF(0.45f);
+        state.social = 0.4f + cM_rndF(0.6f);
+    }
+    const int t = passer->m_type;
+    f32 h = 1.0f, d = 1.0f, c = 1.0f;
+    if (t == 3 || t == 11) d = 1.6f;                         // the dwarves: always thirsty
+    if (travellers::isFighter(passer)) h = 1.3f;             // fighters: hungry work
+    if (t == 20 || t == 27) { c = 1.3f; h = 0.8f; }          // the old women: love a chat, eat little
+    if (traveller_gear::isBard(passer)) c = 0.7f;            // the bard: happy with his guitar
+    state.hunger = std::fmax(0.0f, state.hunger - h / 3600.0f);
+    state.thirst = std::fmax(0.0f, state.thirst - d / 2700.0f);
+    state.social = std::fmax(0.0f, state.social - c / 2000.0f);
+}
 void blowTick(daNpcPasser_c* passer, PasserState& state);   // further down: the diary of blows
 // Fighters the wolf has bitten (by roster slot): for five minutes they're as scared of wolf Link as
 // any unarmed traveller and never go for him. Kept apart from the actor's state so it lasts when the
@@ -1395,6 +1458,7 @@ void progressCheck(daNpcPasser_c* passer, PasserState& state) {
         return;
     }
     ++state.stuckRuns;
+    if (state.stuckRuns == 2) say(passer, state, psr_bubble::kConfused);   // can't get past: puzzled
     const int pt = passer->m_path.field_0x20;
     const int num = passer->m_path.mPath->m_num;
     const cXyz next = passer->m_path.getPoint(static_cast<u16>(pt));
@@ -1446,6 +1510,13 @@ void onProfileExecutePost(ModContext*, void* args, void*, void*) {
         return;
     }
     voice_banks::tick();
+    if (state->dead) {
+        psr_bubble::remove(state->bubble);
+        state->bubble = fpcM_ERROR_PROCESS_ID_e;
+    } else {
+        needTick(passer, *state);
+        bubbleTick(passer, *state);
+    }
     if (!state->dead) {
         setDamageable(passer);
         keepGrounded(passer, *state);
@@ -1453,7 +1524,10 @@ void onProfileExecutePost(ModContext*, void* args, void*, void*) {
         {
             const bool scared = state->cowering ||
                                 (passer->mActionIdx == daNpcPasser_c::MODE_1 && passer->field_0xb1c == 1);
-            if (scared && !state->wasScared) callOut(passer, *state, kVoiceFear, 45);
+            if (scared && !state->wasScared) {
+                callOut(passer, *state, kVoiceFear, 45);
+                say(passer, *state, state->cowering ? psr_bubble::kScared : psr_bubble::kFlee);
+            }
             state->wasScared = scared;
         }
         // Off screen, with the ground under it not loaded (or a gap in it), a traveller fell
@@ -1550,44 +1624,75 @@ void chatTick(daNpcPasser_c* passer, PasserState& state, bool busy) {
                       !state.defending && !state.toSeat && state.casting == 0;
     if (!free) {
         state.chatFrames = 0;
+        state.pending = 0;
         if (state.mealFrames > 0) {
             state.mealFrames = 0;
             fighter_anim::setMeal(passer, 0);
         }
         return;
     }
-    // a bite to eat or something to drink (Telma's bar's ham, a bottle or a goblet), a few times round
+    // a bite to eat or something to drink, a few times round; then the need it was for is filled
     if (state.mealFrames > 0) {
-        if (--state.mealFrames == 0) fighter_anim::setMeal(passer, 0);
-        return;
-    }
-    if (state.chatFrames == 0 && cM_rndF(1.0f) < 1.0f / 600.0f) {   // about every 20 seconds
-        // food (by one end, or in the palm) or drink (a bottle, the goblet or the tankard); the dwarves
-        // only ever drink from the tankard
-        const bool dwarf = passer->m_type == 3 || passer->m_type == 11;
-        int kind;
-        if (cM_rndF(1.0f) < 0.55f) kind = cM_rndF(1.0f) < 0.6f ? 1 : 4;
-        else if (dwarf) kind = 5;
-        else { const f32 r = cM_rndF(1.0f); kind = r < 0.4f ? 2 : (r < 0.65f ? 3 : 5); }
-        kind = traveller_gear::pickMeal(passer, kind);   // the item decides the loop (old women: no tankard)
-        fighter_anim::setMeal(passer, kind);
-        state.mealFrames = kMealLoop * (2 + static_cast<int>(cM_rndF(2.0f)));   // two or three goes
+        if (--state.mealFrames == 0) {
+            fighter_anim::setMeal(passer, 0);
+            if (state.mealIsFood) state.hunger = std::fmin(1.0f, state.hunger + 0.75f);
+            else state.thirst = std::fmin(1.0f, state.thirst + 0.75f);
+            if (cM_rndF(1.0f) < 0.35f) say(passer, state, psr_bubble::kHappy);
+        }
         return;
     }
     if (state.chatFrames > 0) {
         if (--state.chatFrames == 0) {
+            state.social = 1.0f;
             if (auto* wait = static_cast<J3DAnmTransformKey*>(passer->getAnmP(kAnmSitWait, 0))) {
                 passer->setAnm(wait, 1.0f, 12.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
             }
+            if (cM_rndF(1.0f) < 0.2f) say(passer, state, psr_bubble::kLove);
         }
         return;
     }
-    if (cM_rndF(1.0f) < 1.0f / 450.0f) {   // about every 15 seconds
-        const u8 which = cM_rndF(1.0f) < 0.5f ? kAnmSitTalkA : kAnmSitTalkB;
-        if (auto* talk = static_cast<J3DAnmTransformKey*>(passer->getAnmP(which, 0))) {
-            passer->setAnm(talk, 1.0f, 12.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
-            state.chatFrames = kChatMin + static_cast<int>(cM_rndF(static_cast<f32>(kChatMax - kChatMin)));
+    // thought of something (the bubble is up): now do it
+    if (state.pending != 0) {
+        if (--state.pendingWait > 0) return;
+        const int what = state.pending;
+        state.pending = 0;
+        if (what == 3) {
+            const u8 which = cM_rndF(1.0f) < 0.5f ? kAnmSitTalkA : kAnmSitTalkB;
+            if (auto* talk = static_cast<J3DAnmTransformKey*>(passer->getAnmP(which, 0))) {
+                passer->setAnm(talk, 1.0f, 12.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
+                state.chatFrames = kChatMin + static_cast<int>(cM_rndF(static_cast<f32>(kChatMax - kChatMin)));
+            }
+            return;
         }
+        // food (by one end, or in the palm) or drink (a bottle, the goblet or the tankard); the dwarves
+        // only ever drink from the tankard, the old women never do
+        const bool dwarf = passer->m_type == 3 || passer->m_type == 11;
+        int kind;
+        if (what == 1) kind = cM_rndF(1.0f) < 0.6f ? 1 : 4;
+        else if (dwarf) kind = 5;
+        else { const f32 r = cM_rndF(1.0f); kind = r < 0.4f ? 2 : (r < 0.65f ? 3 : 5); }
+        kind = traveller_gear::pickMeal(passer, kind);   // the item decides the loop (old women: no tankard)
+        if (kind == 0) return;
+        state.mealIsFood = kind == 1 || kind == 4 || kind == 6;
+        fighter_anim::setMeal(passer, kind);
+        state.mealFrames = kMealLoop * (2 + static_cast<int>(cM_rndF(2.0f)));   // two or three goes
+        return;
+    }
+    // about once a second, look at what it needs most; the lower it is, the likelier it acts on it
+    if (cM_rndF(1.0f) >= 1.0f / 30.0f) return;
+    int what = 1;
+    f32 low = state.hunger;
+    if (state.thirst < low) { low = state.thirst; what = 2; }
+    if (state.social < low) { low = state.social; what = 3; }
+    if (low >= 0.5f || cM_rndF(1.0f) >= (0.5f - low) * 0.6f) return;
+    state.pending = what;
+    if (what == 3) {   // company: straight into the chat, the "..." over its head
+        state.pendingWait = 1;
+        say(passer, state, psr_bubble::kChat);
+    } else {           // food or drink: the thought first, then it reaches for something
+        state.pendingWait = 30;
+        say(passer, state, what == 1 ? psr_bubble::kHungry : psr_bubble::kThirsty);
+        travellers::noteCamp(passer, what == 1 ? "is hungry" : "is thirsty", nullptr);
     }
 }
 
@@ -1607,6 +1712,7 @@ void musicTick(daNpcPasser_c* passer, PasserState& state, bool busy) {
         if (strum == nullptr) return;
         if (!state.playing) {
             state.playing = true;
+            say(passer, state, psr_bubble::kMusic);
             traveller_gear::setPlaying(passer, true);
             travellers::noteCamp(passer, "picks up his guitar", nullptr);
         }
@@ -1917,6 +2023,7 @@ bool campGuard(daNpcPasser_c* passer, PasserState& state) {
             if (!state.defending) {
                 state.defending = true;
                 state.strikeTimer = 20;
+                say(passer, state, psr_bubble::kAttack);
                 travellers::noteCamp(passer, "gets up to fight", enemy);
             }
             passer->speedF = 0.0f;
@@ -2172,6 +2279,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         if (life > 0) fighter_anim::hit(passer, attacker->current.pos);   // the blow shows: a stagger
         state->voiceWait = 0;
         callOut(passer, *state, kVoiceYelp, 30);                           // and is heard
+        say(passer, *state, travellers::isFighter(passer) ? psr_bubble::kAngry : psr_bubble::kScared);
         if (byWolf) {
             // bitten: from now on it's like any other traveller with the wolf: runs from him, never fights
             fighter_anim::drop(passer);
@@ -2517,6 +2625,9 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     }
     if (psr_note::registerActor() != MOD_OK) {
         svc_log->info(mod_ctx, "music note actor unavailable; no notes over the music");
+    }
+    if (psr_bubble::registerActor() != MOD_OK) {
+        svc_log->info(mod_ctx, "bubble actor unavailable; no thought bubbles");
     }
     if (psr_soul::registerActor() != MOD_OK) {
         return mods::set_error(error, MOD_ERROR, "failed to register the soul actor");
