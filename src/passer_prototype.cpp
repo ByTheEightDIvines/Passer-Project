@@ -226,6 +226,7 @@ struct PasserState {
     bool toSeat = false;    // a camper walking back to its seat (only sits once it's there)
     bool playing = false;   // the bard, playing by the fire
     int songFrames = 0;     // a camper singing along: frames left (0 not singing)
+    int spellTick = 0;      // an old woman's spell building: frames (its glow pulses every few)
     int noteWait = 0;       // frames until the next music note floats off it        // a fighter getting its torch back after a fight: 1 walking to it, 2 picking it up
     int fetchFrames = 0;
     // needs (1 full, 0 empty): they drain, and a seated camper acts on the lowest (needTick, chatTick)
@@ -1305,6 +1306,9 @@ void callOut(daNpcPasser_c* passer, PasserState& state, int line, int wait);   /
 // (psr_cast_<body>); at the thrust it is frozen in Link's ice (freeze.cpp). Then she runs; a minute
 // before she can do it again.
 constexpr int kCastCooldown = 1800;
+// the spell's effects (psr_fx.jpc in PsrPack: the chest puff's glow and sparkles, recoloured icy blue,
+// and the ice shards Link's freeze breaks into)
+constexpr u16 kSpellGlow = 0x0110, kSpellSparks = 0x0111, kSpellBurst = 0x0112, kSpellShards = 0x8818;
 constexpr int kQuietToForget = 300;   // ten seconds with no monster near: the hits are forgotten
 constexpr f32 kCastReach = 1500.0f;
 void castTick(daNpcPasser_c* passer, PasserState& state) {
@@ -1346,18 +1350,28 @@ void castTick(daNpcPasser_c* passer, PasserState& state) {
         }
         return;
     }
-    if (!state.castFired && fighter_anim::castFrame(passer) >= fighter_anim::kCastFire) {
+    // the spell: an icy glow gathers at the top of her staff as she raises it...
+    const f32 castAt = fighter_anim::castFrame(passer);
+    Mtx lantern;
+    const bool haveTip = traveller_gear::lanternMtx(passer, lantern);
+    const cXyz tip = haveTip ? cXyz(lantern[0][3], lantern[1][3] + 23.0f, lantern[2][3]) : passer->eyePos;
+    if (!state.castFired && castAt >= 0.0f && ++state.spellTick % 3 == 0) {
+        const f32 k = 0.5f + std::fmin(1.0f, castAt / fighter_anim::kCastFire) * 0.9f;   // brighter as it builds
+        psr_freeze::effect(kSpellGlow, tip, passer->shape_angle.y, cXyz(k, k, k));
+    }
+    // ...and at the thrust it bursts: ice shards, glow and sparkles, and the monster freezes in Link's ice
+    if (!state.castFired && castAt >= fighter_anim::kCastFire) {
         state.castFired = true;
         state.castCooldown = kCastCooldown;
         state.hitsThisFight = 0;
-        Mtx lantern;
-        if (traveller_gear::lanternMtx(passer, lantern)) {   // a burst of frost off the lantern
-            cXyz at(lantern[0][3], lantern[1][3] + 23.0f, lantern[2][3]);
-            dComIfGp_particle_set(ID_ZI_J_COLHIT_ICE, &at, nullptr, nullptr);
-        }
+        const cXyz big(1.6f, 1.6f, 1.6f), one(1.0f, 1.0f, 1.0f);
+        psr_freeze::effect(kSpellBurst, tip, passer->shape_angle.y, big);
+        psr_freeze::effect(kSpellSparks, tip, passer->shape_angle.y, big);
+        psr_freeze::effect(kSpellShards, tip, passer->shape_angle.y, one);
         if (foe != nullptr && psr_freeze::freeze(foe)) {
             travellers::noteAct(passer, "froze a monster");
-            dComIfGp_particle_set(ID_ZI_J_COLHIT_ICE, &foe->eyePos, nullptr, nullptr);
+            psr_freeze::effect(kSpellSparks, foe->eyePos, foe->shape_angle.y, big);
+            psr_freeze::effect(kSpellShards, foe->eyePos, foe->shape_angle.y, one);
         }
     }
     if (fighter_anim::castDone(passer)) finish();

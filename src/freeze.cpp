@@ -173,8 +173,9 @@ void loadEffects() {
     if (g_pack != nullptr) return;
     const void* src = dComIfG_getObjectRes("PsrPack", "psr_fx.jpc");
     if (src == nullptr) return;
-    constexpr u32 size = 18112;   // psr_fx.jpc, exactly: Link's freeze (Snowpeak's pack), the chest puff (dungeons')
-                                  // and the death smoke (the monster puff's smoke, recoloured white)
+    constexpr u32 size = 19328;   // psr_fx.jpc, exactly: Link's freeze (Snowpeak's pack), the chest puff (dungeons'),
+                                  // the death smoke (the monster puff's smoke, recoloured grey) and the old
+                                  // women's spell (the chest puff's glow and sparkles, recoloured icy blue)
     if (std::memcmp(src, "JPAC2-10", 8) != 0) return;
     g_heap = mDoExt_createSolidHeapFromSystem(0x20000, 0x20);
     if (g_heap == nullptr) return;
