@@ -298,6 +298,10 @@ struct Layer {
     f32 locoFrame = 0.0f;
     f32 armW = 0.0f;                    // 0: free arm; 1: holding the light up
     J3DAnmTransformKey* hold = nullptr; // this body's hold
+    int mealKind = 0;                   // seated with food or drink: 1 eat (ham), 2 drink (bottle), 3 sip (goblet)
+    J3DAnmTransformKey* meal = nullptr; // this body's own eat/drink/sip loop
+    f32 mealFrame = 0.0f;
+    f32 mealW = 0.0f;
 };
 std::array<Layer, travellers::kSlots> g_layer{};
 constexpr f32 kLegFade = 1.0f / 6.0f;
@@ -443,12 +447,13 @@ void applyLayer(daNpcCd2_c* npc, J3DModel* model, int jnt) {
     const int slot = travellers::slotIndex(npc);
     if (slot < 0 || slot >= static_cast<int>(g_layer.size())) return;
     const Layer& L = g_layer[slot];
-    if (L.owner != fopAcM_GetID(npc) || (L.legW <= 0.001f && L.armW <= 0.001f)) return;
+    if (L.owner != fopAcM_GetID(npc) || (L.legW <= 0.001f && L.armW <= 0.001f && L.mealW <= 0.001f)) return;
     const Skel* k = skelFor(model->getModelData());
     if (k == nullptr || jnt >= k->n || k->parent[jnt] < 0) return;
     const u8 role = k->role[jnt];
     const bool leg = role == kRoleLeg && L.legW > 0.001f && L.loco != nullptr;
-    J3DAnmTransformKey* torch = role == kRoleArm && L.armW > 0.001f ? L.hold : nullptr;
+    const bool eating = role == kRoleArm && L.mealW > 0.001f && L.meal != nullptr;
+    J3DAnmTransformKey* torch = eating ? L.meal : (role == kRoleArm && L.armW > 0.001f ? L.hold : nullptr);
     if (!leg && torch == nullptr) return;
     Mtx P, Pinv, La, Lo, Lb, out;
     std::memcpy(P, model->getAnmMtx(k->parent[jnt]), sizeof(Mtx));
@@ -461,8 +466,8 @@ void applyLayer(daNpcCd2_c* npc, J3DModel* model, int jnt) {
         w = L.legW;
         t = {La[0][3], La[1][3], La[2][3]};      // its own bone lengths (the game never uses the animation's)
     } else {
-        animLocal(torch, 0.0f, jnt, Lo);         // fitted to this very body
-        w = L.armW;
+        animLocal(torch, eating ? L.mealFrame : 0.0f, jnt, Lo);   // fitted to this very body
+        w = eating ? L.mealW : L.armW;
         t = {La[0][3], La[1][3], La[2][3]};      // its own bone lengths
     }
     fromQuat(nlerp(toQuat(La), toQuat(Lo), w), t, Lb);
@@ -782,6 +787,34 @@ void layerTick(daNpcPasser_c* passer, bool carryLight) {
     const bool picking = cur != nullptr && (cur == bodyAnm(passer, "pickup") || cur == bodyAnm(passer, "cast"));
     const bool wantArm = carryLight && !forced && !sitting && !picking && L.hold != nullptr;
     L.armW = std::clamp(L.armW + (wantArm ? kArmFade : -kArmFade), 0.0f, 1.0f);
+
+    // food or drink, seated: the body's own eat/drink/sip loop on the same arm
+    static const char* const kMeal[] = {nullptr, "eat", "drink", "sip"};
+    L.meal = L.mealKind > 0 && L.mealKind <= 3 ? bodyAnm(passer, kMeal[L.mealKind]) : nullptr;
+    const bool wantMeal = L.meal != nullptr && sitting && !forced;
+    if (L.meal != nullptr) {
+        L.mealFrame = std::fmod(L.mealFrame + 1.0f, std::max(1.0f, static_cast<f32>(L.meal->getFrameMax())));
+    }
+    L.mealW = std::clamp(L.mealW + (wantMeal ? kArmFade : -kArmFade), 0.0f, 1.0f);
+}
+
+void setMeal(daNpcPasser_c* passer, int kind) {
+    const int slot = travellers::slotIndex(passer);
+    if (slot < 0 || slot >= static_cast<int>(g_layer.size())) return;
+    Layer& L = g_layer[slot];
+    if (L.owner != fopAcM_GetID(passer)) {
+        L = Layer{};
+        L.owner = fopAcM_GetID(passer);
+    }
+    if (kind != L.mealKind) L.mealFrame = 0.0f;
+    L.mealKind = kind;
+}
+
+int meal(const daNpcPasser_c* passer) {
+    const int slot = travellers::slotIndex(passer);
+    if (slot < 0 || slot >= static_cast<int>(g_layer.size())) return 0;
+    const Layer& L = g_layer[slot];
+    return L.owner == fopAcM_GetID(passer) && L.mealW > 0.05f ? L.mealKind : 0;
 }
 
 bool startCast(daNpcPasser_c* passer) {

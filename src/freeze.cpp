@@ -173,9 +173,10 @@ void loadEffects() {
     if (g_pack != nullptr) return;
     const void* src = dComIfG_getObjectRes("PsrPack", "psr_fx.jpc");
     if (src == nullptr) return;
-    constexpr u32 size = 15456;   // psr_fx.jpc, exactly: Link's freeze (Snowpeak's pack) and the chest puff (dungeons')
+    constexpr u32 size = 18112;   // psr_fx.jpc, exactly: Link's freeze (Snowpeak's pack), the chest puff (dungeons')
+                                  // and the death smoke (the monster puff's smoke, recoloured white)
     if (std::memcmp(src, "JPAC2-10", 8) != 0) return;
-    g_heap = mDoExt_createSolidHeapFromSystem(0x10000, 0x20);
+    g_heap = mDoExt_createSolidHeapFromSystem(0x20000, 0x20);
     if (g_heap == nullptr) return;
     void* copy = g_heap->alloc(size, 0x20);   // ours to keep: the effects point into it
     if (copy == nullptr) return;

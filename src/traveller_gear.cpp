@@ -125,6 +125,7 @@ struct Gear {
     JKRSolidHeap* extras = nullptr;   // the torch/lantern and staff live here: the actor's own heap has no room
     J3DModel* light = nullptr;    // its torch or lantern (copies of Rusl's torch and Link's lantern)
     J3DModel* staff = nullptr;    // the old women's hooked staff (their lantern hangs from it)
+    J3DModel* food[4] = {};       // [1] ham, [2] bottle, [3] goblet: Telma's bar's own, from its room
     J3DModel* guitar = nullptr;   // the bard's: the game's own j_guitar (the Castle Town band's)
     bool playing = false;
     bool torch = false;           // fighters: a torch; everyone else a lantern
@@ -200,6 +201,14 @@ bool torchSpot(int type, f32* x, f32* z) {
     return false;
 }
 bool isOldWoman(int type) { return type == 20 || type == 27; }
+// Item -> left hand, the same for every body (the eat/drink/sip loops are fitted to it): the ham by
+// its bone end with the meat up out of the fist, the bottle round its middle, the goblet by the stem.
+const Mtx kFoodGrip[4] = {
+    {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}},
+    {{1, 0, 0, 7.0f}, {0, -1, 0, 0}, {0, 0, -1, 0}},
+    {{1, 0, 0, 7.0f}, {0, 1, 0, -24.0f}, {0, 0, 1, 0}},
+    {{1, 0, 0, 7.0f}, {0, 1, 0, -7.0f}, {0, 0, 1, 0}},
+};
 constexpr int kBardType = 4;   // MAN_b, the tall hat: the bard
 const Vec kStaffHook = {2.0f, 148.5f, 25.6f};   // where the lantern's handle hangs on the crook
 
@@ -333,6 +342,9 @@ void onCreateHeapPost(ModContext*, void* args, void* retval, void*) {
         JKRHeap* before = mDoExt_setCurrentHeap(g->extras);
         g->light = make(g->torch ? "psr_torch.bmd" : "psr_lantern.bmd");
         g->staff = isOldWoman(passer->m_type) ? make("psr_staff.bmd") : nullptr;
+        g->food[1] = make("psr_ham.bmd");
+        g->food[2] = make("psr_bottle.bmd");
+        g->food[3] = make("psr_goblet.bmd");
         if (passer->m_type == kBardType) {   // the townsfolk's own object archive, already loaded
             if (auto* data = static_cast<J3DModelData*>(dComIfG_getObjectRes("object", "j_guitar.bmd"))) {
                 g->guitar = mDoExt_J3DModel__create(data, 0x80000, 0x11000084);
@@ -396,6 +408,13 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
         mDoExt_modelUpdateDL(m);
     };
     Mtx hand;
+    // eating or drinking on the stool: the item fixed in the left hand, as the loops were fitted
+    if (const int kind = fighter_anim::meal(passer); kind > 0 && g->food[kind] != nullptr &&
+                                                      fighter_anim::leftHandMtx(passer, hand)) {
+        mDoMtx_copy(hand, mDoMtx_stack_c::now);
+        mDoMtx_stack_c::concat(kFoodGrip[kind]);
+        drawModel(g->food[kind]);
+    }
     // at a camp the staff is put down, except while she casts with it
     const bool atFire = (g->sitting || travellers::campInfo(passer, nullptr, nullptr, nullptr)) &&
                         fighter_anim::castFrame(passer) < 0.0f;

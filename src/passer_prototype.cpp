@@ -125,6 +125,7 @@ constexpr f32 kChasedRadius = 3000.0f;
 constexpr f32 kOldWomanRunScale = 0.85f;
 // The body's own voice lines (what a townsperson says when you talk to them): 1 surprise, 2 fear, 3 hey.
 constexpr int kVoiceShout = 3, kVoiceYelp = 1, kVoiceFear = 2;
+constexpr u16 kDeathSmoke = 0x0108;   // in our own effect pack (psr_fx.jpc): the white death smoke
 constexpr f32 kFellThrough = 1500.0f;   // this far below its last footing it has fallen through the world
 constexpr f32 kTidyDistance = 6000.0f;   // off screen and this far from Link: the game may tidy it away
 constexpr int kSafeFramesToResume = 90;  // three seconds with nothing scary nearby
@@ -163,6 +164,7 @@ constexpr std::array kLanguages{
 
 struct PasserState {
     int chatFrames = 0;       // a seated camper talking: frames left
+    int mealFrames = 0;       // a seated camper eating or drinking: frames left
     bool wasScared = false;   // running or cowering last frame (to scream once as it starts)
     cXyz lastGround{};      // where it last stood on solid ground (to catch it falling through the world)
     bool hasGround = false;
@@ -1540,6 +1542,7 @@ void stopMusic(daNpcPasser_c* passer, PasserState& state) {
 // seated talk (15 sittalk_a, 16 sittalk_a_b) for a few seconds, then back to sitting quietly (14).
 constexpr u8 kAnmSitWait = 14, kAnmSitTalkA = 15, kAnmSitTalkB = 16;
 constexpr int kChatMin = 120, kChatMax = 300;   // 4-10 seconds of talk
+constexpr int kMealLoop = 120;                  // one go of the eat/drink loop: lap, mouth, lap
 void chatTick(daNpcPasser_c* passer, PasserState& state, bool busy) {
     const int slot = travellers::slotIndex(passer);
     const bool seated = traveller_gear::sitting(slot) && travellers::campInfo(passer, nullptr, nullptr, nullptr);
@@ -1547,6 +1550,22 @@ void chatTick(daNpcPasser_c* passer, PasserState& state, bool busy) {
                       !state.defending && !state.toSeat && state.casting == 0;
     if (!free) {
         state.chatFrames = 0;
+        if (state.mealFrames > 0) {
+            state.mealFrames = 0;
+            fighter_anim::setMeal(passer, 0);
+        }
+        return;
+    }
+    // a bite to eat or something to drink (Telma's bar's ham, a bottle or a goblet), a few times round
+    if (state.mealFrames > 0) {
+        if (--state.mealFrames == 0) fighter_anim::setMeal(passer, 0);
+        return;
+    }
+    if (state.chatFrames == 0 && cM_rndF(1.0f) < 1.0f / 600.0f) {   // about every 20 seconds
+        const f32 r = cM_rndF(1.0f);
+        const int kind = r < 0.4f ? 1 : (r < 0.7f ? 2 : 3);   // eat / bottle / goblet
+        fighter_anim::setMeal(passer, kind);
+        state.mealFrames = kMealLoop * (2 + static_cast<int>(cM_rndF(2.0f)));   // two or three goes
         return;
     }
     if (state.chatFrames > 0) {
@@ -2018,12 +2037,14 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         passer->speedF = 0.0f;
         passer->speed.set(0.0f, 0.0f, 0.0f);
         if ((state->deathLanded && state->deathLie >= kDeathLie) || state->deathFrame >= kDeathLimit) {
-            // Gone in a puff of smoke: the game's own smoke burst and "poof" (the disappear actor's
-            // plain style, the one a monster vanishes in; its smoke is always loaded), and the soul
-            // rises out of it.
+            // Gone in a puff of smoke: the game's monster puff, but only its smoke, recoloured a soft
+            // white (no black, no monster bits: it's a person, and the soul rises out of it), with
+            // the puff's own "poof".
             {
                 cXyz at(passer->current.pos.x, passer->current.pos.y + 40.0f, passer->current.pos.z);
-                fopAcM_createDisappear(passer, &at, 10, 0, 0xFF);   // size 1.0, plain smoke, no item
+                cXyz scale(1.3f, 1.3f, 1.3f);
+                psr_freeze::effect(kDeathSmoke, at, passer->shape_angle.y, scale);
+                mDoAud_seStart(JA_SE_CM_MONS_EXPLODE, &at, 0, dComIfGp_getReverb(fopAcM_GetRoomNo(passer)));
             }
             psr_soul::spawn(passer->current.pos, fopAcM_GetRoomNo(passer));
             travellers::onDeath(passer);
