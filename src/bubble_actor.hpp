@@ -6,8 +6,8 @@
 #include "JSystem/J3DGraphBase/J3DPacket.h"
 #include "helpers/gx_helper.h"
 
-// A thought or speech bubble over a traveller's head: one icon from psr_bubbles.bti (20 of them, a
-// 5 x 4 sheet in PsrPack.arc), drawn by the mod as a camera-facing sprite. It pops in with a little
+// A thought or speech bubble over a traveller's head: one icon from psr_bubbles.bti (22 of them, with their
+// bubbles and animation frames, in PsrPack.arc; see bubble_looks.inc), drawn by the mod as a camera-facing sprite. It pops in with a little
 // bounce, holds, and fades; the traveller moves it along with its head (psr_bubble::follow).
 #define PSR_BUBBLE_NAME "PsrBubl"
 
@@ -45,7 +45,7 @@ namespace psr_bubble {
 // The icons, in the sheet's order.
 enum Icon {
     kHappy, kAngry, kScared, kSad, kSurprised, kConfused, kLove, kSleepy, kAttack, kFlee,
-    kDefend, kHungry, kThirsty, kTired, kMusic, kChat, kCook, kTravel, kFire, kHeal, kCount
+    kDefend, kHungry, kThirsty, kTired, kMusic, kChat, kCook, kTravel, kFire, kHeal, kJoke, kLaugh, kCount
 };
 // A thought cloud (a need, about to be acted on) rather than a speech or burst bubble.
 bool isThought(int icon);

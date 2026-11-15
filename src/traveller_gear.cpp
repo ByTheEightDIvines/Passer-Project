@@ -218,13 +218,17 @@ const Vec kStaffHook = {2.0f, 148.5f, 25.6f};   // where the lantern's handle ha
 // and tips forward toward the monster. Out: the staff's matrix, and the lantern's (hanging upright).
 void staffMtx(daNpcPasser_c* passer, const Mtx hand, f32 grip, Mtx staffOut, Mtx lanternOut) {
     const f32 reach = fighter_anim::castReach(passer);
+    // held in the palm, not at the wrist (the hand joint sits at the wrist; the palm is along it)
+    const Vec palmLocal = {7.0f, 0.0f, 2.5f};
+    Vec palm;
+    MTXMultVec(hand, &palmLocal, &palm);
     if (reach > 0.0f) {
-        mDoMtx_stack_c::transS(hand[0][3], hand[1][3], hand[2][3]);
+        mDoMtx_stack_c::transS(palm.x, palm.y, palm.z);
         mDoMtx_stack_c::YrotM(passer->shape_angle.y);
         mDoMtx_stack_c::XrotM(static_cast<s16>(reach * 0x13E8));   // up to 28 degrees
         mDoMtx_stack_c::transM(0.0f, -grip, 0.0f);
     } else {
-        mDoMtx_stack_c::transS(hand[0][3], passer->current.pos.y, hand[2][3]);
+        mDoMtx_stack_c::transS(palm.x, passer->current.pos.y, palm.z);
         mDoMtx_stack_c::YrotM(passer->shape_angle.y);
     }
     mDoMtx_copy(mDoMtx_stack_c::now, staffOut);
@@ -478,6 +482,13 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
 }  // namespace
 
 namespace traveller_gear {
+
+void clearMeal(daNpcPasser_c* passer) {
+    Gear* g = travellerLook(passer) != nullptr ? gearFor(passer) : nullptr;
+    if (g == nullptr || g->owner != fopAcM_GetID(passer)) return;
+    g->mealItem = nullptr;
+    g->mealGrip = nullptr;
+}
 
 int pickMeal(daNpcPasser_c* passer, int kind) {
     Gear* g = travellerLook(passer) != nullptr ? gearFor(passer) : nullptr;

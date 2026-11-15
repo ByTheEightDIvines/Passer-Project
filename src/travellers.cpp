@@ -1752,4 +1752,13 @@ bool spawnerTick(fopAc_ac_c* spawner, bool firstTick) {
 bool pathLookupOpen() { return g_pathLookupOpen; }
 void setPathLookupOpen(bool open) { g_pathLookupOpen = open; }
 
+// The diary, for the other parts of the mod.
+void diagLine(const char* fmt, ...) {
+    if (g_diag == nullptr) return;
+    std::fprintf(g_diag, "%6d ", g_frame);
+    va_list ap; va_start(ap, fmt); std::vfprintf(g_diag, fmt, ap); va_end(ap);
+    std::fputc('\n', g_diag);
+    std::fflush(g_diag);
+}
+
 }  // namespace travellers

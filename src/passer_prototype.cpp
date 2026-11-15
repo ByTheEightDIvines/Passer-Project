@@ -233,6 +233,8 @@ struct PasserState {
     f32 thirst = 1.0f;
     f32 social = 1.0f;
     int pending = 0;        // an action thought of, waiting for its bubble: 1 eat, 2 drink, 3 chat
+    int laughIn = 0;        // someone at its fire told a joke: frames until it laughs (or doesn't get it)
+    int laughFrames = 0;    // laughing: frames left
     int pendingWait = 0;
     bool mealIsFood = false;
     // its bubble (bubble_actor): the one over its head, how much it matters, and per-icon rests
@@ -279,9 +281,9 @@ void bubbleTick(daNpcPasser_c* passer, PasserState& state) {
 // Full to empty in about two minutes of hunger, a minute and a half of thirst, a minute of company.
 void needTick(daNpcPasser_c* passer, PasserState& state) {
     if (state.hunger < 0.0f) {   // everyone arrives a little different
-        state.hunger = 0.55f + cM_rndF(0.45f);
-        state.thirst = 0.55f + cM_rndF(0.45f);
-        state.social = 0.4f + cM_rndF(0.6f);
+        state.hunger = 0.7f + cM_rndF(0.3f);
+        state.thirst = 0.7f + cM_rndF(0.3f);
+        state.social = 0.6f + cM_rndF(0.4f);
     }
     const int t = passer->m_type;
     f32 h = 1.0f, d = 1.0f, c = 1.0f;
@@ -289,9 +291,10 @@ void needTick(daNpcPasser_c* passer, PasserState& state) {
     if (travellers::isFighter(passer)) h = 1.3f;             // fighters: hungry work
     if (t == 20 || t == 27) { c = 1.3f; h = 0.8f; }          // the old women: love a chat, eat little
     if (traveller_gear::isBard(passer)) c = 0.7f;            // the bard: happy with his guitar
-    state.hunger = std::fmax(0.0f, state.hunger - h / 3600.0f);
-    state.thirst = std::fmax(0.0f, state.thirst - d / 2700.0f);
-    state.social = std::fmax(0.0f, state.social - c / 2000.0f);
+    // full to empty: about four minutes of hunger, three of thirst, two of company
+    state.hunger = std::fmax(0.0f, state.hunger - h / 7200.0f);
+    state.thirst = std::fmax(0.0f, state.thirst - d / 5400.0f);
+    state.social = std::fmax(0.0f, state.social - c / 3600.0f);
 }
 void blowTick(daNpcPasser_c* passer, PasserState& state);   // further down: the diary of blows
 // Fighters the wolf has bitten (by roster slot): for five minutes they're as scared of wolf Link as
@@ -1617,6 +1620,22 @@ void stopMusic(daNpcPasser_c* passer, PasserState& state) {
 constexpr u8 kAnmSitWait = 14, kAnmSitTalkA = 15, kAnmSitTalkB = 16;
 constexpr int kChatMin = 120, kChatMax = 300;   // 4-10 seconds of talk
 constexpr int kMealLoop = 150;                  // one go of the eat/drink loop: lap, mouth, lap
+constexpr int kVoiceLaugh = 4;     // the body's own laugh line
+constexpr int kMealLaugh = 7;      // the laugh loop rides the meal layer (no item in hand)
+constexpr int kLaughFrames = 90;   // three seconds of it
+// A joke at the fire: everyone else sitting round it laughs a moment later (or doesn't get it).
+void tellJoke(daNpcPasser_c* teller, PasserState& tellerState) {
+    cXyz fire;
+    if (!travellers::campInfo(teller, &fire, nullptr, nullptr)) return;
+    travellers::noteCamp(teller, "tells a joke", nullptr);
+    for (PasserState& other : g_states) {
+        if (&other == &tellerState || other.dead || other.actor == nullptr) continue;
+        if (fopAcM_SearchByID(other.id) != other.actor) continue;
+        cXyz theirs;
+        if (!travellers::campInfo(other.actor, &theirs, nullptr, nullptr) || theirs.absXZ(fire) > 50.0f) continue;
+        other.laughIn = 50 + static_cast<int>(cM_rndF(35.0f));   // the punchline lands, then each in turn
+    }
+}
 void chatTick(daNpcPasser_c* passer, PasserState& state, bool busy) {
     const int slot = travellers::slotIndex(passer);
     const bool seated = traveller_gear::sitting(slot) && travellers::campInfo(passer, nullptr, nullptr, nullptr);
@@ -1625,9 +1644,33 @@ void chatTick(daNpcPasser_c* passer, PasserState& state, bool busy) {
     if (!free) {
         state.chatFrames = 0;
         state.pending = 0;
+        state.laughIn = 0;
+        if (state.laughFrames > 0) {
+            state.laughFrames = 0;
+            fighter_anim::setMeal(passer, 0);
+        }
         if (state.mealFrames > 0) {
             state.mealFrames = 0;
             fighter_anim::setMeal(passer, 0);
+        }
+        return;
+    }
+    // laughing at a joke: head thrown back, slapping its knee (psr_laugh_<body>, on the meal layer)
+    if (state.laughFrames > 0) {
+        if (--state.laughFrames == 0) fighter_anim::setMeal(passer, 0);
+        return;
+    }
+    if (state.laughIn > 0 && --state.laughIn == 0 && state.mealFrames == 0 && state.chatFrames == 0) {
+        if (cM_rndF(1.0f) < 0.8f) {
+            say(passer, state, psr_bubble::kLaugh);
+            state.voiceWait = 0;
+            callOut(passer, state, kVoiceLaugh, 30);
+            traveller_gear::clearMeal(passer);
+            fighter_anim::setMeal(passer, kMealLaugh);
+            state.laughFrames = kLaughFrames;
+            state.social = std::fmin(1.0f, state.social + 0.3f);
+        } else {
+            say(passer, state, psr_bubble::kConfused);   // didn't get it
         }
         return;
     }
@@ -1656,12 +1699,13 @@ void chatTick(daNpcPasser_c* passer, PasserState& state, bool busy) {
         if (--state.pendingWait > 0) return;
         const int what = state.pending;
         state.pending = 0;
-        if (what == 3) {
+        if (what == 3 || what == 4) {
             const u8 which = cM_rndF(1.0f) < 0.5f ? kAnmSitTalkA : kAnmSitTalkB;
             if (auto* talk = static_cast<J3DAnmTransformKey*>(passer->getAnmP(which, 0))) {
                 passer->setAnm(talk, 1.0f, 12.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
                 state.chatFrames = kChatMin + static_cast<int>(cM_rndF(static_cast<f32>(kChatMax - kChatMin)));
             }
+            if (what == 4) tellJoke(passer, state);
             return;
         }
         // food (by one end, or in the palm) or drink (a bottle, the goblet or the tankard); the dwarves
@@ -1678,17 +1722,22 @@ void chatTick(daNpcPasser_c* passer, PasserState& state, bool busy) {
         state.mealFrames = kMealLoop * (2 + static_cast<int>(cM_rndF(2.0f)));   // two or three goes
         return;
     }
-    // about once a second, look at what it needs most; the lower it is, the likelier it acts on it
-    if (cM_rndF(1.0f) >= 1.0f / 30.0f) return;
+    // about once every two seconds, look at what it needs most; the lower it is, the likelier it acts
+    if (cM_rndF(1.0f) >= 1.0f / 60.0f) return;
     int what = 1;
     f32 low = state.hunger;
     if (state.thirst < low) { low = state.thirst; what = 2; }
     if (state.social < low) { low = state.social; what = 3; }
-    if (low >= 0.5f || cM_rndF(1.0f) >= (0.5f - low) * 0.6f) return;
+    if (low >= 0.45f || cM_rndF(1.0f) >= (0.45f - low) * 0.5f) return;
     state.pending = what;
-    if (what == 3) {   // company: straight into the chat, the "..." over its head
+    if (what == 3) {   // company: straight into a chat, or now and then a joke for the whole fire
         state.pendingWait = 1;
-        say(passer, state, psr_bubble::kChat);
+        if (cM_rndF(1.0f) < 0.3f) {
+            state.pending = 4;
+            say(passer, state, psr_bubble::kJoke);
+        } else {
+            say(passer, state, psr_bubble::kChat);
+        }
     } else {           // food or drink: the thought first, then it reaches for something
         state.pendingWait = 30;
         say(passer, state, what == 1 ? psr_bubble::kHungry : psr_bubble::kThirsty);
@@ -1758,7 +1807,7 @@ constexpr f32 kLimpSpeed = 0.6f;
 constexpr f32 kHurtFleeSpeed = 0.65f;       // fleeing on the last heart: this much of a full run
 constexpr s16 kGuardTurn = 0x300;           // turning on guard: about 4 degrees a frame, shuffling
 constexpr s16 kTurnShuffle = 0x800;         // more than ~11 degrees off: shuffle round to face it            // limping on the last heart, part of a walk
-constexpr int kStrikeEvery = 75;            // frames between swings (each swing is two blows)
+constexpr int kStrikeEvery = 40;            // frames between swings (each swing is two blows)
 constexpr u8 kStrikePower = 2;              // a sword hit (10 damage to an enemy: a Bokoblin takes 4)
 constexpr u8 kAnmIdle = 0, kAnmWalk = 2, kAnmRun = 4, kAnmCower = 0x26;
 
@@ -1907,6 +1956,7 @@ void sidestepTick(daNpcPasser_c* passer, PasserState& state, f32 speed) {
 // Their own voice (each townsfolk body has its own): a shout as they swing, a yelp when hit.
 void callOut(daNpcPasser_c* passer, PasserState& state, int line, int wait) {
     if (state.voiceWait > 0) return;
+    travellers::diagLine("voice   slot %d type %d line %d", travellers::slotIndex(passer), passer->m_type, line);
     passer->mCitizen.playVoice(line);
     state.voiceWait = wait;
 }
@@ -1937,7 +1987,7 @@ void fighterAnim(daNpcPasser_c* passer, PasserState& state) {
     if (state.talking) {
         want = Want::Calm;
     } else if (state.onGuard) {
-        want = state.defending && state.chasing ? Want::Chase : Want::Ready;
+        want = state.chasing ? Want::Chase : Want::Ready;
     } else if (!holdsGround(passer)) {
         // down to its last heart
         if (passer->mActionIdx == daNpcPasser_c::MODE_1) {
@@ -2023,7 +2073,7 @@ bool campGuard(daNpcPasser_c* passer, PasserState& state) {
             if (!state.defending) {
                 state.defending = true;
                 state.strikeTimer = 20;
-                say(passer, state, psr_bubble::kAttack);
+                say(passer, state, psr_bubble::kDefend);   // a monster at the fire: up to defend it
                 travellers::noteCamp(passer, "gets up to fight", enemy);
             }
             passer->speedF = 0.0f;
@@ -2197,6 +2247,10 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
             enemy = nearerFoe(passer->current.pos, enemy, wolfLinkNear(passer->current.pos, kThreatRadius));
         }
         state->vsWolf = enemy != nullptr && enemy == dComIfGp_getPlayer(0);
+        if (enemy == nullptr && state->chasing) {
+            state->chasing = false;
+            state->anim = 0xFF;
+        }
         if (enemy != nullptr) {
             state->foeLost = 0;
         } else if (state->standing && holdsGround(passer) && ++state->foeLost < kFoeLostFrames) {
@@ -2206,13 +2260,28 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         }
         if (enemy != nullptr) {
             state->onGuard = true;
-            passer->speedF = 0.0f;
-            const s16 toEnemy = cLib_targetAngleY(&passer->current.pos, &enemy->current.pos);
-            state->turning = std::abs(static_cast<s16>(toEnemy - passer->shape_angle.y)) > kTurnShuffle;
-            if (!fighter_anim::busy(passer)) {
-                cLib_addCalcAngleS2(&passer->current.angle.y, toEnemy, 4, fighter_anim::has(passer) ? kGuardTurn : 0x800);
+            // out of reach: charge at it (not at wolf Link: him it only squares up to)
+            const bool charge = !state->vsWolf && !fighter_anim::busy(passer) &&
+                                passer->current.pos.absXZ(enemy->current.pos) > kStrikeReach;
+            if (charge && !state->chasing) {
+                say(passer, *state, psr_bubble::kAttack);
+                travellers::noteAct(passer, "charges");
             }
-            passer->shape_angle.y = passer->current.angle.y;
+            if (!charge && state->chasing) state->anim = 0xFF;
+            state->chasing = charge;
+            if (charge) {
+                guardAnim(passer, *state, kAnmRun);
+                stepToward(passer, enemy->current.pos, Cd2_HIO_maxSpeed(passer->m_type) * 1.5f);
+                state->turning = false;
+            } else {
+                passer->speedF = 0.0f;
+                const s16 toEnemy = cLib_targetAngleY(&passer->current.pos, &enemy->current.pos);
+                state->turning = std::abs(static_cast<s16>(toEnemy - passer->shape_angle.y)) > kTurnShuffle;
+                if (!fighter_anim::busy(passer)) {
+                    cLib_addCalcAngleS2(&passer->current.angle.y, toEnemy, 4, fighter_anim::has(passer) ? kGuardTurn : 0x800);
+                }
+                passer->shape_angle.y = passer->current.angle.y;
+            }
             if (!state->standing) {
                 state->standing = true;
                 travellers::noteAct(passer, "standing its ground");

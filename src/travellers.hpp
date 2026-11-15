@@ -57,6 +57,8 @@ bool campSeatInUse(int campNode, int seat);   // someone is sitting on it right 
 // Put its resting (sitting) animation back next frame.
 void refreshIdle(const fopAc_ac_c* passer);
 void noteCamp(const fopAc_ac_c* passer, const char* what, const fopAc_ac_c* enemy);
+// A line in the diary (travellers_diag.log), printf-style.
+void diagLine(const char* fmt, ...);
 void noteStand(const fopAc_ac_c* passer, const fopAc_ac_c* enemy);
 void noteHunt(const fopAc_ac_c* enemy, const fopAc_ac_c* prey, bool start);
 void noteDelete(const daNpcPasser_c* passer);

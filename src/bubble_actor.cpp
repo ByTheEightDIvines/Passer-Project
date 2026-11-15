@@ -14,10 +14,45 @@
 #include "mods/service.hpp"
 
 namespace {
+#include "bubble_looks.inc"
+}
+
+namespace {
 constexpr const char* kArc = "PsrPack";
 constexpr const char* kTex = "psr_bubbles.bti";
-constexpr int kCols = 5;
-constexpr f32 kCell = 96.0f, kTexW = 512.0f, kTexH = 384.0f;   // icons are 96 px cells in a 512 x 384 sheet
+constexpr f32 kCell = 96.0f;     // the sheet's cells (bubble_looks.inc has its size)
+constexpr int kLoop = 48;        // frames round each icon's little animation
+constexpr f32 kPi = 3.14159265f;
+constexpr f32 kAnchorV = 450.0f / 1024.0f;   // where the icon sits in its cell (from the top)
+struct Move { f32 dx, dy, rot, sx, sy; };     // in cell pixels of a 1024 cell (y down), degrees
+Move motion(int m, f32 t) {
+    const f32 s = std::sin(2.0f * kPi * t), s2 = std::sin(4.0f * kPi * t);
+    switch (m) {
+    case kM_bob: return {0, -22.0f * std::fabs(s), 0, 1, 1};
+    case kM_shake: return {18.0f * std::sin(8.0f * kPi * t), 0, 0, 1, 1};
+    case kM_tremble: return {9.0f * std::sin(12.0f * kPi * t), 5.0f * std::sin(10.0f * kPi * t), 0, 1, 1};
+    case kM_droop: return {0, 14.0f * s, 0, 1, 1};
+    case kM_pop: { const f32 k = 1.0f + 0.07f * std::fmax(0.0f, s); return {0, 0, 0, k, k}; }
+    case kM_rock: return {0, 0, 9.0f * s, 1, 1};
+    case kM_beat: { const f32 k = 1.0f + (s > 0.0f ? 0.09f * std::fmax(0.0f, s2) : 0.0f); return {0, 0, 0, k, k}; }
+    case kM_float: return {0, -18.0f * s, 0, 1, 1};
+    case kM_swing: return {0, 0, 14.0f * s, 1, 1};
+    case kM_dash: return {16.0f * s2, 0, 0, 1, 1};
+    case kM_wobble: return {0, 0, 5.0f * s, 1, 1};
+    case kM_step: return {0, -16.0f * std::fabs(s2), 0, 1, 1};
+    case kM_flicker: return {0, 0, 0, 1.0f - 0.04f * s2, 1.0f + 0.07f * s2};
+    case kM_framesbob: return {0, -16.0f * std::fabs(s2), 4.0f * s, 1, 1};
+    case kM_laughrock: return {0, -8.0f * std::fabs(s2), 9.0f * s, 1, 1};
+    default: return {0, 0, 0, 1, 1};
+    }
+}
+// which of an icon's frames shows at loop time t
+int frameAt(int icon, int frames, f32 t) {
+    if (frames <= 1) return 0;
+    if (frames == 3) { static const u8 kTalk[4] = {0, 1, 2, 1}; return kTalk[static_cast<int>(t * 4.0f) & 3]; }  // the chatter's jaw
+    if (frames == 6) return static_cast<int>(t * 12.0f) % 6;                                                       // the laugh
+    return static_cast<int>(t * 4.0f) % frames;                                                                   // the anger mark
+}
 constexpr int kPop = 8;          // frames to pop in
 constexpr int kFade = 14;        // frames to fade out
 constexpr f32 kSize = 46.0f;     // world units across
@@ -36,7 +71,7 @@ cPhs_Step psrBubble_c::create() {
         mTexReady = true;
     }
     mIcon = static_cast<int>(fopAcM_GetParam(this) & 0xFF) % psr_bubble::kCount;
-    mLife = psr_bubble::isThought(mIcon) ? 90 : 70;
+    mLife = psr_bubble::isThought(mIcon) ? 105 : 90;
     mFrame = 0;
     mDoMtx_stack_c::transS(current.pos.x, current.pos.y, current.pos.z);
     cMtx_copy(mDoMtx_stack_c::get(), mMtx);
@@ -118,20 +153,42 @@ void psrBubblePacket_c::draw() {
 
     const f32 hs = kSize * 0.5f * scale;
     const u8 al = static_cast<u8>(std::fmin(255.0f, alpha * 255.0f));
-    const int cx = s->mIcon % kCols, cy = s->mIcon / kCols;
-    const f32 u0 = cx * kCell / kTexW, u1 = (cx + 1) * kCell / kTexW;
-    const f32 v0 = cy * kCell / kTexH, v1 = (cy + 1) * kCell / kTexH;
-    auto corner = [&](f32 x, f32 y, f32 tu, f32 tv) {
+    const IconLook& look = kLooks[s->mIcon];
+    auto cellUV = [](int cell, f32* u0, f32* v0, f32* u1, f32* v1) {
+        const int cx = cell % kSheetCols, cy = cell / kSheetCols;
+        *u0 = cx * kCell / kSheetW; *u1 = (cx + 1) * kCell / kSheetW;
+        *v0 = cy * kCell / kSheetH; *v1 = (cy + 1) * kCell / kSheetH;
+    };
+    auto vtx = [&](f32 x, f32 y, f32 tu, f32 tv) {
         GXPosition3f32(view.x + x, view.y + y, view.z);
         GXColor4u8(255, 255, 255, al);
         GXTexCoord2f32(tu, tv);
     };
-    // the bubble's tail points down at the head, so it sits above with its bottom edge at the anchor
+    f32 u0, v0, u1, v1;
+    // the bubble: its tail points down at the head, so it sits above with its bottom edge at the anchor
+    cellUV(look.bubble, &u0, &v0, &u1, &v1);
     GXBegin(GX_QUADS, GX_VTXFMT0, 4);
-    corner(-hs, 2.0f * hs, u0, v0);
-    corner(hs, 2.0f * hs, u1, v0);
-    corner(hs, 0.0f, u1, v1);
-    corner(-hs, 0.0f, u0, v1);
+    vtx(-hs, 2.0f * hs, u0, v0);
+    vtx(hs, 2.0f * hs, u1, v0);
+    vtx(hs, 0.0f, u1, v1);
+    vtx(-hs, 0.0f, u0, v1);
+    GXEnd();
+    // the icon on top, moving inside it (and flipping frames, for the talker, the laugh, the anger mark)
+    const f32 t = static_cast<f32>(f % kLoop) / kLoop;
+    const Move mv = motion(look.motion, t);
+    cellUV(look.cell + frameAt(s->mIcon, look.frames, t), &u0, &v0, &u1, &v1);
+    const f32 k = 2.0f * hs / 1024.0f;                       // cell pixels to world units
+    const f32 cx0 = mv.dx * k, cy0 = (1.0f - kAnchorV) * 2.0f * hs - mv.dy * k;
+    const f32 a = -mv.rot * kPi / 180.0f, ca = std::cos(a), sa = std::sin(a);
+    auto ivtx = [&](f32 cu, f32 cv, f32 tu, f32 tv) {
+        const f32 px = (cu - 0.5f) * 2.0f * hs * mv.sx, py = (kAnchorV - cv) * 2.0f * hs * mv.sy;
+        vtx(cx0 + px * ca - py * sa, cy0 + px * sa + py * ca, tu, tv);
+    };
+    GXBegin(GX_QUADS, GX_VTXFMT0, 4);
+    ivtx(0.0f, 0.0f, u0, v0);
+    ivtx(1.0f, 0.0f, u1, v0);
+    ivtx(1.0f, 1.0f, u1, v1);
+    ivtx(0.0f, 1.0f, u0, v1);
     GXEnd();
     J3DShape::resetVcdVatCache();
 }

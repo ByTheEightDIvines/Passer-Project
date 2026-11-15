@@ -10,6 +10,8 @@ namespace traveller_gear {
 // Picks this meal's item and returns the loop to play (1 eat, 2 drink, 3 sip, 4 nibble, 5 quaff,
 // 6 eat off the side), or 0 if there is nothing to hold.
 int pickMeal(daNpcPasser_c* passer, int kind);
+// Nothing in hand (for a laugh, which rides the meal layer).
+void clearMeal(daNpcPasser_c* passer);
 bool install();
 // Sit this traveller down on its log at a camp fire (true if it did), or note it got up.
 bool sit(daNpcPasser_c* passer, bool on);
