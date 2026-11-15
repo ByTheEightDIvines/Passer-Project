@@ -2054,7 +2054,9 @@ bool campGuard(daNpcPasser_c* passer, PasserState& state) {
     const bool fighter = travellers::isFighter(passer);
     const f32 guardRadius = state.defending ? kCampLeashRadius : kCampGuardRadius;
     auto* enemy = nearestEnemyAt(center, guardRadius, fighter ? kReachAbove : 1.0e9f);
-    if (fighter && !wolfShy(passer)) enemy = nearerFoe(center, enemy, wolfLinkNear(center, guardRadius));
+    // the wolf at the fire: the fighters go for him; everyone else cowers as from any monster
+    enemy = nearerFoe(center, enemy, wolfLinkNear(center, guardRadius));
+    if (fighter && wolfShy(passer) && enemy == dComIfGp_getPlayer(0)) enemy = nullptr;
     state.vsWolf = enemy != nullptr && enemy == dComIfGp_getPlayer(0);
 
     if (fighter && !holdsGround(passer)) {
@@ -2406,9 +2408,12 @@ bool holdsGround(const daNpcPasser_c* passer) {
 
 void onFearCheckPost(ModContext*, void* args, void* retval, void*) {
     auto* passer = static_cast<daNpcPasser_c*>(mods::arg<daNpcCd2_c*>(args, 0));
-    if (retval != nullptr && isPrototypePasser(passer) && wolfShy(passer) &&
+    // wolf Link is a monster to anyone who won't fight him (everyone but a fighter, and a fighter
+    // he has bitten): they run from him like from any monster
+    if (retval != nullptr && isPrototypePasser(passer) && (!travellers::isFighter(passer) || wolfShy(passer)) &&
         wolfLinkNear(passer->current.pos, kThreatRadius) != nullptr) {
-        return;   // bitten once: afraid of the wolf like any non-fighter (the game's own fear decides)
+        *static_cast<bool*>(retval) = true;
+        return;
     }
     if (retval != nullptr && isPrototypePasser(passer) && holdsGround(passer)) {
         *static_cast<bool*>(retval) = false;

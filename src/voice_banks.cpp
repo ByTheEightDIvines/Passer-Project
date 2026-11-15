@@ -7,6 +7,8 @@
 #include "d/actor/d_a_npc_passer.h"
 #include "mods/service.hpp"
 #include "mods/svc/audio_res.h"
+#include "mods/svc/hook.hpp"
+#include "JSystem/JAudio2/JASBasicWaveBank.h"
 #include "travellers.hpp"
 
 IMPORT_SERVICE(AudioResService, svc_audio_res);
@@ -14,6 +16,27 @@ IMPORT_SERVICE(AudioResService, svc_audio_res);
 namespace {
 #include "voice_table.inc"
 int g_registered = 0;
+int g_rescued = 0;
+
+bool isOurs(u32 wave) {
+    for (u16 w : kVoiceWaves) if (w == wave) return true;
+    return false;
+}
+
+// The engine looks up a clip's slot before it checks for a mod's replacement, and the slot only
+// exists while the clip's own bank (Castle Town's) is loaded: out in the field the lookup failed
+// and our registered clip was never reached. For our voice clips, hand back the slot regardless;
+// the engine then finds our clip (always loaded) and plays that.
+DEFINE_HOOK(&JASBasicWaveBank::getWaveHandle, WaveHandleLookup);
+void onWaveHandlePost(ModContext*, void* args, void* retval, void*) {
+    auto** out = static_cast<JASWaveHandle**>(retval);
+    auto* bank = mods::arg<const JASBasicWaveBank*>(args, 0);
+    const u32 no = mods::arg<u32>(args, 1);
+    if (out == nullptr || *out != nullptr || bank == nullptr || bank->bankId != 0) return;
+    if (no >= bank->mHandleCount || bank->mWaveTable == nullptr || !isOurs(no)) return;
+    *out = bank->mWaveTable + no;
+    ++g_rescued;
+}
 }  // namespace
 
 namespace voice_banks {
@@ -23,6 +46,7 @@ namespace voice_banks {
 // travellers' voices play anywhere, with nothing loaded per area.
 bool install() {
     if (svc_audio_res == nullptr) return false;
+    if (mods::hook::add_post<WaveHandleLookup>(onWaveHandlePost) != MOD_OK) return false;
     for (u16 w : kVoiceWaves) {
         char path[48];
         std::snprintf(path, sizeof(path), "res/voices/w%04u.wav", static_cast<unsigned>(w));
@@ -35,10 +59,15 @@ bool install() {
 
 void tick() {
     static bool logged = false;
+    static int lastRescued = 0;
     if (!logged) {
         logged = true;
         travellers::diagLine("voice   %d of %d clips registered", g_registered,
                              static_cast<int>(sizeof(kVoiceWaves) / sizeof(kVoiceWaves[0])));
+    }
+    if (g_rescued != lastRescued) {   // our clips played with their bank not loaded (diary, for checking)
+        travellers::diagLine("voice   clip lookups answered by the mod: %d", g_rescued);
+        lastRescued = g_rescued;
     }
 }
 
