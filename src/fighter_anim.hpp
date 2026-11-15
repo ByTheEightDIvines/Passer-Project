@@ -63,7 +63,8 @@ bool hitting(const daNpcPasser_c* passer);
 // traveller's own walk or run instead, so it never slides along in a standing pose. carryLight: the
 // left arm holds a torch or lantern up (whatever the rest of the body is doing).
 void layerTick(daNpcPasser_c* passer, bool carryLight);
-// Seated with food or drink (Telma's bar's ham, bottle and goblet): 1 eat, 2 drink, 3 sip; 0 stops.
+// Seated with food or drink: 1 eat (held by one end), 2 drink (bottle), 3 sip (goblet), 4 nibble (in the
+// palm), 5 quaff (tankard); 0 stops.
 // The body's own loop plays on the left arm while it sits.
 void setMeal(daNpcPasser_c* passer, int kind);
 // What it has in hand right now (0 nothing; the arm is at least partly up with it).

@@ -790,8 +790,8 @@ void layerTick(daNpcPasser_c* passer, bool carryLight) {
     L.armW = std::clamp(L.armW + (wantArm ? kArmFade : -kArmFade), 0.0f, 1.0f);
 
     // food or drink, seated: the body's own eat/drink/sip loop on the same arm
-    static const char* const kMeal[] = {nullptr, "eat", "drink", "sip"};
-    L.meal = L.mealKind > 0 && L.mealKind <= 3 ? bodyAnm(passer, kMeal[L.mealKind]) : nullptr;
+    static const char* const kMeal[] = {nullptr, "eat", "drink", "sip", "nibble", "quaff"};
+    L.meal = L.mealKind > 0 && L.mealKind <= 5 ? bodyAnm(passer, kMeal[L.mealKind]) : nullptr;
     const bool wantMeal = L.meal != nullptr && sitting && !forced;
     if (L.meal != nullptr) {
         L.mealFrame = std::fmod(L.mealFrame + 1.0f, std::max(1.0f, static_cast<f32>(L.meal->getFrameMax())));

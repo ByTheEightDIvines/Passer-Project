@@ -1562,8 +1562,13 @@ void chatTick(daNpcPasser_c* passer, PasserState& state, bool busy) {
         return;
     }
     if (state.chatFrames == 0 && cM_rndF(1.0f) < 1.0f / 600.0f) {   // about every 20 seconds
-        const f32 r = cM_rndF(1.0f);
-        const int kind = r < 0.4f ? 1 : (r < 0.7f ? 2 : 3);   // eat / bottle / goblet
+        // food (by one end, or in the palm) or drink (a bottle, the goblet or the tankard); the dwarves
+        // only ever drink from the tankard
+        const bool dwarf = passer->m_type == 3 || passer->m_type == 11;
+        int kind;
+        if (cM_rndF(1.0f) < 0.55f) kind = cM_rndF(1.0f) < 0.6f ? 1 : 4;
+        else if (dwarf) kind = 5;
+        else { const f32 r = cM_rndF(1.0f); kind = r < 0.4f ? 2 : (r < 0.65f ? 3 : 5); }
         fighter_anim::setMeal(passer, kind);
         traveller_gear::pickMeal(passer, kind);
         state.mealFrames = kMealLoop * (2 + static_cast<int>(cM_rndF(2.0f)));   // two or three goes

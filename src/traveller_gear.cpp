@@ -127,10 +127,12 @@ struct Gear {
     J3DModel* light = nullptr;    // its torch or lantern (copies of Rusl's torch and Link's lantern)
     J3DModel* staff = nullptr;    // the old women's hooked staff (their lantern hangs from it)
     // Food and drink (Castle Town's own, cut from its rooms): a ham or a loaf (Telma's bar, the bakery
-    // stall), a bottle (Telma's, a shop's), a goblet (Telma's). One of each kind is picked per meal.
-    J3DModel* foods[3] = {};
-    J3DModel* drinks[2] = {};
-    J3DModel* goblet = nullptr;
+    // One of each kind is picked per meal (see kFoodGrip for how each kind sits in the hand).
+    J3DModel* eats[6] = {};       // held by one end: salmon kebab, veggie kebab, carrot, bread, meat, corn
+    J3DModel* nibbles[4] = {};    // in the palm: apple, baked potato, pastry, cheese wedge
+    J3DModel* drinks[2] = {};     // Telma's brown and green bottles
+    J3DModel* goblet = nullptr;   // Telma's
+    J3DModel* tankard = nullptr;  // ours, from the Castle Town stein's wood and iron
     J3DModel* mealItem = nullptr;   // in hand for this meal
     J3DModel* guitar = nullptr;   // the bard's: the game's own j_guitar (the Castle Town band's)
     bool playing = false;
@@ -207,14 +209,17 @@ bool torchSpot(int type, f32* x, f32* z) {
     return false;
 }
 bool isOldWoman(int type) { return type == 20 || type == 27; }
-// Item -> left hand, the same for every body (the eat/drink/sip loops are fitted to it). Every food is
-// the same length (26) held by one end, sticking up out of the fist; every bottle the same height (40)
-// held round its middle; the goblet by its stem.
-const Mtx kFoodGrip[4] = {
+// Item -> left hand, by meal kind (the per-body loops are fitted to exactly these):
+//   1 eat: held by one end, the food sticking up out of the fist (every one 26 long, the bite 21 out)
+//   2 drink: a bottle round its middle (every bottle 40 tall)   3 sip: the goblet by its stem
+//   4 nibble: cupped in the palm                                 5 quaff: the tankard by its handle
+const Mtx kFoodGrip[6] = {
     {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}},
     {{1, 0, 0, 7.0f}, {0, -1, 0, 0}, {0, 0, -1, 0}},
     {{1, 0, 0, 7.0f}, {0, 1, 0, -18.0f}, {0, 0, 1, 0}},
     {{1, 0, 0, 7.0f}, {0, 1, 0, -7.0f}, {0, 0, 1, 0}},
+    {{1, 0, 0, 7.0f}, {0, 1, 0, 2.0f}, {0, 0, 1, 0}},
+    {{1, 0, 0, 7.0f}, {0, 1, 0, -9.0f}, {0, 0, 1, 10.3f}},
 };
 constexpr int kBardType = 4;   // MAN_b, the tall hat: the bard
 const Vec kStaffHook = {2.0f, 148.5f, 25.6f};   // where the lantern's handle hangs on the crook
@@ -349,12 +354,16 @@ void onCreateHeapPost(ModContext*, void* args, void* retval, void*) {
         JKRHeap* before = mDoExt_setCurrentHeap(g->extras);
         g->light = make(g->torch ? "psr_torch.bmd" : "psr_lantern.bmd");
         g->staff = isOldWoman(passer->m_type) ? make("psr_staff.bmd") : nullptr;
-        g->foods[0] = make("psr_food_ham.bmd");
-        g->foods[1] = make("psr_food_loaf.bmd");
-        g->foods[2] = make("psr_food_long.bmd");
+        static const char* const kEats[6] = {"psr_food_kebab.bmd", "psr_food_veggie.bmd", "psr_food_carrot.bmd",
+                                             "psr_food_bread.bmd", "psr_food_meat.bmd", "psr_food_corn.bmd"};
+        static const char* const kNibbles[4] = {"psr_nib_apple.bmd", "psr_nib_potato.bmd", "psr_nib_pastry.bmd",
+                                                "psr_nib_cheese.bmd"};
+        for (int i = 0; i < 6; ++i) g->eats[i] = make(kEats[i]);
+        for (int i = 0; i < 4; ++i) g->nibbles[i] = make(kNibbles[i]);
         g->drinks[0] = make("psr_drink_brown.bmd");
-        g->drinks[1] = make("psr_drink_purple.bmd");
+        g->drinks[1] = make("psr_drink_green.bmd");
         g->goblet = make("psr_goblet.bmd");
+        g->tankard = make("psr_cup_tankard.bmd");
         g->mealItem = nullptr;
         if (passer->m_type == kBardType) {   // the townsfolk's own object archive, already loaded
             if (auto* data = static_cast<J3DModelData*>(dComIfG_getObjectRes("object", "j_guitar.bmd"))) {
@@ -483,9 +492,12 @@ namespace traveller_gear {
 void pickMeal(daNpcPasser_c* passer, int kind) {
     Gear* g = travellerLook(passer) != nullptr ? gearFor(passer) : nullptr;
     if (g == nullptr || g->owner != fopAcM_GetID(passer)) return;
-    if (kind == 1) g->mealItem = g->foods[static_cast<int>(cM_rndF(2.999f))];
-    else if (kind == 2) g->mealItem = g->drinks[static_cast<int>(cM_rndF(1.999f))];
+    auto pick = [](J3DModel* const* from, int n) { return from[std::min(n - 1, static_cast<int>(cM_rndF(static_cast<f32>(n))))]; };
+    if (kind == 1) g->mealItem = pick(g->eats, 6);
+    else if (kind == 2) g->mealItem = pick(g->drinks, 2);
     else if (kind == 3) g->mealItem = g->goblet;
+    else if (kind == 4) g->mealItem = pick(g->nibbles, 4);
+    else if (kind == 5) g->mealItem = g->tankard;
     else g->mealItem = nullptr;
 }
 
