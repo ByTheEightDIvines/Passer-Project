@@ -310,7 +310,7 @@ constexpr f32 kMovingSpeed = 0.9f;      // faster than this (smoothed) counts as
 
 // Joint roles per skeleton (men 19, women 21 joints), found by name: parents and which are legs
 // and which the light arm.
-enum : u8 { kRoleNone, kRoleLeg, kRoleArm };
+enum : u8 { kRoleNone, kRoleLeg, kRoleArm, kRoleHead };   // (the head only follows the eat/drink loops)
 struct Skel {
     const J3DModelData* data = nullptr;
     int n = 0;
@@ -362,6 +362,7 @@ const Skel* skelFor(J3DModelData* data) {
             if (nm == nullptr) continue;
             for (const char* l : kLegs) if (std::strcmp(nm, l) == 0) k.role[i] = kRoleLeg;
             for (const char* a : kArm) if (std::strcmp(nm, a) == 0) k.role[i] = kRoleArm;
+            if (std::strcmp(nm, "neck") == 0 || std::strcmp(nm, "head") == 0) k.role[i] = kRoleHead;
         }
         return &k;
     }
@@ -452,7 +453,7 @@ void applyLayer(daNpcCd2_c* npc, J3DModel* model, int jnt) {
     if (k == nullptr || jnt >= k->n || k->parent[jnt] < 0) return;
     const u8 role = k->role[jnt];
     const bool leg = role == kRoleLeg && L.legW > 0.001f && L.loco != nullptr;
-    const bool eating = role == kRoleArm && L.mealW > 0.001f && L.meal != nullptr;
+    const bool eating = (role == kRoleArm || role == kRoleHead) && L.mealW > 0.001f && L.meal != nullptr;
     J3DAnmTransformKey* torch = eating ? L.meal : (role == kRoleArm && L.armW > 0.001f ? L.hold : nullptr);
     if (!leg && torch == nullptr) return;
     Mtx P, Pinv, La, Lo, Lb, out;

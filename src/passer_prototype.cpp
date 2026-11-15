@@ -1542,7 +1542,7 @@ void stopMusic(daNpcPasser_c* passer, PasserState& state) {
 // seated talk (15 sittalk_a, 16 sittalk_a_b) for a few seconds, then back to sitting quietly (14).
 constexpr u8 kAnmSitWait = 14, kAnmSitTalkA = 15, kAnmSitTalkB = 16;
 constexpr int kChatMin = 120, kChatMax = 300;   // 4-10 seconds of talk
-constexpr int kMealLoop = 120;                  // one go of the eat/drink loop: lap, mouth, lap
+constexpr int kMealLoop = 150;                  // one go of the eat/drink loop: lap, mouth, lap
 void chatTick(daNpcPasser_c* passer, PasserState& state, bool busy) {
     const int slot = travellers::slotIndex(passer);
     const bool seated = traveller_gear::sitting(slot) && travellers::campInfo(passer, nullptr, nullptr, nullptr);
@@ -1565,6 +1565,7 @@ void chatTick(daNpcPasser_c* passer, PasserState& state, bool busy) {
         const f32 r = cM_rndF(1.0f);
         const int kind = r < 0.4f ? 1 : (r < 0.7f ? 2 : 3);   // eat / bottle / goblet
         fighter_anim::setMeal(passer, kind);
+        traveller_gear::pickMeal(passer, kind);
         state.mealFrames = kMealLoop * (2 + static_cast<int>(cM_rndF(2.0f)));   // two or three goes
         return;
     }

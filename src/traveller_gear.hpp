@@ -5,6 +5,8 @@ class cXyz;
 #include "global.h"
 
 namespace traveller_gear {
+// The food or drink it takes out for a meal (1 food, 2 bottle, 3 goblet; 0 puts it away): one at random.
+void pickMeal(daNpcPasser_c* passer, int kind);
 bool install();
 // Sit this traveller down on its log at a camp fire (true if it did), or note it got up.
 bool sit(daNpcPasser_c* passer, bool on);

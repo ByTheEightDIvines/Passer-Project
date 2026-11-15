@@ -16,6 +16,7 @@
 #include "d/actor/d_a_npc_passer.h"
 #include "d/d_com_inf_game.h"
 #include "d/d_kankyo.h"
+#include "SSystem/SComponent/c_math.h"
 #include "d/d_particle_name.h"
 #include "f_op/f_op_actor_mng.h"
 #include "m_Do/m_Do_ext.h"
@@ -125,7 +126,12 @@ struct Gear {
     JKRSolidHeap* extras = nullptr;   // the torch/lantern and staff live here: the actor's own heap has no room
     J3DModel* light = nullptr;    // its torch or lantern (copies of Rusl's torch and Link's lantern)
     J3DModel* staff = nullptr;    // the old women's hooked staff (their lantern hangs from it)
-    J3DModel* food[4] = {};       // [1] ham, [2] bottle, [3] goblet: Telma's bar's own, from its room
+    // Food and drink (Castle Town's own, cut from its rooms): a ham or a loaf (Telma's bar, the bakery
+    // stall), a bottle (Telma's, a shop's), a goblet (Telma's). One of each kind is picked per meal.
+    J3DModel* foods[3] = {};
+    J3DModel* drinks[2] = {};
+    J3DModel* goblet = nullptr;
+    J3DModel* mealItem = nullptr;   // in hand for this meal
     J3DModel* guitar = nullptr;   // the bard's: the game's own j_guitar (the Castle Town band's)
     bool playing = false;
     bool torch = false;           // fighters: a torch; everyone else a lantern
@@ -201,12 +207,13 @@ bool torchSpot(int type, f32* x, f32* z) {
     return false;
 }
 bool isOldWoman(int type) { return type == 20 || type == 27; }
-// Item -> left hand, the same for every body (the eat/drink/sip loops are fitted to it): the ham by
-// its bone end with the meat up out of the fist, the bottle round its middle, the goblet by the stem.
+// Item -> left hand, the same for every body (the eat/drink/sip loops are fitted to it). Every food is
+// the same length (26) held by one end, sticking up out of the fist; every bottle the same height (40)
+// held round its middle; the goblet by its stem.
 const Mtx kFoodGrip[4] = {
     {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}},
     {{1, 0, 0, 7.0f}, {0, -1, 0, 0}, {0, 0, -1, 0}},
-    {{1, 0, 0, 7.0f}, {0, 1, 0, -24.0f}, {0, 0, 1, 0}},
+    {{1, 0, 0, 7.0f}, {0, 1, 0, -18.0f}, {0, 0, 1, 0}},
     {{1, 0, 0, 7.0f}, {0, 1, 0, -7.0f}, {0, 0, 1, 0}},
 };
 constexpr int kBardType = 4;   // MAN_b, the tall hat: the bard
@@ -342,9 +349,13 @@ void onCreateHeapPost(ModContext*, void* args, void* retval, void*) {
         JKRHeap* before = mDoExt_setCurrentHeap(g->extras);
         g->light = make(g->torch ? "psr_torch.bmd" : "psr_lantern.bmd");
         g->staff = isOldWoman(passer->m_type) ? make("psr_staff.bmd") : nullptr;
-        g->food[1] = make("psr_ham.bmd");
-        g->food[2] = make("psr_bottle.bmd");
-        g->food[3] = make("psr_goblet.bmd");
+        g->foods[0] = make("psr_food_ham.bmd");
+        g->foods[1] = make("psr_food_loaf.bmd");
+        g->foods[2] = make("psr_food_long.bmd");
+        g->drinks[0] = make("psr_drink_brown.bmd");
+        g->drinks[1] = make("psr_drink_purple.bmd");
+        g->goblet = make("psr_goblet.bmd");
+        g->mealItem = nullptr;
         if (passer->m_type == kBardType) {   // the townsfolk's own object archive, already loaded
             if (auto* data = static_cast<J3DModelData*>(dComIfG_getObjectRes("object", "j_guitar.bmd"))) {
                 g->guitar = mDoExt_J3DModel__create(data, 0x80000, 0x11000084);
@@ -409,11 +420,11 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
     };
     Mtx hand;
     // eating or drinking on the stool: the item fixed in the left hand, as the loops were fitted
-    if (const int kind = fighter_anim::meal(passer); kind > 0 && g->food[kind] != nullptr &&
+    if (const int kind = fighter_anim::meal(passer); kind > 0 && g->mealItem != nullptr &&
                                                       fighter_anim::leftHandMtx(passer, hand)) {
         mDoMtx_copy(hand, mDoMtx_stack_c::now);
         mDoMtx_stack_c::concat(kFoodGrip[kind]);
-        drawModel(g->food[kind]);
+        drawModel(g->mealItem);
     }
     // at a camp the staff is put down, except while she casts with it
     const bool atFire = (g->sitting || travellers::campInfo(passer, nullptr, nullptr, nullptr)) &&
@@ -468,6 +479,15 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
 }  // namespace
 
 namespace traveller_gear {
+
+void pickMeal(daNpcPasser_c* passer, int kind) {
+    Gear* g = travellerLook(passer) != nullptr ? gearFor(passer) : nullptr;
+    if (g == nullptr || g->owner != fopAcM_GetID(passer)) return;
+    if (kind == 1) g->mealItem = g->foods[static_cast<int>(cM_rndF(2.999f))];
+    else if (kind == 2) g->mealItem = g->drinks[static_cast<int>(cM_rndF(1.999f))];
+    else if (kind == 3) g->mealItem = g->goblet;
+    else g->mealItem = nullptr;
+}
 
 bool sitting(int slot) {
     return slot >= 0 && slot < static_cast<int>(g_gear.size()) && g_gear[slot].sitting && g_gear[slot].seat != nullptr;
