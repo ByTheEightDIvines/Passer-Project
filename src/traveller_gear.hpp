@@ -7,7 +7,9 @@ class cXyz;
 namespace traveller_gear {
 // The food or drink it takes out for a meal (1 food held by one end, 2 bottle, 3 goblet, 4 food in the
 // palm, 5 tankard; 0 puts it away): one of that kind at random.
-void pickMeal(daNpcPasser_c* passer, int kind);
+// Picks this meal's item and returns the loop to play (1 eat, 2 drink, 3 sip, 4 nibble, 5 quaff,
+// 6 eat off the side), or 0 if there is nothing to hold.
+int pickMeal(daNpcPasser_c* passer, int kind);
 bool install();
 // Sit this traveller down on its log at a camp fire (true if it did), or note it got up.
 bool sit(daNpcPasser_c* passer, bool on);

@@ -1569,8 +1569,8 @@ void chatTick(daNpcPasser_c* passer, PasserState& state, bool busy) {
         if (cM_rndF(1.0f) < 0.55f) kind = cM_rndF(1.0f) < 0.6f ? 1 : 4;
         else if (dwarf) kind = 5;
         else { const f32 r = cM_rndF(1.0f); kind = r < 0.4f ? 2 : (r < 0.65f ? 3 : 5); }
+        kind = traveller_gear::pickMeal(passer, kind);   // the item decides the loop (old women: no tankard)
         fighter_anim::setMeal(passer, kind);
-        traveller_gear::pickMeal(passer, kind);
         state.mealFrames = kMealLoop * (2 + static_cast<int>(cM_rndF(2.0f)));   // two or three goes
         return;
     }

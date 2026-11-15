@@ -134,6 +134,7 @@ struct Gear {
     J3DModel* goblet = nullptr;   // Telma's
     J3DModel* tankard = nullptr;  // ours, from the Castle Town stein's wood and iron
     J3DModel* mealItem = nullptr;   // in hand for this meal
+    const Mtx* mealGrip = nullptr;  // how it sits in this body's hand (meal_grips.inc)
     J3DModel* guitar = nullptr;   // the bard's: the game's own j_guitar (the Castle Town band's)
     bool playing = false;
     bool torch = false;           // fighters: a torch; everyone else a lantern
@@ -209,18 +210,7 @@ bool torchSpot(int type, f32* x, f32* z) {
     return false;
 }
 bool isOldWoman(int type) { return type == 20 || type == 27; }
-// Item -> left hand, by meal kind (the per-body loops are fitted to exactly these):
-//   1 eat: held by one end, the food sticking up out of the fist (every one 26 long, the bite 21 out)
-//   2 drink: a bottle round its middle (every bottle 40 tall)   3 sip: the goblet by its stem
-//   4 nibble: cupped in the palm                                 5 quaff: the tankard by its handle
-const Mtx kFoodGrip[6] = {
-    {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}},
-    {{1, 0, 0, 7.0f}, {0, -1, 0, 0}, {0, 0, -1, 0}},
-    {{1, 0, 0, 7.0f}, {0, 1, 0, -18.0f}, {0, 0, 1, 0}},
-    {{1, 0, 0, 7.0f}, {0, 1, 0, -7.0f}, {0, 0, 1, 0}},
-    {{1, 0, 0, 7.0f}, {0, 1, 0, 2.0f}, {0, 0, 1, 0}},
-    {{1, 0, 0, 7.0f}, {0, 1, 0, -9.0f}, {0, 0, 1, 10.3f}},
-};
+#include "meal_grips.inc"
 constexpr int kBardType = 4;   // MAN_b, the tall hat: the bard
 const Vec kStaffHook = {2.0f, 148.5f, 25.6f};   // where the lantern's handle hangs on the crook
 
@@ -429,10 +419,10 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
     };
     Mtx hand;
     // eating or drinking on the stool: the item fixed in the left hand, as the loops were fitted
-    if (const int kind = fighter_anim::meal(passer); kind > 0 && g->mealItem != nullptr &&
+    if (const int kind = fighter_anim::meal(passer); kind > 0 && g->mealItem != nullptr && g->mealGrip != nullptr &&
                                                       fighter_anim::leftHandMtx(passer, hand)) {
         mDoMtx_copy(hand, mDoMtx_stack_c::now);
-        mDoMtx_stack_c::concat(kFoodGrip[kind]);
+        mDoMtx_stack_c::concat(*g->mealGrip);
         drawModel(g->mealItem);
     }
     // at a camp the staff is put down, except while she casts with it
@@ -489,16 +479,32 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
 
 namespace traveller_gear {
 
-void pickMeal(daNpcPasser_c* passer, int kind) {
+int pickMeal(daNpcPasser_c* passer, int kind) {
     Gear* g = travellerLook(passer) != nullptr ? gearFor(passer) : nullptr;
-    if (g == nullptr || g->owner != fopAcM_GetID(passer)) return;
-    auto pick = [](J3DModel* const* from, int n) { return from[std::min(n - 1, static_cast<int>(cM_rndF(static_cast<f32>(n))))]; };
-    if (kind == 1) g->mealItem = pick(g->eats, 6);
-    else if (kind == 2) g->mealItem = pick(g->drinks, 2);
-    else if (kind == 3) g->mealItem = g->goblet;
-    else if (kind == 4) g->mealItem = pick(g->nibbles, 4);
-    else if (kind == 5) g->mealItem = g->tankard;
-    else g->mealItem = nullptr;
+    if (g == nullptr || g->owner != fopAcM_GetID(passer)) return kind;
+    const int type = passer->m_type;
+    const FoodGrips* fg = nullptr;
+    for (const FoodGrips& f : kFoodGrips) if (f.type == type) fg = &f;
+    if (isOldWoman(type) && kind == 5) kind = 2;   // no tankards for the old women
+    const int n = kind == 1 ? 6 : kind == 4 ? 4 : kind == 2 ? 2 : 1;
+    const int i = std::min(n - 1, static_cast<int>(cM_rndF(static_cast<f32>(n))));
+    g->mealItem = nullptr; g->mealGrip = nullptr;
+    if (kind == 1) {
+        g->mealItem = g->eats[i];
+        if (fg != nullptr) g->mealGrip = &fg->food[i];
+        if (i == 0 || i == 1 || i == 5) kind = 6;   // kebabs and corn: eaten off the side
+    } else if (kind == 4) {
+        g->mealItem = g->nibbles[i];
+        if (fg != nullptr) g->mealGrip = &fg->food[6 + i];
+    } else if (kind == 2) {
+        g->mealItem = g->drinks[i];
+        g->mealGrip = type == 20 ? &kOldWomanBottle[0] : type == 27 ? &kOldWomanBottle[1] : &kDrinkGrip;
+    } else if (kind == 3) {
+        g->mealItem = g->goblet; g->mealGrip = &kSipGrip;
+    } else if (kind == 5) {
+        g->mealItem = g->tankard; g->mealGrip = &kQuaffGrip;
+    }
+    return g->mealItem != nullptr && g->mealGrip != nullptr ? kind : 0;
 }
 
 bool sitting(int slot) {
