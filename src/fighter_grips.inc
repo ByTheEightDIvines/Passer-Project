@@ -8,3 +8,5 @@
     {"MON_a2", "psr_draw_mon_a2.bck", "psr_sheathe_mon_a2.bck", {{0.99982f, -0.00343f, 0.01854f, 13.63997f}, {0.01595f, -0.37022f, -0.92881f, -3.40833f}, {0.01005f, 0.92894f, -0.37009f, 6.59121f}}, 31.2f},
     {"MAN_c2", "psr_draw_man_c2.bck", "psr_sheathe_man_c2.bck", {{0.99997f, -0.00051f, -0.00732f, 10.59019f}, {-0.00729f, 0.03933f, -0.99920f, -3.93755f}, {0.00080f, 0.99923f, 0.03932f, 0.42320f}}, 0.0f},
     {"MAS_a2", "psr_draw_mas_a2.bck", "psr_sheathe_mas_a2.bck", {{0.99991f, -0.00123f, 0.01337f, 12.13359f}, {0.01341f, 0.03932f, -0.99914f, -2.92522f}, {0.00071f, 0.99923f, 0.03933f, -1.50659f}}, 38.0f},
+    // WAN_b2 (the woman fighter): the same explorer's hanger as MAN_c2, the same grip in the hand
+    {"WAN_b2", "psr_wf_draw.bck", "psr_wf_sheathe.bck", {{0.99997f, -0.00051f, -0.00732f, 10.59019f}, {-0.00729f, 0.03933f, -0.99920f, -3.93755f}, {0.00080f, 0.99923f, 0.03932f, 0.42320f}}, 0.0f},

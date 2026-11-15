@@ -52,7 +52,7 @@ const Body kBodies[] = {
 #include "fighter_grips.inc"
 };
 
-// Stock passer type -> body (the men fighters: 3, 6, 8, 9, 11, 13, 14).
+// Stock passer type -> body (the fighters: men 3, 6, 8, 9, 11, 13, 14; the woman 29).
 const Body* bodyFor(int type) {
     const char* model = nullptr;
     switch (type) {
@@ -63,6 +63,7 @@ const Body* bodyFor(int type) {
         case 11: model = "MON_a2"; break;
         case 13: model = "MAN_c2"; break;
         case 14: model = "MAS_a2"; break;
+        case 29: model = "WAN_b2"; break;   // the woman fighter (her own retargeted set)
         default: return nullptr;
     }
     for (const Body& b : kBodies) {
@@ -116,6 +117,18 @@ J3DAnmTransformKey* anm(const char* name) {
     return static_cast<J3DAnmTransformKey*>(dComIfG_getObjectRes(kArc, name));
 }
 
+// The fight animations shared by the men; the woman fighter (#29, WAN_b2: 21 joints) has her own
+// copies, retargeted to her body ("psr_wf_...").
+constexpr int kWomanFighter = 29;
+J3DAnmTransformKey* fa(const daNpcPasser_c* passer, const char* name) {
+    if (passer != nullptr && passer->m_type == kWomanFighter && std::strncmp(name, "psr_", 4) == 0) {
+        char own[48];
+        std::snprintf(own, sizeof(own), "psr_wf_%s", name + 4);
+        return anm(own);
+    }
+    return anm(name);
+}
+
 bool ours(const Body* b, J3DAnmTransform* a) {
     if (a == nullptr) return false;
     static const char* const kNames[] = {"psr_surprised.bck", "psr_squareup.bck", "psr_squareup_step.bck",
@@ -123,6 +136,9 @@ bool ours(const Body* b, J3DAnmTransform* a) {
                                          "psr_injury_walk.bck", "psr_injury_run.bck"};
     for (const char* n : kNames) {
         if (a == anm(n)) return true;
+        char own[48];
+        std::snprintf(own, sizeof(own), "psr_wf_%s", n + 4);
+        if (a == anm(own)) return true;
     }
     return a == anm(b->draw) || a == anm(b->sheathe);
 }
@@ -173,6 +189,9 @@ bool forcedAnm(J3DAnmTransform* a) {
                                          "psr_w_fly.bck",   "psr_w_land.bck"};
     for (const char* n : kNames) {
         if (a == anm(n)) return true;
+        char own[48];
+        std::snprintf(own, sizeof(own), "psr_wf_%s", n + 4);
+        if (a == anm(own)) return true;
     }
     return false;
 }
@@ -293,8 +312,12 @@ struct Skel {
     int n = 0;
     s8 parent[32];
     u8 role[32];
+    u32 used = 0;   // when last looked up (the oldest is reused once the table is full)
 };
-std::array<Skel, 8> g_skel{};
+// A body's model data moves every time its area is loaded again, so stale entries pile up: once all
+// were taken no body found its hand any more (no torches, lanterns or staffs for anyone).
+std::array<Skel, 24> g_skel{};
+u32 g_skelClock = 0;
 
 void walkTree(Skel& k, J3DJoint* j, int parent) {
     for (; j != nullptr; j = j->getYounger()) {
@@ -305,11 +328,22 @@ void walkTree(Skel& k, J3DJoint* j, int parent) {
 }
 
 const Skel* skelFor(J3DModelData* data) {
+    ++g_skelClock;
     for (Skel& k : g_skel) {
-        if (k.data == data) return &k;
+        if (k.data == data) {
+            k.used = g_skelClock;
+            return &k;
+        }
     }
+    Skel* slot = &g_skel[0];
     for (Skel& k : g_skel) {
-        if (k.data != nullptr) continue;
+        if (k.data == nullptr) { slot = &k; break; }
+        if (k.used < slot->used) slot = &k;
+    }
+    {
+        Skel& k = *slot;
+        k = Skel{};
+        k.used = g_skelClock;
         k.data = data;
         k.n = std::min<int>(data->getJointNum(), 32);
         std::fill(std::begin(k.parent), std::end(k.parent), -1);
@@ -327,7 +361,7 @@ const Skel* skelFor(J3DModelData* data) {
         }
         return &k;
     }
-    return nullptr;   // (never more than a handful of bodies)
+    return nullptr;
 }
 
 // Small matrix helpers (3x4, rotation part orthonormal up to a uniform scale).
@@ -443,7 +477,7 @@ bool isLoco(daNpcPasser_c* passer, J3DAnmTransform* a) {
     for (int idx : {2, 3, 4, 5}) {
         if (a == passer->getAnmP(idx, obj)) return true;
     }
-    return a == anm("psr_run.bck") || a == anm("psr_injury_run.bck") || a == anm("psr_injury_walk.bck");
+    return a == fa(passer, "psr_run.bck") || a == fa(passer, "psr_injury_run.bck") || a == fa(passer, "psr_injury_walk.bck");
 }
 }  // namespace
 
@@ -453,7 +487,7 @@ bool has(const daNpcPasser_c* passer) {
     if (passer == nullptr || passer->mpMorf == nullptr || !travellers::isFighter(passer)) return false;
     const Body* b = bodyFor(passer->m_type);
     return b != nullptr && anm(b->draw) != nullptr && anm(b->sheathe) != nullptr &&
-           anm("psr_s_fight_a.bck") != nullptr;
+           fa(passer, "psr_s_fight_a.bck") != nullptr;
 }
 
 void drop(daNpcPasser_c* passer) {
@@ -512,13 +546,13 @@ int update(daNpcPasser_c* passer, Want want, bool swing, bool turning) {
         case Phase::Sheathed:
             if (armed) {
                 s.hopDone = 0.0f;
-                startPhase(passer, s, Phase::Surprised, anm("psr_surprised.bck"), 3.0f);
+                startPhase(passer, s, Phase::Surprised, fa(passer, "psr_surprised.bck"), 3.0f);
             } else if (want == Want::Flee) {
-                play(passer, anm("psr_injury_run.bck"), true, 6.0f);
+                play(passer, fa(passer, "psr_injury_run.bck"), true, 6.0f);
             } else if (want == Want::HurtWait) {
-                play(passer, anm("psr_injury_wait.bck"), true, 8.0f);
+                play(passer, fa(passer, "psr_injury_wait.bck"), true, 8.0f);
             } else if (want == Want::HurtWalk) {
-                play(passer, anm("psr_injury_walk.bck"), true, 8.0f);
+                play(passer, fa(passer, "psr_injury_walk.bck"), true, 8.0f);
             } else if (ours(b, current)) {
                 giveBack(passer, s);   // limp or catch-breath over: the game's own animation again
             }
@@ -545,18 +579,18 @@ int update(daNpcPasser_c* passer, Want want, bool swing, bool turning) {
         case Phase::Ready:
             if (want == Want::Ready) {
                 if (swing) {
-                    startPhase(passer, s, Phase::Swinging, anm("psr_s_fight_a.bck"), 3.0f);
+                    startPhase(passer, s, Phase::Swinging, fa(passer, "psr_s_fight_a.bck"), 3.0f);
                 } else if (turning) {
-                    play(passer, anm("psr_squareup_step.bck"), true, 4.0f);   // shuffles round to face it
+                    play(passer, fa(passer, "psr_squareup_step.bck"), true, 4.0f);   // shuffles round to face it
                 } else {
-                    play(passer, anm("psr_squareup.bck"), true, 6.0f);
+                    play(passer, fa(passer, "psr_squareup.bck"), true, 6.0f);
                 }
             } else if (want == Want::Chase) {
-                play(passer, anm("psr_run.bck"), true, 6.0f);
+                play(passer, fa(passer, "psr_run.bck"), true, 6.0f);
             } else if (want == Want::Flee) {
-                play(passer, anm("psr_injury_run.bck"), true, 6.0f);   // weapon still in hand
+                play(passer, fa(passer, "psr_injury_run.bck"), true, 6.0f);   // weapon still in hand
             } else if (want == Want::HurtWait) {
-                play(passer, anm("psr_injury_wait.bck"), true, 8.0f);
+                play(passer, fa(passer, "psr_injury_wait.bck"), true, 8.0f);
             } else {
                 startSheathe(passer, s, b);   // Calm or HurtWalk
             }
@@ -569,7 +603,7 @@ int update(daNpcPasser_c* passer, Want want, bool swing, bool turning) {
             if (finished(passer)) {
                 s.phase = Phase::Ready;
                 s.oneShot = nullptr;
-                play(passer, anm("psr_squareup.bck"), true, 6.0f);
+                play(passer, fa(passer, "psr_squareup.bck"), true, 6.0f);
             }
             break;
 
@@ -581,8 +615,8 @@ int update(daNpcPasser_c* passer, Want want, bool swing, bool turning) {
                 startDraw(passer, s, b);
             } else if (finished(passer)) {
                 s.phase = Phase::Sheathed;
-                if (want == Want::HurtWalk) play(passer, anm("psr_injury_walk.bck"), true, 8.0f);
-                else if (want == Want::HurtWait) play(passer, anm("psr_injury_wait.bck"), true, 8.0f);
+                if (want == Want::HurtWalk) play(passer, fa(passer, "psr_injury_walk.bck"), true, 8.0f);
+                else if (want == Want::HurtWait) play(passer, fa(passer, "psr_injury_wait.bck"), true, 8.0f);
                 else giveBack(passer, s);
             }
             break;
@@ -597,8 +631,8 @@ bool ownSpeed(const daNpcPasser_c* passer) {
     const Body* b = bodyFor(passer->m_type);
     J3DAnmTransform* a = passer->mpMorf->getAnm();
     if (b == nullptr || !ours(b, a)) return false;
-    if (a == anm("psr_injury_walk.bck") || a == anm("psr_injury_run.bck")) return false;
-    return !(a == anm("psr_run.bck") && passer->mActionIdx == daNpcPasser_c::MODE_1);
+    if (a == fa(passer, "psr_injury_walk.bck") || a == fa(passer, "psr_injury_run.bck")) return false;
+    return !(a == fa(passer, "psr_run.bck") && passer->mActionIdx == daNpcPasser_c::MODE_1);
 }
 
 bool heldMtx(const daNpcPasser_c* passer, Mtx out) {
@@ -720,7 +754,7 @@ void layerTick(daNpcPasser_c* passer, bool carryLight) {
     const f32 moved = passer->current.pos.absXZ(passer->old.pos);
     L.speed = L.speed * 0.6f + std::min(moved, 40.0f) * 0.4f;
     J3DAnmTransform* cur = passer->mpMorf->getAnm();
-    const bool forced = forcedAnm(cur) || cur == anm("psr_surprised.bck");
+    const bool forced = forcedAnm(cur) || cur == fa(passer, "psr_surprised.bck");
     const bool sitting = traveller_gear::sitting(slot);
 
     // legs: on the move with something that isn't a walk or run

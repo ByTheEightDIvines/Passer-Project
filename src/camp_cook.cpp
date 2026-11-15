@@ -154,7 +154,9 @@ public:
     }
 
     void face(daNpcPasser_c* b, const cXyz& to) {
-        cLib_addCalcAngleS2(&b->current.angle.y, cLib_targetAngleY(&b->current.pos, &to), 4, 0x1000);
+        cXyz aim = to;
+        psr_tent::detour(b->current.pos, to, &aim);   // round a tent in the way, not up its canvas
+        cLib_addCalcAngleS2(&b->current.angle.y, cLib_targetAngleY(&b->current.pos, &aim), 4, 0x1000);
         b->shape_angle.y = b->current.angle.y;
     }
 

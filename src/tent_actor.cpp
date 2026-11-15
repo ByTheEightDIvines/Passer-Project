@@ -1,6 +1,7 @@
 #include "global.h"
 
 #include <algorithm>
+#include <cmath>
 
 #include "tent_actor.hpp"
 
@@ -10,6 +11,7 @@
 #include "d/d_kankyo.h"
 #include "f_op/f_op_actor_mng.h"
 #include "f_pc/f_pc_draw_priority.h"
+#include "f_pc/f_pc_manager.h"
 #include "m_Do/m_Do_ext.h"
 #include "m_Do/m_Do_mtx.h"
 #include "mods/service.hpp"
@@ -299,6 +301,79 @@ bool pushOff(fopAc_ac_c* npc, dBgS_Acch& acch) {
     npc->old.pos = npc->current.pos;
     npc->speed.y = 0.0f;
     return true;
+}
+
+namespace {
+// Does the segment a->b (tent-local x/z) pass through the box |x|<hx, |z|<hz? (slab test)
+bool segHitsBox(f32 ax, f32 az, f32 bx, f32 bz, f32 hx, f32 hz) {
+    f32 t0 = 0.0f, t1 = 1.0f;
+    const f32 d[2] = {bx - ax, bz - az}, o[2] = {ax, az}, h[2] = {hx, hz};
+    for (int i = 0; i < 2; ++i) {
+        if (std::abs(d[i]) < 1e-4f) {
+            if (std::abs(o[i]) >= h[i]) return false;
+            continue;
+        }
+        f32 u = (-h[i] - o[i]) / d[i], v = (h[i] - o[i]) / d[i];
+        if (u > v) std::swap(u, v);
+        t0 = std::max(t0, u);
+        t1 = std::min(t1, v);
+        if (t0 > t1) return false;
+    }
+    return true;
+}
+
+struct DetourSearch {
+    cXyz from, to;
+    f32 bestDist;
+    fopAc_ac_c* tent;
+    cXyz corner;
+};
+
+void* detourSub(void* proc, void* data) {
+    auto* a = static_cast<fopAc_ac_c*>(proc);
+    auto* s = static_cast<DetourSearch*>(data);
+    if (a == nullptr || fopAcM_GetName(a) != psrTent_c::sProcName) return nullptr;
+    auto* tent = static_cast<psrTent_c*>(a);
+    const f32 dist = s->from.absXZ(tent->current.pos);
+    if (dist > 1500.0f || dist >= s->bestDist) return nullptr;
+    const f32 c = cM_scos(tent->shape_angle.y), sn = cM_ssin(tent->shape_angle.y);
+    auto local = [&](const cXyz& p, f32& lx, f32& lz) {
+        const f32 dx = p.x - tent->current.pos.x, dz = p.z - tent->current.pos.z;
+        lx = dx * c - dz * sn;
+        lz = dx * sn + dz * c;
+    };
+    f32 fx, fz, tx, tz;
+    local(s->from, fx, fz);
+    local(s->to, tx, tz);
+    const f32 hx = psr_tent::kFootX[tent->mKind] + 50.0f, hz = psr_tent::kFootZ[tent->mKind] + 50.0f;
+    if (!segHitsBox(fx, fz, tx, tz, hx, hz)) return nullptr;
+    // the four corners, well clear of the canvas; the one that makes the shortest way round and
+    // can be walked to straight
+    const f32 cx = hx + 70.0f, cz = hz + 70.0f;
+    const f32 corners[4][2] = {{cx, cz}, {-cx, cz}, {cx, -cz}, {-cx, -cz}};
+    f32 best = G_CM3D_F_INF;
+    int pick = -1;
+    for (int i = 0; i < 4; ++i) {
+        const f32 kx = corners[i][0], kz = corners[i][1];
+        if (segHitsBox(fx, fz, kx, kz, hx, hz) && !(std::abs(fx) < hx && std::abs(fz) < hz)) continue;
+        const f32 len = std::hypot(kx - fx, kz - fz) + std::hypot(tx - kx, tz - kz);
+        if (len < best) { best = len; pick = i; }
+    }
+    if (pick < 0) return nullptr;
+    const f32 kx = corners[pick][0], kz = corners[pick][1];
+    s->corner.set(tent->current.pos.x + kx * c + kz * sn, tent->current.pos.y,
+                  tent->current.pos.z - kx * sn + kz * c);
+    s->tent = tent;
+    s->bestDist = dist;
+    return nullptr;
+}
+}  // namespace
+
+fopAc_ac_c* detour(const cXyz& from, const cXyz& to, cXyz* corner) {
+    DetourSearch s{from, to, G_CM3D_F_INF, nullptr, cXyz::Zero};
+    fpcM_Search(detourSub, &s);
+    if (s.tent != nullptr && corner != nullptr) *corner = s.corner;
+    return s.tent;
 }
 
 ModResult registerActor() {

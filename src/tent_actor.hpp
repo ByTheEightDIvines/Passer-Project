@@ -57,6 +57,10 @@ constexpr f32 kFootZ[PSR_TENT_KIND_NUM] = {245.0f * 1.3f, 445.0f * 1.3f, 515.0f 
 // outside the nearest side of that tent. Returns true if they were moved.
 bool pushOff(fopAc_ac_c* npc, dBgS_Acch& acch);
 
+// A tent stands across the straight way from `from` to `to`: the corner (out past the canvas) to walk
+// to first so the way goes round it. Returns that tent (nullptr if none is in the way).
+fopAc_ac_c* detour(const cXyz& from, const cXyz& to, cXyz* corner);
+
 // Registers the actor with the game. Call once from mod_initialize.
 ModResult registerActor();
 }  // namespace psr_tent

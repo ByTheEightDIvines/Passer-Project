@@ -22,6 +22,7 @@
 #include "spawner_actor.hpp"
 #include "spot_picker.hpp"
 #include "tent_actor.hpp"
+#include "voice_banks.hpp"
 #include "soul_actor.hpp"
 #include "note_actor.hpp"
 #include "traveller_gear.hpp"
@@ -121,7 +122,11 @@ constexpr f32 kThreatRadius = 900.0f;
 // the enemy can actually chase it down. Once it has gotten away, the game may tidy it up again.
 constexpr f32 kChasedRadius = 3000.0f;
 // Old women run at this share of a normal traveller's flight speed.
-constexpr f32 kOldWomanRunScale = 0.6f;
+constexpr f32 kOldWomanRunScale = 0.85f;
+// The body's own voice lines (what a townsperson says when you talk to them): 1 surprise, 2 fear, 3 hey.
+constexpr int kVoiceShout = 3, kVoiceYelp = 1, kVoiceFear = 2;
+constexpr f32 kFellThrough = 1500.0f;   // this far below its last footing it has fallen through the world
+constexpr f32 kTidyDistance = 6000.0f;   // off screen and this far from Link: the game may tidy it away
 constexpr int kSafeFramesToResume = 90;  // three seconds with nothing scary nearby
 constexpr f32 kWallCheckHeight = 55.0f;
 constexpr std::array<f32, 3> kBridgeBulblinPos{-11500.0f, -1034.0f, 22400.0f};
@@ -157,6 +162,10 @@ constexpr std::array kLanguages{
 };
 
 struct PasserState {
+    int chatFrames = 0;       // a seated camper talking: frames left
+    bool wasScared = false;   // running or cowering last frame (to scream once as it starts)
+    cXyz lastGround{};      // where it last stood on solid ground (to catch it falling through the world)
+    bool hasGround = false;
     daNpcPasser_c* actor = nullptr;
     fpc_ProcID id = 0;
     bool registered = false;  // seen by process ID at least once (create may not be registered yet)
@@ -1203,6 +1212,13 @@ HookAction onCheckObstaclePre(ModContext*, void* args, void* retval, void*) {
             trace->mAvoidPoint.y = them.y;
             trace->mAvoidPoint.z = them.z + cM_scos(side) * kAvoidPass + cM_scos(toThem) * kAvoidAhead;
             trace->mObstacle = s.best;
+        } else if (cXyz corner; fopAc_ac_c* tent = psr_tent::detour(passer->current.pos, s.target, &corner)) {
+            // a tent across the way: round its nearest corner (its canvas counts as ground, not a
+            // wall, so walking into one just climbs it and gets pushed back off, over and over)
+            trace->mAvoidPoint = corner;
+            trace->mObstacle = tent;
+            state->avoidId = fpcM_ERROR_PROCESS_ID_e;
+            state->avoidSide = 0;
         } else {
             state->avoidId = fpcM_ERROR_PROCESS_ID_e;
             state->avoidSide = 0;
@@ -1427,9 +1443,28 @@ void onProfileExecutePost(ModContext*, void* args, void*, void*) {
     if (!isPrototypePasser(passer) || state == nullptr) {
         return;
     }
+    voice_banks::tick();
     if (!state->dead) {
         setDamageable(passer);
         keepGrounded(passer, *state);
+        // a scream the moment it takes fright (runs or cowers): the body's own "fear" line
+        {
+            const bool scared = state->cowering ||
+                                (passer->mActionIdx == daNpcPasser_c::MODE_1 && passer->field_0xb1c == 1);
+            if (scared && !state->wasScared) callOut(passer, *state, kVoiceFear, 45);
+            state->wasScared = scared;
+        }
+        // Off screen, with the ground under it not loaded (or a gap in it), a traveller fell
+        // forever and was lost. Far below where it last stood: put it back there.
+        if (passer->mAcch.ChkGroundHit()) {
+            state->lastGround = passer->current.pos;
+            state->hasGround = true;
+        } else if (state->hasGround && passer->current.pos.y < state->lastGround.y - kFellThrough) {
+            passer->current.pos = state->lastGround;
+            passer->old.pos = state->lastGround;
+            passer->speed.y = 0.0f;
+            travellers::noteAct(passer, "fell through the ground; put back where it last stood");
+        }
         if (psr_tent::pushOff(passer, passer->mAcch)) {
             travellers::noteAct(passer, "stepped off a tent it had climbed");
         }
@@ -1498,6 +1533,36 @@ void stopMusic(daNpcPasser_c* passer, PasserState& state) {
         state.songFrames = 0;
         state.anim = 0xFF;
         travellers::refreshIdle(passer);   // back onto its stool
+    }
+}
+
+// Sitting at a camp with nothing else to do, a camper talks now and then: the townsfolk's own
+// seated talk (15 sittalk_a, 16 sittalk_a_b) for a few seconds, then back to sitting quietly (14).
+constexpr u8 kAnmSitWait = 14, kAnmSitTalkA = 15, kAnmSitTalkB = 16;
+constexpr int kChatMin = 120, kChatMax = 300;   // 4-10 seconds of talk
+void chatTick(daNpcPasser_c* passer, PasserState& state, bool busy) {
+    const int slot = travellers::slotIndex(passer);
+    const bool seated = traveller_gear::sitting(slot) && travellers::campInfo(passer, nullptr, nullptr, nullptr);
+    const bool free = seated && !busy && !state.playing && state.songFrames == 0 && !state.campCower &&
+                      !state.defending && !state.toSeat && state.casting == 0;
+    if (!free) {
+        state.chatFrames = 0;
+        return;
+    }
+    if (state.chatFrames > 0) {
+        if (--state.chatFrames == 0) {
+            if (auto* wait = static_cast<J3DAnmTransformKey*>(passer->getAnmP(kAnmSitWait, 0))) {
+                passer->setAnm(wait, 1.0f, 12.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
+            }
+        }
+        return;
+    }
+    if (cM_rndF(1.0f) < 1.0f / 450.0f) {   // about every 15 seconds
+        const u8 which = cM_rndF(1.0f) < 0.5f ? kAnmSitTalkA : kAnmSitTalkB;
+        if (auto* talk = static_cast<J3DAnmTransformKey*>(passer->getAnmP(which, 0))) {
+            passer->setAnm(talk, 1.0f, 12.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
+            state.chatFrames = kChatMin + static_cast<int>(cM_rndF(static_cast<f32>(kChatMax - kChatMin)));
+        }
     }
 }
 
@@ -1596,7 +1661,9 @@ void guardAnim(daNpcPasser_c* passer, PasserState& state, u8 anm, f32 morf = 8.0
 }
 
 void stepToward(daNpcPasser_c* passer, const cXyz& to, f32 speed) {
-    const s16 yaw = cLib_targetAngleY(&passer->current.pos, &to);
+    cXyz aim = to;
+    psr_tent::detour(passer->current.pos, to, &aim);   // round a tent in the way, not up its canvas
+    const s16 yaw = cLib_targetAngleY(&passer->current.pos, &aim);
     cLib_addCalcAngleS2(&passer->current.angle.y, yaw, 4, 0x1000);
     passer->shape_angle.y = passer->current.angle.y;
     passer->current.pos.x += cM_ssin(passer->current.angle.y) * speed;
@@ -1707,7 +1774,6 @@ void sidestepTick(daNpcPasser_c* passer, PasserState& state, f32 speed) {
 }
 
 // Their own voice (each townsfolk body has its own): a shout as they swing, a yelp when hit.
-constexpr int kVoiceShout = 3, kVoiceYelp = 1;   // the body's "hey!" and "surprise" lines
 void callOut(daNpcPasser_c* passer, PasserState& state, int line, int wait) {
     if (state.voiceWait > 0) return;
     passer->mCitizen.playVoice(line);
@@ -1911,6 +1977,16 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
 
     (void)&logProgress;   // per-traveller logging off (too chatty with many travellers)
 
+    // The game deletes a passer the moment it is off screen once its end time of day has passed:
+    // look away from a camp at the wrong moment and everyone was gone. Only far off (well out of
+    // the way, not at a camp) may it be tidied up like that.
+    if (!state->dead) {
+        const auto* link = dComIfGp_getPlayer(0);
+        const bool far = link != nullptr && passer->current.pos.absXZ(link->current.pos) > kTidyDistance;
+        const bool camping = travellers::campInfo(passer, nullptr, nullptr, nullptr);
+        if (!far || camping) passer->m_endTime = 0xFFFF;
+    }
+
     if (state->dead) {
         ++state->deathFrame;
         if (!state->deathLanded) {
@@ -1942,17 +2018,12 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         passer->speedF = 0.0f;
         passer->speed.set(0.0f, 0.0f, 0.0f);
         if ((state->deathLanded && state->deathLie >= kDeathLie) || state->deathFrame >= kDeathLimit) {
-            // Gone in a puff of smoke: the same puff a treasure chest appears in (the game's own,
-            // always-loaded effect), and the soul rises out of it.
+            // Gone in a puff of smoke: the game's own smoke burst and "poof" (the disappear actor's
+            // plain style, the one a monster vanishes in; its smoke is always loaded), and the soul
+            // rises out of it.
             {
-                static const u16 kChestPuff[6] = {0x8840, 0x8841, 0x8842, 0x8843, 0x8844, 0x8845};
-                cXyz at(passer->current.pos.x, passer->current.pos.y + 55.0f, passer->current.pos.z);
-                csXyz rot = passer->shape_angle;
-                cXyz scale(1.0f, 1.0f, 1.0f);
-                // (the puff only exists in dungeon particle packs: ours carries a copy, so it shows in
-                // the field too, in full)
-                for (u16 id : kChestPuff) psr_freeze::effect(id, at, rot.y, scale);
-                mDoAud_seStart(Z2SE_OBJ_T_BOX_EMERGE, &at, 0, dComIfGp_getReverb(fopAcM_GetRoomNo(passer)));
+                cXyz at(passer->current.pos.x, passer->current.pos.y + 40.0f, passer->current.pos.z);
+                fopAcM_createDisappear(passer, &at, 10, 0, 0xFF);   // size 1.0, plain smoke, no item
             }
             psr_soul::spawn(passer->current.pos, fopAcM_GetRoomNo(passer));
             travellers::onDeath(passer);
@@ -1982,6 +2053,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         campHandled = campGuard(passer, *state);
     }
     musicTick(passer, *state, campHandled || state->talking);
+    chatTick(passer, *state, campHandled || state->talking);
 
     // Fighters stop, face the enemy and stand their ground while they're healthy.
     if (!campHandled && !state->talking && !state->cowering &&
@@ -2397,6 +2469,9 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     }
     if (mods::hook::add_pre<PathObstacle>(onCheckObstaclePre) != MOD_OK) {
         svc_log->info(mod_ctx, "path obstacle hook unavailable; travellers keep the game's own sidestepping");
+    }
+    if (!voice_banks::install()) {
+        svc_log->info(mod_ctx, "sound bank hook unavailable; travellers stay quiet outside Castle Town");
     }
     if (!psr_freeze::install()) {
         svc_log->info(mod_ctx, "actor update hook unavailable; the old women can't freeze monsters");
