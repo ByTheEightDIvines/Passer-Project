@@ -14,7 +14,6 @@
 #include "mods/svc/audio_res.h"
 #include "travellers.hpp"
 
-IMPORT_SERVICE(AudioResService, svc_audio_res);
 
 namespace {
 // The seven songs: file stem and length (all three stems of a song are the same length, 32 kHz).
