@@ -45,6 +45,7 @@ def shell(P):
 def fit(P):
     P = np.asarray(P, float) / 1.6
     return np.c_[P[:, 0] * 0.96, P[:, 1] * 0.96 + LIFT, zc / 1.6 + (P[:, 2] - zc / 1.6) * 0.96]
+room_files = {}
 for nm, night in (('beedle_room', False), ('beedle_room_n', True)):
     S, TX = scene.build(night, clear_floor=False)
     groups = {}; order = []
@@ -60,11 +61,13 @@ for nm, night in (('beedle_room', False), ('beedle_room_n', True)):
         groups[k][2].append((Q, np.asarray(UV, float)))
     G = [groups[k] for k in order]
     path = os.path.join(OUT, nm + '.bmd')
-    write_multi(path, G, jointname=nm, cull=0)
-    files['bmdr/%s.bmd' % nm] = open(path, 'rb').read()
-    print(nm, sum(len(g[2]) for g in G), 'tris', len(G), 'materials', len(files['bmdr/%s.bmd' % nm]) // 1024, 'KB')
+    write_multi(path, G, jointname=nm, cull=0, maxtex=256)   # small textures: it's only seen through openings
+    room_files['bmdr/%s.bmd' % nm] = open(path, 'rb').read()
+    print(nm, sum(len(g[2]) for g in G), 'tris', len(G), 'materials', len(room_files['bmdr/%s.bmd' % nm]) // 1024, 'KB')
 col = ET.wall_tent_col(500, 625, 145, 345, 18, 14, 94, vest=(108, 70), shoulder=(86, 190))
 files['dzb/beedle_tent.dzb'] = write_dzb([tuple(map(tuple, t)) for t in col], name='beedle_tent')
 print('collision', len(col), 'tris')
 write_rarc(os.path.join(OUT, 'PsrTent.arc'), 'PsrTent', files)
+write_rarc(os.path.join(OUT, 'PsrBdRm.arc'), 'PsrBdRm', room_files)
+print('PsrBdRm.arc', os.path.getsize(os.path.join(OUT, 'PsrBdRm.arc')) // 1024, 'KB')
 print('PsrTent.arc', sorted(rarc(open(os.path.join(OUT, 'PsrTent.arc'), 'rb').read())), os.path.getsize(os.path.join(OUT, 'PsrTent.arc')) // 1024, 'KB')

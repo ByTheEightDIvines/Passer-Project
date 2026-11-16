@@ -63,11 +63,18 @@ bool installMusic() {
     return g_musicId != 0;
 }
 
-void musicTick(bool inside) {
+int g_musicLog = 0;
+void musicTick(bool inside, bool settled) {
     if (g_musicId == 0) return;
     if (!inside) {
         if (g_music) g_music->stop(30);
         return;
+    }
+    if (!settled) return;   // wait until the shop has settled (the game brings its sound back up after a stage change)
+    if (++g_musicLog >= 150) {   // every 5 seconds: is it still going, and how loud
+        g_musicLog = 0;
+        travellers::diagLine("shop    music %s volume %.2f", g_music ? "still playing" : "stopped",
+                             g_music ? g_music->getAuxiliary().params_.mVolume : 0.0f);
     }
     if (auto* link = dComIfGp_getPlayer(0)) {
         g_musicPos.set(link->current.pos.x, link->current.pos.y + 100.0f, link->current.pos.z);
@@ -107,7 +114,7 @@ void enter(const cXyz& doorOut, s16 yawOut, int fieldRoom) {
 
 void tick() {
     if (g_cool > 0) --g_cool;
-    musicTick(inShop());
+    musicTick(inShop(), g_settle >= 30);
     if (!inShop()) { g_settle = 0; return; }
     // the lamp flames (fireWd2, switch 0x20, lit while it's off): out by day, lit at night
     if (dKy_daynight_check()) dComIfGs_offSwitch(0x20, 0);

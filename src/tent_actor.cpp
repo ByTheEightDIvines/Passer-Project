@@ -25,6 +25,9 @@ namespace {
 const char* kArcName = "PsrTent";
 const char* kModel[PSR_TENT_KIND_NUM] = {"a_tent.bmd", "wall_tent.bmd", "beedle_tent.bmd"};
 const char* kCollision[PSR_TENT_KIND_NUM] = {"a_tent.dzb", "wall_tent.dzb", "beedle_tent.dzb"};
+// Beedle's shop, seen through his tent's doorway and windows: an archive of its own, loaded by his tent
+// alone (every camp tent loads PsrTent; putting the shop in there ran the game out of memory)
+const char* kRoomArc = "PsrBdRm";
 const char* kRoom[2] = {"beedle_room.bmd", "beedle_room_n.bmd"};   // the baked room, by day and by night
 const char* kFlap = "camp_flap.bmd";
 const char* kLitModel[2] = {"a_tent_n.bmd", "camp_flap_n.bmd"};   // the same, lit from inside
@@ -77,6 +80,7 @@ psrTent_c::~psrTent_c() {
     dComIfG_resDelete(&mPhase, kArcName);
     if ((fopAcM_GetParam(this) & 0xFF) == PSR_TENT_BEEDLE) {
         dComIfG_resDelete(&mPhaseLamp, "Obj_kntr");
+        dComIfG_resDelete(&mPhaseRoom, kRoomArc);
     }
 }
 
@@ -91,6 +95,10 @@ cPhs_Step psrTent_c::create() {
         const cPhs_Step l = dComIfG_resLoad(&mPhaseLamp, "Obj_kntr");
         if (l != cPhs_COMPLEATE_e) {
             return l;
+        }
+        const cPhs_Step r = dComIfG_resLoad(&mPhaseRoom, kRoomArc);
+        if (r != cPhs_COMPLEATE_e) {
+            return r;
         }
     }
     mpModel = NULL;
@@ -203,7 +211,7 @@ int psrTent_c::CreateHeap() {
             }
         }
         for (int i = 0; i < 2; i++) {
-            auto* room = static_cast<J3DModelData*>(dComIfG_getObjectRes(kArcName, kRoom[i]));
+            auto* room = static_cast<J3DModelData*>(dComIfG_getObjectRes(kRoomArc, kRoom[i]));
             mpRoom[i] = room != NULL ? mDoExt_J3DModel__create(room, 0x80000, 0x11000084) : NULL;
         }
     }
