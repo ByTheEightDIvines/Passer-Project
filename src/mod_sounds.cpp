@@ -8,6 +8,7 @@
 #include "JSystem/JAudio2/JASBasicInst.h"
 #include "JSystem/JAudio2/JASBasicWaveBank.h"
 #include "JSystem/JAudio2/JASChannel.h"
+#include "JSystem/JAudio2/JASOscillator.h"
 #include "JSystem/JAudio2/JAUSeqCollection.h"
 #include "mods/service.hpp"
 #include "mods/svc/audio_res.h"
@@ -53,6 +54,13 @@ void onSeqLookupPost(ModContext*, void* args, void* retval, void*) {
     }
 }
 
+// The envelope every note needs: full volume at once, a quick fade on release. The game's own plain
+// notes use this one (JASBank::noteOnOsc); without an envelope a note never reports itself finished, so
+// its audio channel is never freed and the mixer runs out of them.
+const JASOscillator::Point kRelease[2] = {{0x0001, 0x000A, 0x0000}, {0x000F, 0x0000, 0x0000}};
+const JASOscillator::Data kEnvelope = {0, 1.0f, nullptr, kRelease, 1.0f, 0.0f};
+const JASOscillator::Data* kOscillators[2] = {&kEnvelope, nullptr};
+
 DEFINE_HOOK_SYMBOL("JASBasicBank::getInstParam", bool(const JASBasicBank*, int, int, int, JASInstParam*), InstLookup);
 void onInstLookupPost(ModContext*, void* args, void* retval, void*) {
     if (*static_cast<bool*>(retval)) return;          // the game has an instrument there: never ours
@@ -62,8 +70,8 @@ void onInstLookupPost(ModContext*, void* args, void* retval, void*) {
     p->init();
     p->mWaveId = g_wave[prg];
     p->mChannelType = CHANNEL_WAVE;
-    p->mOscillators = nullptr;
-    p->mOscillatorCount = 0;
+    p->mOscillators = const_cast<JASOscillator::Data**>(kOscillators);
+    p->mOscillatorCount = 1;
     p->mDirectRelease = 0;
     p->mDontSetKey = 0;
     *static_cast<bool*>(retval) = true;

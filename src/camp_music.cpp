@@ -89,7 +89,12 @@ f32 distanceGain() {
 // One singer at full voice; more add a little (they sing the same line), never doubling.
 f32 choirGain(int n) { return n <= 0 ? 0.0f : std::min(1.15f, 0.85f + 0.12f * static_cast<f32>(n - 1)); }
 
+int g_loggedMen = -1, g_loggedWomen = -1;
 void setVolumes() {
+    if (g_menNow != g_loggedMen || g_womenNow != g_loggedWomen) {
+        g_loggedMen = g_menNow; g_loggedWomen = g_womenNow;
+        travellers::diagLine("music   singing: %d men, %d women", g_menNow, g_womenNow);
+    }
     const f32 d = distanceGain();
     const f32 want[3] = {d, d * choirGain(g_menNow), d * choirGain(g_womenNow)};
     for (int s = 0; s < 3; s++) {
@@ -128,6 +133,7 @@ bool install() {
 void bardPlays(daNpcPasser_c* bard) {
     if (bard == nullptr) return;
     g_lastBard = g_frame;
+    ++g_men;                               // he sings as he plays
     g_pos.set(bard->current.pos.x, bard->current.pos.y + 100.0f, bard->current.pos.z);
 }
 
