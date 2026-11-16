@@ -473,6 +473,9 @@ bool takeSeat(Traveller& t, int campNode) {
     return false;
 }
 
+bool bedTime();
+bool takeBed(Traveller& t, int campNode);
+int freeBeds(int campNode);
 // Nearest camp (by road) that still has a free seat for t; -1 if none can be reached.
 int nearestCamp(const Traveller& t, int from, bool escort) {
     int best = -1;
@@ -543,9 +546,6 @@ int nightDestination(Traveller& t, int from) {
 }
 
 void arrive(Traveller& t, int node);
-bool bedTime();
-bool takeBed(Traveller& t, int campNode);
-int freeBeds(int campNode);
 
 void newRoute(Traveller& t, int from) {
     const int to = isEvening() ? nightDestination(t, from) : randomDestination(t, from);
