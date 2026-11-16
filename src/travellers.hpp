@@ -56,6 +56,14 @@ bool campSeatSpot(int campNode, int seat, cXyz* pos, s16* yaw);
 bool campSeatInUse(int campNode, int seat);   // someone is sitting on it right now (it draws its own)
 // Put its resting (sitting) animation back next frame.
 void refreshIdle(const fopAc_ac_c* passer);
+// Bedtime in the small tents. bedPhase: 0 nothing, 1 off to bed (walk to doorstep, crawl in to inside),
+// 3 getting up (crawl out from inside to doorstep); with where, and the way into the tent.
+int bedPhase(const fopAc_ac_c* passer, cXyz* inside, cXyz* doorstep, s16* faceIn);
+void tuckedIn(fopAc_ac_c* passer);          // it's in: the actor goes, the traveller sleeps
+void upAndAbout(const fopAc_ac_c* passer);  // out and standing: the day starts
+// For a small tent standing at tentPos: how many are in it (or on their way in), and how many are
+// crawling in or out right now (the flaps stay open for them).
+void tentBeds(const cXyz& tentPos, int* asleep, int* busy);
 void noteCamp(const fopAc_ac_c* passer, const char* what, const fopAc_ac_c* enemy);
 // A line in the diary (travellers_diag.log), printf-style.
 void diagLine(const char* fmt, ...);

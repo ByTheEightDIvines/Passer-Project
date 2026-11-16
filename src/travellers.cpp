@@ -261,6 +261,12 @@ struct Traveller {
     const char* lastAct = "walk";   // what it was last doing (for the log)
     int life = -1;         // quarter hearts left (-1: full, set when it first needs it)
     int healTimer = 0;
+    // bed for the night in one of its camp's small tents
+    int bedCamp = -1;      // camp node of the tent it sleeps in, or -1
+    int bed = -1;          // bed there (two to a tent: tent bed / 2)
+    u8 sleep = 0;          // 0 up, 1 off to bed (walking to the tent, crawling in), 2 asleep, 3 getting up
+    bool stayUp = false;   // tonight it stays up by the fire
+    int sleepFrames = 0;
 };
 
 std::array<Traveller, kSlots> g_t{};
@@ -474,7 +480,7 @@ int nearestCamp(const Traveller& t, int from, bool escort) {
     for (int c = 0; c < kCampCount; ++c) {
         const int n = kCamps[c].node;
         if (kNodes[n].kind != NK_CAMP) continue;
-        if (!canSit(t, n)) continue;
+        if (!canSit(t, n) && !(bedTime() && freeBeds(n) > 0)) continue;
         if (n == from) return n;
         auto r = plan(from, n, escort);
         if (r.empty()) continue;
@@ -537,6 +543,9 @@ int nightDestination(Traveller& t, int from) {
 }
 
 void arrive(Traveller& t, int node);
+bool bedTime();
+bool takeBed(Traveller& t, int campNode);
+int freeBeds(int campNode);
 
 void newRoute(Traveller& t, int from) {
     const int to = isEvening() ? nightDestination(t, from) : randomDestination(t, from);
@@ -580,6 +589,14 @@ void arrive(Traveller& t, int node) {
         break;
     case NK_CAMP:
         if (!takeSeat(t, node)) {
+            if (bedTime() && takeBed(t, node)) {   // the fire is full but it's late: straight to bed
+                t.state = ST_REST;
+                t.restUntilMorning = true;
+                t.sleep = t.spawned ? 1 : 2;
+                t.sleepFrames = 0;
+                t.timer = rndRange(900, 2400);
+                break;
+            }
             // the fire is full: a short breather, then on to somewhere else
             t.state = ST_REST;
             t.restUntilMorning = false;
@@ -922,11 +939,17 @@ bool seatSpot(int campNode, int seat, cXyz* pos, s16* yaw) {
     return true;
 }
 
+bool bedSpot(const Traveller& t, cXyz* inside, cXyz* doorstep, s16* faceIn);
 Where restWhere(const Traveller& t, int slot) {
     const Node& n = kNodes[t.node];
     Where w{};
     w.stage = n.stage;
     w.room = n.room;
+    if (t.sleep == 3 && bedSpot(t, &w.pos, nullptr, &w.yaw)) {   // crawling out of its tent
+        w.yaw = static_cast<s16>(w.yaw + 0x8000);
+        w.nextPoint = 0;
+        return w;
+    }
     // A camp seat: on a half-ring in front of the fire, away from the tents behind it and the
     // small tent at its side (see seatSpot). Anyone without a seat (resting at a road junction,
     // say) just spreads out around the spot by its slot.
@@ -946,6 +969,11 @@ Where restWhere(const Traveller& t, int slot) {
 struct CampTents {
     std::vector<ActorId> ids;
     bool up = false;
+    // the small tents (beds 2*i and 2*i+1 are in tent i)
+    cXyz tentPos[4];
+    s16 tentYaw[4] = {};
+    int tents = 0;
+    bool rolled = false;   // tonight's stay-ups picked
 };
 std::array<CampTents, kCampCount> g_camps{};
 
@@ -1160,6 +1188,114 @@ bool findBeedleSpot(const cXyz& mid, s16 face, TentSpot* out) {
     return found;
 }
 
+// --- beds: the small tents at night ------------------------------------------------------------------
+// At each fire the bard, one fighter and a couple of others stay up; everyone else turns in at 22:00
+// (the old women at dusk). Someone who reaches a fire at night with every seat taken goes straight to
+// bed. Two to a tent. Asleep they aren't actors at all; they crawl out again between 6 and 8.
+constexpr int kBedsPerTent = 2;
+constexpr int kStayUpOthers = 2;
+bool bedTime() { const int h = hour(); return h >= 19 || h < 4; }
+bool lateNight() { const int h = hour(); return h >= 22 || h < 4; }
+bool oldWomanType(int type) { return type == 20 || type == 27; }
+constexpr int kBardType = 4;
+int campIndex(int node) {
+    for (int i = 0; i < kCampCount; ++i) if (kCamps[i].node == node) return i;
+    return -1;
+}
+int bedsAt(int campNode) {
+    if (campNode < 0 || kNodes[campNode].kind != NK_CAMP) return 0;
+    return kCampTents * kBedsPerTent;
+}
+int freeBeds(int campNode) {
+    int n = bedsAt(campNode);
+    for (const Traveller& o : g_t) if (o.used && o.bedCamp == campNode) --n;
+    return n;
+}
+bool takeBed(Traveller& t, int campNode) {
+    if (t.bedCamp == campNode && t.bed >= 0) return true;
+    bool used[16] = {};
+    for (const Traveller& o : g_t) if (o.used && o.bedCamp == campNode && o.bed >= 0 && o.bed < 16) used[o.bed] = true;
+    for (int b = 0; b < bedsAt(campNode); ++b) {
+        if (!used[b]) { t.bedCamp = campNode; t.bed = b; return true; }
+    }
+    return false;
+}
+void releaseBed(Traveller& t) {
+    t.bedCamp = -1;
+    t.bed = -1;
+    t.sleep = 0;
+    t.sleepFrames = 0;
+}
+// Just inside its tent's door (where it vanishes), the spot on the grass in front of the door, and the
+// way into the tent. False while that tent isn't standing (its camp isn't loaded).
+bool bedSpot(const Traveller& t, cXyz* inside, cXyz* doorstep, s16* faceIn) {
+    const int ci = campIndex(t.bedCamp);
+    if (ci < 0 || t.bed < 0) return false;
+    const CampTents& c = g_camps[ci];
+    const int k = t.bed / kBedsPerTent;
+    if (!c.up || k >= c.tents) return false;
+    const s16 yaw = c.tentYaw[k];
+    const f32 fx = cM_ssin(yaw), fz = cM_scos(yaw), rx = fz, rz = -fx;   // forward (out of the door), right
+    const f32 side = (t.bed % kBedsPerTent == 0 ? -1.0f : 1.0f) * 22.0f;
+    const cXyz& p = c.tentPos[k];
+    if (inside) inside->set(p.x + fx * 110.0f + rx * side, p.y, p.z + fz * 110.0f + rz * side);
+    if (doorstep) doorstep->set(p.x + fx * 225.0f + rx * side * 0.5f, p.y, p.z + fz * 225.0f + rz * side * 0.5f);
+    if (faceIn) *faceIn = static_cast<s16>(yaw + 0x8000);
+    return true;
+}
+// Tonight's stay-ups at a fire: the bard, one fighter and a couple of others (never the old women).
+void rollStayUps(int campNode) {
+    std::vector<Traveller*> rest;
+    bool fighter = false;
+    for (Traveller& o : g_t) {
+        if (!o.used || o.campNode != campNode || o.seat < 0) continue;
+        o.stayUp = false;
+        if (o.type == kBardType) { o.stayUp = true; continue; }
+        if (fighterType(o.type) && !fighter) { o.stayUp = fighter = true; continue; }
+        if (!oldWomanType(o.type)) rest.push_back(&o);
+    }
+    for (int k = 0; k < kStayUpOthers && !rest.empty(); ++k) {
+        const int i = static_cast<int>(rnd() % rest.size());
+        rest[i]->stayUp = true;
+        rest.erase(rest.begin() + i);
+    }
+}
+void bedTick(Traveller& t) {
+    if (t.dead) { if (t.bedCamp >= 0) releaseBed(t); return; }
+    for (int i = 0; i < kCampCount; ++i) {   // a fresh pick of stay-ups each night
+        CampTents& c = g_camps[i];
+        if (bedTime() && !c.rolled) { c.rolled = true; rollStayUps(kCamps[i].node); }
+        else if (!bedTime() && hour() >= 8) c.rolled = false;
+    }
+    switch (t.sleep) {
+    case 0: {
+        // seated at its fire and it's bedtime for it
+        if (t.state != ST_REST || t.seat < 0 || t.campNode != t.node || !bedTime()) return;
+        const bool want = oldWomanType(t.type) || (lateNight() && !t.stayUp);
+        if (!want || !takeBed(t, t.node)) return;
+        t.restUntilMorning = true;
+        t.sleep = t.spawned ? 1 : 2;
+        t.sleepFrames = 0;
+        diag("bed     slot %d turns in (camp %d bed %d)", static_cast<int>(&t - g_t.data()), t.bedCamp, t.bed);
+        return;
+    }
+    case 1:   // walking to its tent and crawling in (the actor does it; tuckedIn ends it)
+        if (!t.spawned || ++t.sleepFrames > 1800) {
+            if (t.spawned) despawn(t, fopAcM_SearchByID(t.actor));
+            t.sleep = 2;
+        }
+        return;
+    case 2:   // asleep: up again once morning wakes it (stepRestOrTown clears restUntilMorning)
+        if (t.restUntilMorning) return;
+        if (bedSpot(t, nullptr, nullptr, nullptr)) { t.sleep = 3; t.sleepFrames = 0; t.cooldown = 0; }
+        else releaseBed(t);
+        return;
+    case 3:   // waiting to crawl out (its spawner brings it); nobody watching: it's just up
+        if (!t.spawned && ++t.sleepFrames > 900) releaseBed(t);
+        return;
+    }
+}
+
 void updateCamps(int stage, const cXyz& link) {
     for (int i = 0; i < kCampCount; ++i) {
         const Camp& cp = kCamps[i];
@@ -1186,15 +1322,18 @@ void updateCamps(int stage, const cXyz& link) {
                     if (!findTentSpot(cp.node, mid, face, PSR_TENT_A, placed, &t)) break;
                     placed.push_back(t);
                     spawnTent(c, PSR_TENT_A, t.pos, t.yaw, n.room);
+                    if (c.tents < 4) { c.tentPos[c.tents] = t.pos; c.tentYaw[c.tents] = t.yaw; ++c.tents; }
                 }
             }
         } else if (!here && c.up) {
             c.ids.clear();          // the room unloaded and took the tents with it
             c.up = false;
+            c.tents = 0;
         } else if (here && c.up && dx * dx + dz * dz > 16000.0f * 16000.0f) {
             for (ActorId id : c.ids) svc_actor->delete_actor(mod_ctx, id);
             c.ids.clear();
             c.up = false;
+            c.tents = 0;
         }
     }
 }
@@ -1609,6 +1748,7 @@ void update() {
     for (int s = 0; s < kSlots; ++s) {
         Traveller& t = g_t[s];
         if (!t.used) continue;
+        bedTick(t);
 
         if (t.spawned) {
             auto* actor = static_cast<daNpcPasser_c*>(fopAcM_SearchByID(t.actor));
@@ -1675,7 +1815,7 @@ void update() {
                 t.leg = 0;
                 t.dist = 0.0f;
                 arrive(t, night);
-                if (t.state == ST_REST && t.campNode != night) {   // that fire was full after all
+                if (t.state == ST_REST && t.campNode != night && t.bedCamp != night) {   // that fire was full after all
                     t.state = ST_TOWN;
                     t.timer = rndRange(300, 900);
                 }
@@ -1739,6 +1879,7 @@ bool spawnerTick(fopAc_ac_c* spawner, bool firstTick) {
     for (int s = 0; s < kSlots; ++s) {
         Traveller& t = g_t[s];
         if (!t.used || t.spawned || t.dead || t.cooldown > 0) continue;
+        if (t.sleep == 1 || t.sleep == 2) continue;   // in its tent
         Where w{};
         if (t.state == ST_WALK && !t.route.empty()) {
             if (isDeepNight()) continue;   // roads are empty at night: only campers appear
@@ -1779,6 +1920,47 @@ bool spawnerTick(fopAc_ac_c* spawner, bool firstTick) {
     }
     if (firstTick) diag("scatter room %d: %d travellers", room, made);
     return true;
+}
+
+// --- beds, for the actors ---
+int bedPhase(const fopAc_ac_c* passer, cXyz* inside, cXyz* doorstep, s16* faceIn) {
+    const int slot = slotOf(passer);
+    if (slot < 0) return 0;
+    const Traveller& t = g_t[slot];
+    if (t.sleep != 1 && t.sleep != 3) return 0;
+    if (!bedSpot(t, inside, doorstep, faceIn)) return 0;
+    return t.sleep;
+}
+void tuckedIn(fopAc_ac_c* passer) {
+    const int slot = slotOf(passer);
+    if (slot < 0) return;
+    Traveller& t = g_t[slot];
+    diag("bed     slot %d crawled into its tent", slot);
+    despawn(t, passer);
+    t.sleep = 2;
+}
+void upAndAbout(const fopAc_ac_c* passer) {
+    const int slot = slotOf(passer);
+    if (slot < 0) return;
+    Traveller& t = g_t[slot];
+    diag("bed     slot %d up for the day", slot);
+    releaseBed(t);
+    t.idleSet = false;
+}
+void tentBeds(const cXyz& tentPos, int* asleep, int* busy) {
+    *asleep = *busy = 0;
+    for (int i = 0; i < kCampCount; ++i) {
+        const CampTents& c = g_camps[i];
+        for (int k = 0; k < c.tents; ++k) {
+            if (std::abs(c.tentPos[k].x - tentPos.x) > 5.0f || std::abs(c.tentPos[k].z - tentPos.z) > 5.0f) continue;
+            for (const Traveller& t : g_t) {
+                if (!t.used || t.bedCamp != kCamps[i].node || t.bed / kBedsPerTent != k) continue;
+                if (t.sleep == 2) ++*asleep;
+                else if (t.sleep == 1 || t.sleep == 3) { ++*busy; if (t.sleep == 1) ++*asleep; }
+            }
+            return;
+        }
+    }
 }
 
 bool pathLookupOpen() { return g_pathLookupOpen; }

@@ -24,6 +24,8 @@ public:
     int mStageNum;
     J3DModel* mpRoom[2];        // Beedle's tent only: the baked room, day and night
     J3DModel* mpFlap[2];        // small tent only: the door flaps, left and right (the right is the left mirrored)
+    J3DModel* mpLit[3];         // small tent at night with someone inside: lit from within (tent, both flaps)
+    bool mLit = false;
     f32 mFlapOpen = 1.0f;       // 1 = tied back open, 0 = shut
     f32 mFlapTarget = 1.0f;
     void setFlaps(bool open) { mFlapTarget = open ? 1.0f : 0.0f; }

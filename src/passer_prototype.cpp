@@ -238,6 +238,8 @@ struct PasserState {
     int laughFrames = 0;    // laughing: frames left
     int pendingWait = 0;
     bool mealIsFood = false;
+    u8 bedStep = 0;         // bedtime: 1 crouching at the door, 2 crawling in; 10 crawling out, 11 standing up
+    int bedFrames = 0;
     // its bubble (bubble_actor): the one over its head, how much it matters, and per-icon rests
     fpc_ProcID bubble = fpcM_ERROR_PROCESS_ID_e;
     int bubblePri = 0;
@@ -1572,7 +1574,8 @@ void onProfileExecutePost(ModContext*, void* args, void*, void*) {
         // at night, out on the roads (not settled at a camp fire): a torch or lantern
         const int hour = dKy_getdaytime_hour();
         const bool night = hour >= 19 || hour < 6;
-        const bool hold = traveller_gear::lightTick(passer, night, travellers::campInfo(passer, nullptr, nullptr, nullptr));
+        const bool hold = traveller_gear::lightTick(passer, night, state->bedStep != 0 ||
+                                                    travellers::campInfo(passer, nullptr, nullptr, nullptr));
         fighter_anim::layerTick(passer, hold);
         return;
     }
@@ -2056,6 +2059,95 @@ bool walkBackToSeat(daNpcPasser_c* passer, PasserState& state, const cXyz& seat,
     return false;
 }
 
+// --- bedtime in the small tents ---------------------------------------------------------------------
+// Off to bed: walk to the grass in front of its tent's door, turn to the door, crouch (the torch
+// pickup's crouch, held) and shuffle in through the flaps; once inside it goes (the roster keeps it
+// asleep). Morning: it appears just inside, crouched, shuffles out and stands up.
+constexpr f32 kCrawlSpeed = 0.8f;   // under the legs' walking threshold, so they stay crouched
+constexpr f32 kCrouchFrame = 12.0f; // the pickup's lowest point
+bool bedTick(daNpcPasser_c* passer, PasserState& state) {
+    cXyz inside, doorstep;
+    s16 faceIn = 0;
+    const int phase = travellers::bedPhase(passer, &inside, &doorstep, &faceIn);
+    if (phase == 0) {
+        if (state.bedStep != 0) { state.bedStep = 0; state.anim = 0xFF; passer->mpMorf->setPlaySpeed(1.0f); }
+        return false;
+    }
+    if (state.casting != 0 || fighter_anim::hitting(passer)) return false;
+    auto crawl = [&](const cXyz& to) {   // straight there, no collision (the doorway is the tent's opening)
+        const f32 dx = to.x - passer->current.pos.x, dz = to.z - passer->current.pos.z;
+        const f32 d = std::sqrt(dx * dx + dz * dz);
+        if (d <= kCrawlSpeed) { passer->current.pos.x = to.x; passer->current.pos.z = to.z; return true; }
+        passer->current.pos.x += dx / d * kCrawlSpeed;
+        passer->current.pos.z += dz / d * kCrawlSpeed;
+        passer->speedF = 0.0f;
+        return false;
+    };
+    if (phase == 1) {
+        switch (state.bedStep) {
+        case 0: {
+            if (state.bedFrames == 0) {
+                traveller_gear::sit(passer, false);
+                traveller_gear::clearMeal(passer);
+                state.playing = false;
+                state.songFrames = 0;
+                travellers::noteCamp(passer, "off to bed", nullptr);
+            }
+            ++state.bedFrames;
+            const f32 dx = doorstep.x - passer->current.pos.x, dz = doorstep.z - passer->current.pos.z;
+            if (dx * dx + dz * dz > 12.0f * 12.0f) {
+                passer->speedF = 0.0f;
+                guardAnim(passer, state, kAnmWalk);
+                stepToward(passer, doorstep, Cd2_HIO_walkMaxSpeed(passer->m_type));
+                return true;
+            }
+            passer->current.pos.x = doorstep.x;
+            passer->current.pos.z = doorstep.z;
+            passer->current.angle.y = passer->shape_angle.y = faceIn;
+            passer->speedF = 0.0f;
+            if (fighter_anim::startPickup(passer)) state.bedStep = 1;
+            else { travellers::tuckedIn(passer); return true; }
+            state.anim = 0xFF;
+            return true;
+        }
+        case 1:
+            if (fighter_anim::pickupFrame(passer) >= kCrouchFrame) { passer->mpMorf->setPlaySpeed(0.0f); state.bedStep = 2; }
+            return true;
+        case 2:
+            if (crawl(inside)) { passer->mpMorf->setPlaySpeed(1.0f); state.bedStep = 0; state.bedFrames = 0; travellers::tuckedIn(passer); }
+            return true;
+        default:
+            state.bedStep = 0;
+            return true;
+        }
+    }
+    // phase 3: up for the day
+    switch (state.bedStep) {
+    case 0:
+    default:
+        passer->current.pos.x = inside.x;
+        passer->current.pos.z = inside.z;
+        passer->current.angle.y = passer->shape_angle.y = static_cast<s16>(faceIn + 0x8000);
+        if (!fighter_anim::startPickup(passer)) { travellers::upAndAbout(passer); return false; }
+        passer->mpMorf->setFrame(kCrouchFrame);
+        passer->mpMorf->setPlaySpeed(0.0f);
+        state.anim = 0xFF;
+        state.bedStep = 10;
+        return true;
+    case 10:
+        if (crawl(doorstep)) { passer->mpMorf->setPlaySpeed(1.0f); state.bedStep = 11; }
+        return true;
+    case 11:
+        if (!fighter_anim::pickupDone(passer)) return true;
+        state.bedStep = 0;
+        state.bedFrames = 0;
+        state.anim = 0xFF;
+        travellers::upAndAbout(passer);
+        travellers::refreshIdle(passer);
+        return false;
+    }
+}
+
 bool campGuard(daNpcPasser_c* passer, PasserState& state) {
     cXyz center, seat;
     s16 seatYaw = 0;
@@ -2250,7 +2342,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
     state->onGuard = false;
     state->turning = false;
     if (!state->talking && !state->cowering) {
-        campHandled = campGuard(passer, *state);
+        campHandled = bedTick(passer, *state) || campGuard(passer, *state);
     }
     musicTick(passer, *state, campHandled || state->talking);
     chatTick(passer, *state, campHandled || state->talking);

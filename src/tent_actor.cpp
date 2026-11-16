@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "tent_actor.hpp"
+#include "travellers.hpp"
 
 #include "SSystem/SComponent/c_math.h"
 #include "d/d_bg_s_gnd_chk.h"
@@ -25,6 +26,7 @@ const char* kModel[PSR_TENT_KIND_NUM] = {"a_tent.bmd", "wall_tent.bmd", "beedle_
 const char* kCollision[PSR_TENT_KIND_NUM] = {"a_tent.dzb", "wall_tent.dzb", "beedle_tent.dzb"};
 const char* kRoom[2] = {"beedle_room.bmd", "beedle_room_n.bmd"};   // the baked room, by day and by night
 const char* kFlap = "camp_flap.bmd";
+const char* kLitModel[2] = {"a_tent_n.bmd", "camp_flap_n.bmd"};   // the same, lit from inside
 // The small tent's door flaps hinge on the doorway's slanted edge (tent space, before the tent's scale).
 constexpr f32 kHingeApex[3] = {0.0f, 156.0f, 126.2f};
 constexpr f32 kHingeFoot[3] = {-64.0f, 0.0f, 126.2f};
@@ -170,11 +172,19 @@ int psrTent_c::CreateHeap() {
     }
     mpRoom[0] = mpRoom[1] = NULL;
     mpFlap[0] = mpFlap[1] = NULL;
+    mpLit[0] = mpLit[1] = mpLit[2] = NULL;
     mStageNum = 0;
     if (mKind == PSR_TENT_A) {
         auto* flap = static_cast<J3DModelData*>(dComIfG_getObjectRes(kArcName, kFlap));
         for (int i = 0; flap != NULL && i < 2; i++) {
             mpFlap[i] = mDoExt_J3DModel__create(flap, 0x80000, 0x11000084);
+        }
+        auto* litTent = static_cast<J3DModelData*>(dComIfG_getObjectRes(kArcName, kLitModel[0]));
+        auto* litFlap = static_cast<J3DModelData*>(dComIfG_getObjectRes(kArcName, kLitModel[1]));
+        if (litTent != NULL && litFlap != NULL) {
+            mpLit[0] = mDoExt_J3DModel__create(litTent, 0x80000, 0x11000084);
+            mpLit[1] = mDoExt_J3DModel__create(litFlap, 0x80000, 0x11000084);
+            mpLit[2] = mDoExt_J3DModel__create(litFlap, 0x80000, 0x11000084);
         }
     }
     if (mKind == PSR_TENT_BEEDLE) {
@@ -232,6 +242,13 @@ int psrTent_c::Execute() {
         if (room != NULL) room->setBaseTRMtx(mDoMtx_stack_c::get());
     }
     if (mpFlap[0] != NULL) {
+        // Bedtime: the flaps stay open while anyone is crawling in or out, and shut once they're in.
+        // Lit from inside at night while someone sleeps there.
+        int asleep = 0, busy = 0;
+        travellers::tentBeds(current.pos, &asleep, &busy);
+        setFlaps(asleep == 0 || busy > 0);
+        mLit = asleep > 0 && isNight() && mpLit[0] != NULL;
+        if (mpLit[0] != NULL) mpLit[0]->setBaseTRMtx(mDoMtx_stack_c::get());
         // ease toward open or shut over about two thirds of a second
         const f32 step = 1.0f / 20.0f;
         mFlapOpen += std::clamp(mFlapTarget - mFlapOpen, -step, step);
@@ -249,6 +266,7 @@ int psrTent_c::Execute() {
             }
             PSMTXConcat(tent, side, m);
             mpFlap[i]->setBaseTRMtx(m);
+            if (mpLit[1 + i] != NULL) mpLit[1 + i]->setBaseTRMtx(m);
         }
     }
     for (int i = 0; i < mStageNum; i++) {
@@ -273,6 +291,15 @@ int psrTent_c::Execute() {
 
 int psrTent_c::Draw() {
     g_env_light.settingTevStruct(0x20, &current.pos, &tevStr);
+    if (mLit) {
+        // lit from inside: drawn without the scene's lighting so the canvas glows in the dark
+        dComIfGd_setListBG();
+        mDoExt_modelUpdateDL(mpLit[0]);
+        dComIfGd_setList();
+        if (mpLit[1] != NULL) mDoExt_modelUpdateDL(mpLit[1]);
+        if (mpLit[2] != NULL) mDoExt_modelUpdateDL(mpLit[2]);
+        return 1;
+    }
     g_env_light.setLightTevColorType_MAJI(mpModel, &tevStr);
     dComIfGd_setListBG();
     mDoExt_modelUpdateDL(mpModel);
