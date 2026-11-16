@@ -1,9 +1,9 @@
 #pragma once
 // The travellers' voices. The game keeps the townsfolk's voice lines in Castle Town's own sound
 // banks (only loaded there), and many characters have no clip at all for some lines. So the mod
-// ships the clips itself (res/voices/, cut from those banks) and registers them over their slots
-// in the always-loaded sound-effect bank; each traveller type plays its own line where the game has
-// one, and a shared man's or woman's line where it doesn't (voice_table.inc).
+// ships the clips itself (res/voices/, cut from those banks) and adds each as a sound of its own
+// (mod_sounds); each traveller type plays its own line where the game has one, and a shared man's or
+// woman's line where it doesn't (voice_table.inc).
 class daNpcPasser_c;
 namespace voice_banks {
 bool install();

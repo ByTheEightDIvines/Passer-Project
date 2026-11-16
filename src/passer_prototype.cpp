@@ -24,6 +24,7 @@
 #include "tent_actor.hpp"
 #include "voice_banks.hpp"
 #include "camp_music.hpp"
+#include "mod_sounds.hpp"
 #include "soul_actor.hpp"
 #include "note_actor.hpp"
 #include "bubble_actor.hpp"
@@ -2785,6 +2786,9 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     }
     if (mods::hook::add_pre<PathObstacle>(onCheckObstaclePre) != MOD_OK) {
         svc_log->info(mod_ctx, "path obstacle hook unavailable; travellers keep the game's own sidestepping");
+    }
+    if (!mod_sounds::install()) {
+        svc_log->info(mod_ctx, "added-sound hooks unavailable; travellers stay quiet and the bard plays silently");
     }
     if (!camp_music::install()) {
         svc_log->info(mod_ctx, "campfire songs unavailable; the bard plays silently");

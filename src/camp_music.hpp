@@ -9,5 +9,4 @@ bool install();                                       // once, from mod_initiali
 void tick();                                          // once a frame
 void bardPlays(daNpcPasser_c* bard);                  // each frame the bard is playing
 void singsAlong(daNpcPasser_c* singer);               // each frame a camper is singing along
-bool isOurWave(unsigned wave);                        // for the wave lookup rescue (voice_banks)
 }
