@@ -24,6 +24,25 @@ const char* kArcName = "PsrTent";
 const char* kModel[PSR_TENT_KIND_NUM] = {"a_tent.bmd", "wall_tent.bmd", "beedle_tent.bmd"};
 const char* kCollision[PSR_TENT_KIND_NUM] = {"a_tent.dzb", "wall_tent.dzb", "beedle_tent.dzb"};
 const char* kRoom[2] = {"beedle_room.bmd", "beedle_room_n.bmd"};   // the baked room, by day and by night
+const char* kFlap = "camp_flap.bmd";
+// The small tent's door flaps hinge on the doorway's slanted edge (tent space, before the tent's scale).
+constexpr f32 kHingeApex[3] = {0.0f, 156.0f, 126.2f};
+constexpr f32 kHingeFoot[3] = {-64.0f, 0.0f, 126.2f};
+constexpr f32 kFlapSwing = 3.0019f;   // 172 degrees: from shut, out and back flat against the front
+// m = translate(apex) * rotate(axis, a) * translate(-apex), axis along the hinge
+void hingeMtx(f32 a, Mtx m) {
+    f32 k[3] = {kHingeFoot[0] - kHingeApex[0], kHingeFoot[1] - kHingeApex[1], kHingeFoot[2] - kHingeApex[2]};
+    const f32 n = std::sqrt(k[0] * k[0] + k[1] * k[1] + k[2] * k[2]);
+    for (f32& v : k) v /= n;
+    const f32 c = std::cos(a), s = std::sin(a), t = 1.0f - c;
+    const f32 R[3][3] = {{t * k[0] * k[0] + c, t * k[0] * k[1] - s * k[2], t * k[0] * k[2] + s * k[1]},
+                         {t * k[0] * k[1] + s * k[2], t * k[1] * k[1] + c, t * k[1] * k[2] - s * k[0]},
+                         {t * k[0] * k[2] - s * k[1], t * k[1] * k[2] + s * k[0], t * k[2] * k[2] + c}};
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) m[i][j] = R[i][j];
+        m[i][3] = kHingeApex[i] - (R[i][0] * kHingeApex[0] + R[i][1] * kHingeApex[1] + R[i][2] * kHingeApex[2]);
+    }
+}
 // Room for the model instance, its display lists and the collider (the tents are big meshes).
 constexpr u32 kHeapSize = 0x80000;
 
@@ -150,7 +169,14 @@ int psrTent_c::CreateHeap() {
         return 0;
     }
     mpRoom[0] = mpRoom[1] = NULL;
+    mpFlap[0] = mpFlap[1] = NULL;
     mStageNum = 0;
+    if (mKind == PSR_TENT_A) {
+        auto* flap = static_cast<J3DModelData*>(dComIfG_getObjectRes(kArcName, kFlap));
+        for (int i = 0; flap != NULL && i < 2; i++) {
+            mpFlap[i] = mDoExt_J3DModel__create(flap, 0x80000, 0x11000084);
+        }
+    }
     if (mKind == PSR_TENT_BEEDLE) {
         for (const StageProp& prop : kStage) {
             auto* d = static_cast<J3DModelData*>(dComIfG_getObjectRes(prop.arc, prop.model));
@@ -205,6 +231,26 @@ int psrTent_c::Execute() {
     for (J3DModel* room : mpRoom) {
         if (room != NULL) room->setBaseTRMtx(mDoMtx_stack_c::get());
     }
+    if (mpFlap[0] != NULL) {
+        // ease toward open or shut over about two thirds of a second
+        const f32 step = 1.0f / 20.0f;
+        mFlapOpen += std::clamp(mFlapTarget - mFlapOpen, -step, step);
+        const f32 e = 0.5f - 0.5f * std::cos(mFlapOpen * 3.14159265f);
+        Mtx tent, hinge, m;
+        PSMTXCopy(mDoMtx_stack_c::get(), tent);
+        hingeMtx(kFlapSwing * e, hinge);
+        hinge[2][3] += 1.0f * e;                       // lie just proud of the canvas when folded back
+        for (int i = 0; i < 2; i++) {
+            Mtx side;
+            PSMTXCopy(hinge, side);
+            if (i == 1) {                              // the right flap: the left one mirrored, a hair in front
+                for (int j = 0; j < 4; j++) side[0][j] = -side[0][j];   // mirror in x after the swing
+                side[2][3] += 0.6f;
+            }
+            PSMTXConcat(tent, side, m);
+            mpFlap[i]->setBaseTRMtx(m);
+        }
+    }
     for (int i = 0; i < mStageNum; i++) {
         const StageProp& prop = kStage[i];
         mDoMtx_stack_c::transS(current.pos.x, current.pos.y, current.pos.z);
@@ -231,6 +277,12 @@ int psrTent_c::Draw() {
     dComIfGd_setListBG();
     mDoExt_modelUpdateDL(mpModel);
     dComIfGd_setList();
+    for (J3DModel* flap : mpFlap) {
+        if (flap != NULL) {
+            g_env_light.setLightTevColorType_MAJI(flap, &tevStr);
+            mDoExt_modelUpdateDL(flap);
+        }
+    }
     for (int i = 0; i < mStageNum; i++) {
         g_env_light.setLightTevColorType_MAJI(mpStage[i], &tevStr);
         mDoExt_modelUpdateDL(mpStage[i]);

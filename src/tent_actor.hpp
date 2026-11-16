@@ -23,6 +23,12 @@ public:
     J3DModel* mpStage[kStageMax];                 // the game's own props behind Beedle's curtain
     int mStageNum;
     J3DModel* mpRoom[2];        // Beedle's tent only: the baked room, day and night
+    J3DModel* mpFlap[2];        // small tent only: the door flaps, left and right (the right is the left mirrored)
+    f32 mFlapOpen = 1.0f;       // 1 = tied back open, 0 = shut
+    f32 mFlapTarget = 1.0f;
+public:
+    void setFlaps(bool open) { mFlapTarget = open ? 1.0f : 0.0f; }
+private:
     Mtx mColliderMtx;
     dBgW* mpCollider;
     u8 mKind;
