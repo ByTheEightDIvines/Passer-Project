@@ -5,6 +5,7 @@
 
 #include "tent_actor.hpp"
 #include "travellers.hpp"
+#include "shop_stage.hpp"
 
 #include "SSystem/SComponent/c_math.h"
 #include "d/d_bg_s_gnd_chk.h"
@@ -30,7 +31,10 @@ const char* kLitModel[2] = {"a_tent_n.bmd", "camp_flap_n.bmd"};   // the same, l
 // The small tent's door flaps hinge on the doorway's slanted edge (tent space, before the tent's scale).
 constexpr f32 kHingeApex[3] = {0.0f, 156.0f, 126.2f};
 constexpr f32 kHingeFoot[3] = {-64.0f, 0.0f, 126.2f};
-constexpr f32 kFlapSwing = 3.0019f;   // 172 degrees: from shut, out and back flat against the front
+constexpr f32 kFlapSwing = 3.0019f;
+// Beedle's tent, in world units (its model is scaled 1.6): the doorway at the front, the curtain at the
+// back of the entry (70 deep), and the curtain's half width.
+constexpr f32 kDoorZ = 312.5f * 1.6f, kCurtainZ = 242.5f * 1.6f, kCurtainHalfW = 108.0f * 1.6f;   // 172 degrees: from shut, out and back flat against the front
 // m = translate(apex) * rotate(axis, a) * translate(-apex), axis along the hinge
 void hingeMtx(f32 a, Mtx m) {
     f32 k[3] = {kHingeFoot[0] - kHingeApex[0], kHingeFoot[1] - kHingeApex[1], kHingeFoot[2] - kHingeApex[2]};
@@ -279,6 +283,20 @@ int psrTent_c::Execute() {
         mDoMtx_stack_c::transM(prop.x, prop.y, prop.z);
         mDoMtx_stack_c::scaleM(prop.scale, prop.scale, prop.scale);
         mpStage[i]->setBaseTRMtx(mDoMtx_stack_c::get());
+    }
+    if (mKind == PSR_TENT_BEEDLE) {
+        // Link at the curtain (the back of the entry, where its collision stops him): into the shop.
+        if (auto* link = dComIfGp_getPlayer(0)) {
+            const f32 dx = link->current.pos.x - current.pos.x, dz = link->current.pos.z - current.pos.z;
+            const f32 c = cM_scos(shape_angle.y), sn = cM_ssin(shape_angle.y);
+            const f32 lx = dx * c - dz * sn, lz = dx * sn + dz * c;          // into the tent's own frame
+            if (lz < kCurtainZ + 18.0f && lz > kCurtainZ - 60.0f && std::abs(lx) < kCurtainHalfW &&
+                std::abs(link->current.pos.y - current.pos.y) < 80.0f && !dComIfGp_event_runCheck()) {
+                const f32 out = kDoorZ + 110.0f;
+                cXyz door(current.pos.x + sn * out, current.pos.y, current.pos.z + c * out);
+                shop_stage::enter(door, shape_angle.y, fopAcM_GetRoomNo(this));
+            }
+        }
     }
     if (mpCollider != NULL) {
         PSMTXCopy(mpModel->getBaseTRMtx(), mColliderMtx);
