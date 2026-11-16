@@ -10,6 +10,9 @@
 #include "mods/service.hpp"
 #include "mods/svc/stage.h"
 #include "travellers.hpp"
+#include "mod_sounds.hpp"
+#include "mods/svc/audio_res.h"
+#include "Z2AudioLib/Z2AudioMgr.h"
 
 
 namespace {
@@ -23,6 +26,15 @@ char g_field[9] = {};                         // the field stage the tent stands
 int g_cool = 0;                               // frames before another trip (a stage change takes a moment)
 int g_settle = 0;                             // frames since the shop loaded (no leaving straight away)
 
+// Beedle's shop music: our own added sound (mod_sounds program 0xF5), looping the whole track while
+// Link is inside, following him so it never pans; faded out on the way out.
+constexpr u8 kMusicProgram = 0xF5;
+constexpr u32 kMusicSamples = 2246427;        // res/music/beedle_shop.wav, 32 kHz mono
+constexpr f32 kMusicVolume = 0.8f;
+u32 g_musicId = 0;
+JAISoundHandle g_music;
+JGeometry::TVec3<f32> g_musicPos;
+
 bool stageIs(const char* name) {
     const char* s = dComIfGp_getStartStageName();
     return s != nullptr && std::strcmp(s, name) == 0;
@@ -34,6 +46,38 @@ namespace shop_stage {
 bool install() { return svc_stage != nullptr; }
 
 bool inShop() { return stageIs(kShop); }
+
+bool installMusic() {
+    if (svc_audio_res == nullptr) return false;
+    if (!mod_sounds::loadWave(kMusicProgram, "res/music/beedle_shop.wav", true, kMusicSamples)) return false;
+    AudioSoundTableEffectInfo info = *svc_audio_res->default_effect_info;
+    info.always_max_priority = true;
+    info.ignore_distance_volume = true;
+    info.ignore_dolby = true;
+    info.doppler_power = 0;
+    info.random_pitch = 0;
+    info.random_volume = 0;
+    info.volume = 1.0f;
+    info.pitch = 1.0f;
+    g_musicId = mod_sounds::addSound(SE_CATEGORY_OBJECT_SE, kMusicProgram, &info);
+    return g_musicId != 0;
+}
+
+void musicTick(bool inside) {
+    if (g_musicId == 0) return;
+    if (!inside) {
+        if (g_music) g_music->stop(30);
+        return;
+    }
+    if (auto* link = dComIfGp_getPlayer(0)) {
+        g_musicPos.set(link->current.pos.x, link->current.pos.y + 100.0f, link->current.pos.z);
+    }
+    if (!g_music) {
+        Z2GetAudioMgr()->startSound(JAISoundID(g_musicId), &g_music, &g_musicPos);
+        if (g_music) g_music->getAuxiliary().moveVolume(kMusicVolume, 0);
+        travellers::diagLine("shop    music %s", g_music ? "playing" : "did not start");
+    }
+}
 
 void enter(const cXyz& doorOut, s16 yawOut, int fieldRoom) {
     if (g_cool > 0 || svc_stage == nullptr || fieldRoom < 0) return;
@@ -63,6 +107,7 @@ void enter(const cXyz& doorOut, s16 yawOut, int fieldRoom) {
 
 void tick() {
     if (g_cool > 0) --g_cool;
+    musicTick(inShop());
     if (!inShop()) { g_settle = 0; return; }
     // the lamp flames (fireWd2, switch 0x20, lit while it's off): out by day, lit at night
     if (dKy_daynight_check()) dComIfGs_offSwitch(0x20, 0);

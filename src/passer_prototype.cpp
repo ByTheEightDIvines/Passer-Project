@@ -2797,6 +2797,9 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     if (!camp_music::install()) {
         svc_log->info(mod_ctx, "campfire songs unavailable; the bard plays silently");
     }
+    if (!shop_stage::installMusic()) {
+        svc_log->info(mod_ctx, "Beedle's shop music unavailable; the shop is quiet");
+    }
     if (!voice_banks::install()) {
         svc_log->info(mod_ctx, "voice clips could not be registered; travellers stay quiet");
     }
