@@ -106,6 +106,8 @@ jobs:
   combine:
     name: Combine bundles
     needs: build
+    # publish whatever platforms built: a stuck macOS runner shouldn't hold up the rest
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
