@@ -30,8 +30,9 @@ constexpr const char* kStem[3] = {"guitar", "men", "women"};
 // Our own sounds (mod_sounds): guitar, men, women, on programs 0xE0..0xE2. Only the playing song's
 // three stems are loaded (as added waves); nothing of the game's is replaced.
 constexpr u8 kProgram0 = 0xE0;
-u32 g_soundId[3] = {};
-u32 soundId(int s) { return g_soundId[s]; }
+// Every song's stems stay loaded from start-up (programs 0xE0 + song*3 + stem): loading one when the
+// bard starts playing stalled the game for a moment.
+u32 g_soundId[8][3] = {};
 
 constexpr int kLoopsPerSong = 2;      // each song goes round twice, then a short pause and another
 constexpr int kPauseFrames = 150;
@@ -40,6 +41,7 @@ constexpr f32 kNear = 700.0f, kFar = 2600.0f;   // full volume this close to the
 enum Phase { kIdle, kLoading, kPlaying, kResting };
 Phase g_phase = kIdle;
 int g_song = -1;
+u32 soundId(int s) { return g_soundId[g_song < 0 ? 0 : g_song][s]; }
 int g_frames = 0;                     // into the current phase
 int g_lastBard = -1000;               // frame the bard last played
 int g_frame = 0;
@@ -50,27 +52,18 @@ JAISoundHandle g_handle[3];
 f32 g_vol[3] = {};
 bool g_installed = false;
 
-void unload() {
+void unload() {   // stop playing (the songs stay loaded)
     for (int s = 0; s < 3; s++) {
         if (g_handle[s]) g_handle[s]->stop(20);
-        mod_sounds::unloadWave(static_cast<u8>(kProgram0 + s));
         g_vol[s] = 0.0f;
     }
 }
 
+bool g_ready[8] = {};
 bool load(int song) {
     unload();
-    for (int s = 0; s < 3; s++) {
-        char path[96];
-        std::snprintf(path, sizeof(path), "res/music/%s_%s.wav", kSongs[song].name, kStem[s]);
-        if (!mod_sounds::loadWave(static_cast<u8>(kProgram0 + s), path, true, kSongs[song].samples)) {
-            travellers::diagLine("music   could not load %s", path);
-            unload();
-            return false;
-        }
-    }
-    travellers::diagLine("music   loaded %s", kSongs[song].name);
-    return true;
+    if (!g_ready[song]) travellers::diagLine("music   %s isn't loaded", kSongs[song].name);
+    return g_ready[song];
 }
 
 int loopFrames(int song) { return static_cast<int>(kSongs[song].samples / 32000.0f * 30.0f); }
@@ -122,10 +115,24 @@ bool install() {
     info.random_volume = 0;
     info.volume = 1.0f;
     info.pitch = 1.0f;
-    for (int s = 0; s < 3; s++) {
-        g_soundId[s] = mod_sounds::addSound(SE_CATEGORY_OBJECT_SE, static_cast<u8>(kProgram0 + s), &info);
-        if (g_soundId[s] == 0) return false;
+    static_assert(kSongCount <= 8, "programs 0xE0.. hold 8 songs of 3 stems");
+    int ready = 0;
+    for (int song = 0; song < kSongCount; song++) {
+        bool ok = true;
+        for (int s = 0; s < 3 && ok; s++) {
+            const u8 prg = static_cast<u8>(kProgram0 + song * 3 + s);
+            char path[96];
+            std::snprintf(path, sizeof(path), "res/music/%s_%s.wav", kSongs[song].name, kStem[s]);
+            ok = mod_sounds::loadWave(prg, path, true, kSongs[song].samples);
+            if (ok) {
+                g_soundId[song][s] = mod_sounds::addSound(SE_CATEGORY_OBJECT_SE, prg, &info);
+                ok = g_soundId[song][s] != 0;
+            }
+        }
+        g_ready[song] = ok;
+        ready += ok ? 1 : 0;
     }
+    if (ready == 0) return false;
     g_installed = true;
     return true;
 }

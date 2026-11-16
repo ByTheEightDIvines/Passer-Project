@@ -6,6 +6,7 @@
 
 #include "d/d_com_inf_game.h"
 #include "d/d_stage.h"
+#include "d/d_kankyo.h"
 #include "mods/service.hpp"
 #include "mods/svc/stage.h"
 #include "travellers.hpp"
@@ -63,6 +64,9 @@ void enter(const cXyz& doorOut, s16 yawOut, int fieldRoom) {
 void tick() {
     if (g_cool > 0) --g_cool;
     if (!inShop()) { g_settle = 0; return; }
+    // the lamp flames (fireWd2, switch 0x20, lit while it's off): out by day, lit at night
+    if (dKy_daynight_check()) dComIfGs_offSwitch(0x20, 0);
+    else dComIfGs_onSwitch(0x20, 0);
     auto* link = dComIfGp_getPlayer(0);
     if (link == nullptr || dComIfGp_event_runCheck()) return;
     if (++g_settle < 30 || g_cool > 0) return;

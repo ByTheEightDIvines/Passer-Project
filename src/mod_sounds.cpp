@@ -65,7 +65,7 @@ DEFINE_HOOK_SYMBOL("JASBasicBank::getInstParam", bool(const JASBasicBank*, int, 
 void onInstLookupPost(ModContext*, void* args, void* retval, void*) {
     if (*static_cast<bool*>(retval)) return;          // the game has an instrument there: never ours
     const int prg = mods::arg<int>(args, 1);
-    if (prg < 0 || prg > 0xEF || g_wave[prg] == 0) return;
+    if (prg < 0 || prg > 0xFF || g_wave[prg] == 0) return;
     auto* p = mods::arg<JASInstParam*>(args, 4);
     p->init();
     p->mWaveId = g_wave[prg];
@@ -111,7 +111,7 @@ bool install() {
 }
 
 u32 addSound(u8 category, u8 program, const AudioSoundTableEffectInfo* given) {
-    if (g_count >= kMaxSounds || program < 0x88 || program > 0xEF) return 0;
+    if (g_count >= kMaxSounds || program < 0x88 || program > 0xFF) return 0;
     AudioSoundTableEffectInfo info = given != nullptr ? *given : *svc_audio_res->default_effect_info;
     u16 idx = 0;
     if (svc_audio_res->add_sound_table_effect(mod_ctx, static_cast<SoundEffectCategory>(category), &info, nullptr, &idx) != MOD_OK) {

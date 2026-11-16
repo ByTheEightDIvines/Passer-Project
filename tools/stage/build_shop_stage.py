@@ -30,6 +30,16 @@ for k, data in stg.items():
 dzs = files['dzs/stage.dzs']
 set_count(dzs, 'RTBL', 1); set_count(dzs, 'MULT', 1)
 for t in ('ACTR', 'ACTe', 'SCOe', 'SCO2', 'SCO3'): set_count(dzs, t, 0)
+# its own light: neutral and bright, no fog (the house's palettes are lamp-orange and hazy)
+for tag, (_, n, o) in chunks(dzs).items():
+    if not tag.startswith('PAL'): continue
+    for j in range(n):
+        e = o + 0x34 * j
+        dzs[e:e + 3] = bytes((150, 146, 140))                        # actors
+        for k in range(4): dzs[e + 3 + 3 * k:e + 6 + 3 * k] = bytes((235, 230, 222))   # the room
+        for k in range(6): dzs[e + 0xF + 3 * k:e + 0x12 + 3 * k] = bytes((255, 236, 205))  # lamp light
+        dzs[e + 0x21:e + 0x24] = bytes((0, 0, 0))
+        struct.pack_into('>ff', dzs, e + 0x24, 50000.0, 100000.0)   # fog far beyond the walls
 C = chunks(dzs)
 _, n, o = C['SCLS']
 struct.pack_into('>8sBbBBB', dzs, o, FIELD, 0, 0, 0xF0, 0xFF, 0)     # the way out: the field (the mod puts Link at the tent)
@@ -50,6 +60,16 @@ set_count(dzr, 'PLYR', 1)
 _, n, o = C['SCLS']
 struct.pack_into('>8sBbBBB', dzr, o, FIELD, 0, 0, 0xF0, 0xFF, 0)
 set_count(dzr, 'SCLS', 1)
+# lamp flames: the game's own (fireWd2, as in the Kakariko houses), each with its point light. Switch 0x20
+# puts them out: the mod sets it by day and clears it at night (switch type 1: lit while it's off).
+FLAMES = [(0.0, 340.0, -330.0), (0.0, 340.0, 0.0), (0.0, 340.0, 330.0),   # the three hanging lanterns
+          (150.0, 150.0, -341.0),                                       # the candlestick on the counter
+          (-40.0, 70.0, -339.0)]                                        # the oil lamp on the counter
+acts = b''.join(struct.pack('>8sI3f3hH', b'fireWd2', 0xFF010120, x, y, z, 0, 0, 0, 0xFFFF) for x, y, z in FLAMES)
+while len(dzr) % 4: dzr.append(0)
+C = chunks(dzr)
+struct.pack_into('>II', dzr, C['ACTR'][0], len(FLAMES), len(dzr))
+dzr += acts
 r160 = rarc(open(f'{STAGE}/R_SP160/R00_00.arc', 'rb').read())
 rfiles = {
     'bmdr/model.bmd': open(f'{SHOP}/shop_room.bmd', 'rb').read(),
