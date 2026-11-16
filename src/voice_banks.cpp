@@ -34,7 +34,15 @@ void onWaveHandlePost(ModContext*, void* args, void* retval, void*) {
     auto* bank = mods::arg<const JASBasicWaveBank*>(args, 0);
     const u32 no = mods::arg<u32>(args, 1);
     if (out == nullptr || *out != nullptr || bank == nullptr || bank->bankId != 0) return;
-    if (no >= bank->mHandleCount || bank->mWaveTable == nullptr || !isOurs(no)) return;
+    if (bank->mWaveTable == nullptr || bank->mHandleCount == 0) return;
+    if (camp_music::isOurWave(no) && no >= bank->mHandleCount) {
+        // a wave the mod added (its ID is past the end of the game's table): any real entry will do,
+        // the engine then plays the added wave registered under this ID
+        *out = bank->mWaveTable;
+        ++g_rescued;
+        return;
+    }
+    if (no >= bank->mHandleCount || !isOurs(no)) return;
     *out = bank->mWaveTable + no;
     ++g_rescued;
 }

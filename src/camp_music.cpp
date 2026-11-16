@@ -13,6 +13,12 @@
 #include "mods/service.hpp"
 #include "mods/svc/audio_res.h"
 #include "travellers.hpp"
+#include "mods/svc/hook.hpp"
+#include "JSystem/JAudio2/JAUSeqCollection.h"
+#include "JSystem/JAudio2/JASBasicBank.h"
+#include "JSystem/JAudio2/JASBasicInst.h"
+#include "JSystem/JAudio2/JASChannel.h"
+#include <cstring>
 
 
 namespace {
@@ -26,14 +32,64 @@ constexpr Song kSongs[] = {
 constexpr int kSongCount = sizeof(kSongs) / sizeof(kSongs[0]);
 constexpr const char* kStem[3] = {"guitar", "men", "women"};
 
-// Three borrowed sounds: dungeon-only object sounds that play one held note of a wave nothing else
-// uses (an Arbiter's Grounds spinner gear, the Snowpeak boss lock, the Temple of Time balance). While a
-// song plays their waves are the song's stems, played at the note's own key so the pitch is right;
-// otherwise they are the game's own again.
-struct Slot { u16 index; u16 wave; u8 key; };
-constexpr Slot kSlots[3] = {{449, 643, 93}, {454, 3828, 1}, {500, 638, 35}};
-constexpr u32 kObjectGroup = 8;
-u32 soundId(int s) { return (kObjectGroup << 16) | kSlots[s].index; }
+// Our own sounds: three new sound-table entries (guitar, men, women). The game has no sequence for a
+// new entry and no instrument for a new wave, so two hooks supply them: the sequence lookup serves a
+// tiny one-note sequence of ours (the game's own held single-note layout: open a track, call the
+// standard prologue, pick an instrument, hold the note), and the instrument lookup answers our three
+// program numbers (unused by the game) with the wave currently loaded for that stem. Only the playing
+// song's three stems are loaded (as new waves); nothing of the game's is replaced.
+constexpr u8 kBank = 0x35;            // a sound-effect bank (its wave bank is the sound effects')
+constexpr u8 kProgram0 = 0xE0;        // our programs: 0xE0 guitar, 0xE1 men, 0xE2 women (none in the game)
+constexpr u8 kKey = 0x3C;             // the note, at the waves' own base key: no pitch change
+u32 g_soundId[3] = {};                // our sound IDs (filled in at install)
+u16 g_waveId[3] = {};                 // the wave loaded for each stem now (0: none)
+u32 soundId(int s) { return g_soundId[s]; }
+// Sequence data. The two shared routines sit where the game's sound-effect collection has them, so
+// the calls and jumps read the same: 0x30 the prologue, 0x4D the "wait until done, then end" tail.
+alignas(32) u8 g_seq[0xC0] = {};
+constexpr u32 kRoot0 = 0x60;          // each stem's root track, 0x20 apart; its note track 0x10 after
+void buildSeq() {
+    const u8 prologue[] = {0xd8, 0x69, 0x19, 0x99, 0xea, 0x00, 0xff, 0xff, 0xd8, 0x6b, 0x00, 0x78, 0xb8, 0x02, 0x00, 0xc5};
+    const u8 tail[] = {0xda, 0x03, 0x60, 0x00, 0x00, 0xc8, 0x01, 0x00, 0x00, 0x5d, 0xf0, 0x01, 0xc7, 0x00, 0x00, 0x4d, 0xff};
+    std::memcpy(g_seq + 0x30, prologue, sizeof(prologue));
+    std::memcpy(g_seq + 0x4D, tail, sizeof(tail));
+    for (int s = 0; s < 3; s++) {
+        u8* r = g_seq + kRoot0 + 0x20 * s;
+        const u32 sub = kRoot0 + 0x20 * s + 0x10;
+        const u8 root[] = {0xc1, 0x00, static_cast<u8>(sub >> 16), static_cast<u8>(sub >> 8), static_cast<u8>(sub), 0xc7, 0x00, 0x00, 0x4d};
+        const u8 note[] = {0xc3, 0x00, 0x00, 0x30, 0xe1, kBank, static_cast<u8>(kProgram0 + s), kKey, 0x00, 0x7f, 0x00, 0xff};
+        std::memcpy(r, root, sizeof(root));
+        std::memcpy(r + 0x10, note, sizeof(note));
+    }
+}
+
+DEFINE_HOOK(&JAUSeqDataMgr_SeqCollection::getSeqData, SeqLookup);
+void onSeqLookupPost(ModContext*, void* args, void* retval, void*) {
+    const u32 id = static_cast<u32>(mods::arg<JAISoundID>(args, 1));
+    for (int s = 0; s < 3; s++) {
+        if (g_soundId[s] == 0 || id != g_soundId[s]) continue;
+        mods::arg<JAISeqData*>(args, 2)->set(g_seq, kRoot0 + 0x20 * s);
+        *static_cast<JAISeqDataMgr::SeqDataReturnValue*>(retval) = JAISeqDataMgr::SeqDataReturnValue_2;
+        return;
+    }
+}
+
+DEFINE_HOOK(&JASBasicBank::getInstParam, InstLookup);
+void onInstLookupPost(ModContext*, void* args, void* retval, void*) {
+    const int prg = mods::arg<int>(args, 1);
+    if (prg < kProgram0 || prg >= kProgram0 + 3) return;
+    const u16 wave = g_waveId[prg - kProgram0];
+    if (wave == 0) return;
+    auto* p = mods::arg<JASInstParam*>(args, 4);
+    p->init();
+    p->mWaveId = wave;
+    p->mChannelType = CHANNEL_WAVE;
+    p->mOscillators = nullptr;
+    p->mOscillatorCount = 0;
+    p->mDirectRelease = 0;
+    p->mDontSetKey = 0;
+    *static_cast<bool*>(retval) = true;
+}
 
 constexpr int kLoopsPerSong = 2;      // each song goes round twice, then a short pause and another
 constexpr int kPauseFrames = 150;
@@ -57,6 +113,7 @@ void unload() {
     for (int s = 0; s < 3; s++) {
         if (g_handle[s]) g_handle[s]->stop(20);
         if (g_wave[s] != 0) { svc_audio_res->remove_wave(mod_ctx, g_wave[s]); g_wave[s] = 0; }
+        g_waveId[s] = 0;
         g_vol[s] = 0.0f;
     }
 }
@@ -67,12 +124,12 @@ bool load(int song) {
         char path[96];
         std::snprintf(path, sizeof(path), "res/music/%s_%s.wav", kSongs[song].name, kStem[s]);
         AudioWaveInfo info{};
-        info.base_key = kSlots[s].key;
+        info.base_key = kKey;
         info.loop = true;
         info.loop_start_sample = 0;
         info.loop_end_sample = kSongs[song].samples;
         info.raw_wave = nullptr;
-        if (svc_audio_res->replace_wave(mod_ctx, AUDIO_WAVE_BANK_SOUND_EFFECTS, kSlots[s].wave, path, &info, &g_wave[s]) != MOD_OK) {
+        if (svc_audio_res->add_wave(mod_ctx, AUDIO_WAVE_BANK_SOUND_EFFECTS, path, &info, &g_wave[s], &g_waveId[s]) != MOD_OK) {
             travellers::diagLine("music   could not load %s", path);
             unload();
             return false;
@@ -114,7 +171,7 @@ bool female(int type) { return type == 20 || type == 27 || type == 28 || type ==
 namespace camp_music {
 
 bool isOurWave(unsigned wave) {
-    for (const Slot& s : kSlots) if (s.wave == wave) return true;
+    for (u16 w : g_waveId) if (w != 0 && w == wave) return true;
     return false;
 }
 
@@ -131,9 +188,14 @@ bool install() {
     info.random_volume = 0;
     info.volume = 1.0f;
     info.pitch = 1.0f;
-    for (const Slot& s : kSlots) {
-        svc_audio_res->replace_sound_table_effect(mod_ctx, SE_CATEGORY_OBJECT_SE, s.index, &info, nullptr);
+    for (int s = 0; s < 3; s++) {
+        u16 id = 0;
+        if (svc_audio_res->add_sound_table_effect(mod_ctx, SE_CATEGORY_OBJECT_SE, &info, nullptr, &id) != MOD_OK) return false;
+        g_soundId[s] = (static_cast<u32>(SE_CATEGORY_OBJECT_SE) << 16) | id;
     }
+    buildSeq();
+    if (mods::hook::add_post<SeqLookup>(onSeqLookupPost) != MOD_OK) return false;
+    if (mods::hook::add_post<InstLookup>(onInstLookupPost) != MOD_OK) return false;
     g_installed = true;
     return true;
 }
