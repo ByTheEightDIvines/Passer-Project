@@ -82,7 +82,8 @@ constexpr int kHealFramesResting = 150;      // ...every 2.5 s while sitting at 
 constexpr int kCookPathId = 0x3F;   // the camp cook's body (camp_cook.cpp)
 constexpr std::array<u8, 8> kFighters{3, 6, 8, 9, 11, 13, 14, 29};
 // The passer types from the cast (stock passer type ids).
-constexpr std::array<u8, 14> kCast{3, 4, 6, 7, 8, 9, 11, 13, 14, 15, 20, 27, 28, 29};
+// Everyone on the road but the bards: each fire has a bard of its own (homeCamp), so no others.
+constexpr std::array<u8, 13> kWalkCast{3, 6, 7, 8, 9, 11, 13, 14, 15, 20, 27, 28, 29};
 
 // --- network ----------------------------------------------------------------------------------
 struct Adj {
@@ -267,6 +268,7 @@ struct Traveller {
     u8 sleep = 0;          // 0 up, 1 off to bed (walking to the tent, crawling in), 2 asleep, 3 getting up
     bool stayUp = false;   // tonight it stays up by the fire
     int sleepFrames = 0;
+    int homeCamp = -1;     // a bard's own fire: he travels by day and is back to play there every night
 };
 
 std::array<Traveller, kSlots> g_t{};
@@ -444,9 +446,16 @@ int fightersAt(int campNode) {
 
 // Can t sit at this camp: it already has a seat there, or there's a free one (and, for a fighter,
 // the fire doesn't already have its two fighters).
+bool bardAway(int campNode) {   // this fire's bard isn't in his seat (yet): keep one free for him
+    for (const Traveller& o : g_t) {
+        if (o.used && !o.dead && o.homeCamp == campNode) return o.campNode != campNode;
+    }
+    return false;
+}
 bool canSit(const Traveller& t, int campNode) {
     if (t.campNode == campNode) return true;
-    if (seatsTaken(campNode) >= campSeats(campNode)) return false;
+    if (t.homeCamp == campNode) return seatsTaken(campNode) < campSeats(campNode);
+    if (seatsTaken(campNode) >= campSeats(campNode) - (bardAway(campNode) ? 1 : 0)) return false;
     return !fighterType(t.type) || fightersAt(campNode) < kMaxCampFighters;
 }
 
@@ -531,6 +540,9 @@ int randomDestination(const Traveller& t, int from) {
 // Where to spend the night from here: in the Castle Town field area always the amphitheater (into
 // town if it's full); everyone else the nearest camp with a free seat (into town if every camp is full).
 int nightDestination(Traveller& t, int from) {
+    if (t.homeCamp >= 0 && canSit(t, t.homeCamp) && (t.homeCamp == from || !plan(from, t.homeCamp, false).empty())) {
+        return t.homeCamp;   // a bard goes back to his own fire
+    }
     if (kNodes[from].stage == 1) {
         const int amphi = amphitheaterNode();
         if (amphi >= 0 && canSit(t, amphi) &&
@@ -915,7 +927,7 @@ void stepRestOrTown(Traveller& t) {
     } else if (t.state == ST_GONE) {
         if (--t.timer <= 0) {
             // a new traveller arrives on the road out of Castle Town
-            t.type = kCast[rnd() % kCast.size()];
+            if (t.homeCamp < 0) t.type = kWalkCast[rnd() % kWalkCast.size()];   // a bard stays his fire's bard
             t.dead = false;
             t.life = -1;
             t.state = ST_TOWN;
@@ -1038,31 +1050,18 @@ f32 distToFootprint(const cXyz& at, s16 yaw, f32 hx, f32 hz, f32 px, f32 pz) {
 }
 
 constexpr int kCampTents = 3;          // small A-tents at every camp
-constexpr f32 kTentRoadGap = 250.0f;   // no part of a tent closer than this to the road (or a bridge on it)
-constexpr f32 kTentMaxBump = 40.0f;    // the ground under a tent may vary this much at most (else no tent)
-constexpr f32 kDoorstep = 90.0f;       // the flat, open patch in front of a tent's door (to crawl in)
 
-// How close the road (any route of this stage) comes to a tent footprint.
-f32 roadGap(int stage, const cXyz& at, s16 yaw, f32 hx, f32 hz) {
-    f32 best = 1e9f;
-    const f32 reach = std::max(hx, hz) + 3000.0f;
-    for (int e = 0; e < kEdgeCount; ++e) {
-        const Edge& ed = kEdges[e];
-        for (int i = 1; i < ed.count; ++i) {
-            const Point& p = kPoints[ed.first + i - 1];
-            const Point& q = kPoints[ed.first + i];
-            if (p.stage != stage || q.stage != stage) continue;
-            const f32 mx = (p.x + q.x) * 0.5f - at.x, mz = (p.z + q.z) * 0.5f - at.z;
-            const f32 seg = std::sqrt((q.x - p.x) * (q.x - p.x) + (q.z - p.z) * (q.z - p.z));
-            if (mx * mx + mz * mz > (reach + seg) * (reach + seg)) continue;
-            const int steps = std::max(1, static_cast<int>(seg / 50.0f));
-            for (int k = 0; k <= steps; ++k) {
-                const f32 t = static_cast<f32>(k) / steps;
-                best = std::min(best, distToFootprint(at, yaw, hx, hz, p.x + (q.x - p.x) * t, p.z + (q.z - p.z) * t));
-            }
-        }
-    }
-    return best;
+// Camps whose tents are placed by hand instead of searched for (where the ground around the fire
+// is too tight for the search: camp 53 sits between the cliff and the road by the bridge).
+struct HandTent { f32 x, y, z; u16 yaw; };
+struct HandTents { int node; int count; HandTent tent[4]; };
+constexpr HandTents kHandTents[] = {
+    {53, 3, {{-12447.8f, -1075.3f, 24815.9f, 55323}, {-13152.3f, -1075.3f, 25854.0f, 25875},
+             {-11450.0f, -1075.3f, 26000.0f, 44829}}},
+};
+const HandTents* handTents(int node) {
+    for (const HandTents& h : kHandTents) if (h.node == node) return &h;
+    return nullptr;
 }
 
 struct TentSpot {
@@ -1136,23 +1135,17 @@ bool findTentSpot(int campNode, const cXyz& fire, s16 campYaw, u32 kind, const s
                 if (clear) clear = at.abs(o.pos) >= std::max(hx, hz) + std::max(o.hx, o.hz);
             }
             if (!clear) continue;
-            if (roadGap(kNodes[campNode].stage, at, yaw, hx, hz) < kTentRoadGap) continue;
             const f32 bump = bumpiness(at, yaw, hx, hz, fire.y, false);
-            if (bump < 0.0f || bump > kTentMaxBump * 1.5f) continue;
+            if (bump < 0.0f) continue;
             cands.push_back({bump + r * 0.03f, at, yaw});   // 100 units further out costs 3 of bump
         }
     }
     std::sort(cands.begin(), cands.end(), [](const Cand& a, const Cand& b) { return a.score < b.score; });
     f32 best = 1e9f, bestBump = 0.0f;
     bool found = false;
-    for (size_t i = 0; i < cands.size() && i < 16u; i++) {
+    for (size_t i = 0; i < cands.size() && i < (maxBump < 1e8f ? 16u : 6u); i++) {
         const f32 bump = bumpiness(cands[i].at, cands[i].yaw, hx, hz, fire.y, true);
-        if (bump < 0.0f || bump > std::min(maxBump, kTentMaxBump)) continue;
-        // the doorstep: flat open ground just in front of the door, for crawling in and out
-        const cXyz step(cands[i].at.x + cM_ssin(cands[i].yaw) * (hz + kDoorstep),
-                        cands[i].at.y, cands[i].at.z + cM_scos(cands[i].yaw) * (hz + kDoorstep));
-        const f32 stepBump = bumpiness(step, cands[i].yaw, hx * 0.6f, kDoorstep, fire.y, true);
-        if (stepBump < 0.0f || stepBump > kTentMaxBump) continue;
+        if (bump < 0.0f || bump > maxBump) continue;
         const f32 score = bump + cands[i].at.abs(fire) * 0.03f;
         if (score < best) {
             best = score;
@@ -1262,6 +1255,7 @@ void rollStayUps(int campNode) {
 }
 void bedTick(Traveller& t) {
     if (t.dead) { if (t.bedCamp >= 0) releaseBed(t); return; }
+    if (t.homeCamp >= 0) t.stayUp = true;   // the bard plays all night
     for (int i = 0; i < kCampCount; ++i) {   // a fresh pick of stay-ups each night
         CampTents& c = g_camps[i];
         if (bedTime() && !c.rolled) { c.rolled = true; rollStayUps(kCamps[i].node); }
@@ -1317,7 +1311,16 @@ void updateCamps(int stage, const cXyz& link) {
                 // A few small A-tents (no big tent), each on the flattest open ground left around
                 // the fire, doors toward it, with a walkway between them.
                 std::vector<TentSpot> placed;
-                for (int i = 0; i < kCampTents; i++) {
+                const HandTents* hand = handTents(cp.node);
+                for (int i = 0; hand != nullptr && i < hand->count; i++) {   // hand-placed spots for this camp
+                    const HandTent& h = hand->tent[i];
+                    f32 y = probeGround(h.x, h.y, h.z);
+                    if (y == -G_CM3D_F_INF || std::fabs(y - h.y) > 150.0f) y = h.y;
+                    const cXyz at(h.x, y, h.z);
+                    spawnTent(c, PSR_TENT_A, at, static_cast<s16>(h.yaw), n.room);
+                    if (c.tents < 4) { c.tentPos[c.tents] = at; c.tentYaw[c.tents] = static_cast<s16>(h.yaw); ++c.tents; }
+                }
+                for (int i = 0; hand == nullptr && i < kCampTents; i++) {
                     TentSpot t{};
                     if (!findTentSpot(cp.node, mid, face, PSR_TENT_A, placed, &t)) break;
                     placed.push_back(t);
@@ -1353,11 +1356,19 @@ void probeBridge(int stage) {
 
 void populate() {
     // start them spread over the network: some on the roads, some at camps
+    // the first few are the bards, one to each fire; everyone else from the rest of the cast
+    std::vector<int> fires;
+    for (int c = 0; c < kCampCount; ++c) if (kNodes[kCamps[c].node].kind == NK_CAMP) fires.push_back(kCamps[c].node);
     for (int s = 0; s < kPopulation && s < kSlots; ++s) {
         Traveller& t = g_t[s];
         t = Traveller{};
         t.used = true;
-        t.type = kCast[s % kCast.size()];
+        if (s < static_cast<int>(fires.size())) {
+            t.type = kBardType;
+            t.homeCamp = fires[s];
+        } else {
+            t.type = kWalkCast[s % kWalkCast.size()];
+        }
         int start = 0;
         for (int tries = 0; tries < 20; ++tries) {
             start = static_cast<int>(rnd() % kNodeCount);
