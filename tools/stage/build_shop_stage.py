@@ -35,9 +35,9 @@ for tag, (_, n, o) in chunks(dzs).items():
     if not tag.startswith('PAL'): continue
     for j in range(n):
         e = o + 0x34 * j
-        dzs[e:e + 3] = bytes((150, 146, 140))                        # actors
-        for k in range(4): dzs[e + 3 + 3 * k:e + 6 + 3 * k] = bytes((235, 230, 222))   # the room
-        for k in range(6): dzs[e + 0xF + 3 * k:e + 0x12 + 3 * k] = bytes((255, 236, 205))  # lamp light
+        dzs[e:e + 3] = bytes((70, 66, 62))                           # actors
+        for k in range(4): dzs[e + 3 + 3 * k:e + 6 + 3 * k] = bytes((72, 70, 66))   # the room (the house's own run 10-30; 235 blew it out)
+        for k in range(6): dzs[e + 0xF + 3 * k:e + 0x12 + 3 * k] = bytes((160, 140, 110))  # lamp light
         dzs[e + 0x21:e + 0x24] = bytes((0, 0, 0))
         struct.pack_into('>ff', dzs, e + 0x24, 50000.0, 100000.0)   # fog far beyond the walls
 C = chunks(dzs)

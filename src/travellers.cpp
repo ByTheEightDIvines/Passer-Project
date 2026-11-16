@@ -1700,6 +1700,9 @@ void update() {
     if (const int worldNow = inWorld ? stage : -2; worldNow != g_lastWorldLogged) {
         // only when it changes (this used to write a line every frame while out of the world)
         g_lastWorldLogged = worldNow;
+        // a stage change took every tent and fire with it (e.g. into Beedle's shop and back out):
+        // put them up again when Link is back
+        for (CampTents& c : g_camps) { c.ids.clear(); c.up = false; c.tents = 0; }
         const char* sn = dComIfGp_getStartStageName();
         diag("world   %s stage %s (net %d) room %d darkworld %d", inWorld ? "IN" : "OUT", sn ? sn : "?", stage,
              dComIfGp_roomControl_getStayNo(), static_cast<int>(dKy_darkworld_check()));
