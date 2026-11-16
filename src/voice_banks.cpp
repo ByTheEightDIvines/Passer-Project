@@ -10,6 +10,7 @@
 #include "mods/svc/hook.hpp"
 #include "JSystem/JAudio2/JASBasicWaveBank.h"
 #include "travellers.hpp"
+#include "camp_music.hpp"
 
 IMPORT_SERVICE(AudioResService, svc_audio_res);
 
@@ -20,7 +21,7 @@ int g_rescued = 0;
 
 bool isOurs(u32 wave) {
     for (u16 w : kVoiceWaves) if (w == wave) return true;
-    return false;
+    return camp_music::isOurWave(wave);   // the campfire songs' borrowed slots too
 }
 
 // The engine looks up a clip's slot before it checks for a mod's replacement, and the slot only

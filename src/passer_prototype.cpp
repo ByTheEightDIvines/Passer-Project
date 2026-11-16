@@ -23,6 +23,7 @@
 #include "spot_picker.hpp"
 #include "tent_actor.hpp"
 #include "voice_banks.hpp"
+#include "camp_music.hpp"
 #include "soul_actor.hpp"
 #include "note_actor.hpp"
 #include "bubble_actor.hpp"
@@ -1785,8 +1786,7 @@ void musicTick(daNpcPasser_c* passer, PasserState& state, bool busy) {
         if (passer->mpMorf->getAnm() != strum) passer->setAnm(strum, 1.0f, 12.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
         g_bardPlaying = fopAcM_GetID(passer);
         g_bardCamp = static_cast<int>(center.x * 0.01f) ^ static_cast<int>(center.z * 0.01f);
-        passer->mCitizen.startCreatureVoiceLevel(Z2SE_CSL_TOWN_BAND_GT_1, -1);
-        passer->mCitizen.startCreatureVoiceLevel(Z2SE_CSL_TOWN_BAND_VOCAL, -1);
+        camp_music::bardPlays(passer);   // the campfire songs (camp_music)
         noteTick(passer, state, 14);   // a note about every half second
         return;
     }
@@ -1803,6 +1803,7 @@ void musicTick(daNpcPasser_c* passer, PasserState& state, bool busy) {
         if (auto* sing = static_cast<J3DAnmTransformKey*>(passer->getAnmP(53, 0))) {
             if (passer->mpMorf->getAnm() != sing) passer->setAnm(sing, 1.0f, 12.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
         }
+        camp_music::singsAlong(passer);
         noteTick(passer, state, 24);   // fewer than the bard's
         return;
     }
@@ -2785,6 +2786,9 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     if (mods::hook::add_pre<PathObstacle>(onCheckObstaclePre) != MOD_OK) {
         svc_log->info(mod_ctx, "path obstacle hook unavailable; travellers keep the game's own sidestepping");
     }
+    if (!camp_music::install()) {
+        svc_log->info(mod_ctx, "campfire songs unavailable; the bard plays silently");
+    }
     if (!voice_banks::install()) {
         svc_log->info(mod_ctx, "voice clips could not be registered; travellers stay quiet");
     }
@@ -2827,6 +2831,7 @@ MOD_EXPORT ModResult mod_update(ModError*) {
     spot_picker::update();
     updateHunts();
     travellers::update();
+    camp_music::tick();
     return MOD_OK;
 }
 
