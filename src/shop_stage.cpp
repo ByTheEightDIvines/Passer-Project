@@ -10,7 +10,6 @@
 #include "mods/svc/stage.h"
 #include "travellers.hpp"
 
-IMPORT_SERVICE(StageService, svc_stage);
 
 namespace {
 constexpr const char* kShop = "R_PSR00";
