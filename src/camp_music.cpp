@@ -63,7 +63,8 @@ void buildSeq() {
     }
 }
 
-DEFINE_HOOK(&JAUSeqDataMgr_SeqCollection::getSeqData, SeqLookup);
+DEFINE_HOOK_SYMBOL("JAUSeqDataMgr_SeqCollection::getSeqData",
+                   JAISeqDataMgr::SeqDataReturnValue(JAUSeqDataMgr_SeqCollection*, JAISoundID, JAISeqData*), SeqLookup);
 void onSeqLookupPost(ModContext*, void* args, void* retval, void*) {
     const u32 id = static_cast<u32>(mods::arg<JAISoundID>(args, 1));
     for (int s = 0; s < 3; s++) {
@@ -74,7 +75,7 @@ void onSeqLookupPost(ModContext*, void* args, void* retval, void*) {
     }
 }
 
-DEFINE_HOOK(&JASBasicBank::getInstParam, InstLookup);
+DEFINE_HOOK_SYMBOL("JASBasicBank::getInstParam", bool(const JASBasicBank*, int, int, int, JASInstParam*), InstLookup);
 void onInstLookupPost(ModContext*, void* args, void* retval, void*) {
     const int prg = mods::arg<int>(args, 1);
     if (prg < kProgram0 || prg >= kProgram0 + 3) return;
