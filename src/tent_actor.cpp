@@ -78,6 +78,7 @@ psrTent_c::~psrTent_c() {
         dComIfG_Bgsp().Release(mpCollider);
     }
     dComIfG_resDelete(&mPhase, kArcName);
+    if (mHasFlame) svc_actor->delete_actor(mod_ctx, mFlame);
     if ((fopAcM_GetParam(this) & 0xFF) == PSR_TENT_BEEDLE) {
         dComIfG_resDelete(&mPhaseLamp, "Obj_kntr");
         dComIfG_resDelete(&mPhaseRoom, kRoomArc);
@@ -293,6 +294,28 @@ int psrTent_c::Execute() {
         mpStage[i]->setBaseTRMtx(mDoMtx_stack_c::get());
     }
     if (mKind == PSR_TENT_BEEDLE) {
+        // the entry lantern is lit at night: the game's own flame (fireWd2, as in the Kakariko houses and
+        // the shop's lanterns), placed in it at dusk and taken away in the morning
+        const bool night = isNight();
+        if (night && !mHasFlame && mStageNum > 0) {
+            const StageProp& lamp = kStage[0];
+            const f32 k = psr_tent::kScale[mKind];
+            const f32 ly = (lamp.y + 28.0f * lamp.scale) * k - 15.0f;   // the flame sits 15 above the actor
+            const f32 lz = lamp.z * k;
+            const f32 c = cM_scos(shape_angle.y), sn = cM_ssin(shape_angle.y);
+            ActorSpawnParams p{};
+            p.parameters = 0xFF0101FF;   // lit, with its point light, no switch (as the game's Kakariko flames)
+            p.argument = -1;
+            p.room_num = static_cast<s8>(fopAcM_GetRoomNo(this));
+            p.position.x = current.pos.x + sn * lz;
+            p.position.y = current.pos.y + ly;
+            p.position.z = current.pos.z + c * lz;
+            p.scale.x = p.scale.y = p.scale.z = 1.0f;
+            mHasFlame = svc_actor->create_actor_from_name(mod_ctx, "fireWd2", &p, &mFlame) == MOD_OK;
+            travellers::diagLine("tent    Beedle's lantern %s", mHasFlame ? "lit" : "could not be lit");
+        } else if (!night && mHasFlame) {
+            if (svc_actor->delete_actor(mod_ctx, mFlame) == MOD_OK) mHasFlame = false;
+        }
         // Link at the curtain (the back of the entry, where its collision stops him): into the shop.
         if (auto* link = dComIfGp_getPlayer(0)) {
             const f32 dx = link->current.pos.x - current.pos.x, dz = link->current.pos.z - current.pos.z;

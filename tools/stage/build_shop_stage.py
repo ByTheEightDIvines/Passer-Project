@@ -40,6 +40,19 @@ for tag, (_, n, o) in chunks(dzs).items():
         for k in range(6): dzs[e + 0xF + 3 * k:e + 0x12 + 3 * k] = bytes((160, 140, 110))  # lamp light
         dzs[e + 0x21:e + 0x24] = bytes((0, 0, 0))
         struct.pack_into('>ff', dzs, e + 0x24, 50000.0, 100000.0)   # fog far beyond the walls
+# night: a second, darker set (entry 1 of each lighting chunk); the dusk and night slots (4 and 5 of
+# each Col entry's eight: 19:00 to 05:00) point at it, the rest at the day set (entry 0). The lanterns'
+# own point lights do the rest.
+for tag, (_, n, o) in chunks(dzs).items():
+    if not tag.startswith('PAL') or n < 2: continue
+    e = o + 0x34
+    dzs[e:e + 3] = bytes((34, 32, 40))
+    for k in range(4): dzs[e + 3 + 3 * k:e + 6 + 3 * k] = bytes((30, 28, 36))
+for tag, (_, n, o) in chunks(dzs).items():
+    if not tag.startswith('Col'): continue
+    for j in range(n):
+        e = o + 0xC * j
+        dzs[e:e + 8] = bytes((0, 0, 0, 0, 1, 1, 0, 0))
 C = chunks(dzs)
 _, n, o = C['SCLS']
 struct.pack_into('>8sBbBBB', dzs, o, FIELD, 0, 0, 0xF0, 0xFF, 0)     # the way out: the field (the mod puts Link at the tent)
@@ -54,8 +67,8 @@ C = chunks(dzr)
 for t in list(C):
     if t[:3] in ('ACT', 'SCO', 'LGT', 'TRE') or t in ('ACTR', 'SCOB', 'Door', 'REVT', 'RCAM', 'RARO'): set_count(dzr, t, 0)
 _, n, o = C['PLYR']
-# spawn 0: just inside the curtain, facing into the shop (plain standing spawn, like the game's own)
-struct.pack_into('>8sI3f3hH', dzr, o, b'Link', 0xFF00003F, 0.0, 0.0, ZF - 90.0, 0, -0x8000, 0, 0xFFFF)
+# spawn 0: inside the curtain, facing into the shop (plain standing spawn, like the game's own)
+struct.pack_into('>8sI3f3hH', dzr, o, b'Link', 0xFF00003F, 0.0, 0.0, ZF - 250.0, 0, -0x8000, 0, 0xFFFF)   # well inside: the camera starts in the room
 set_count(dzr, 'PLYR', 1)
 _, n, o = C['SCLS']
 struct.pack_into('>8sBbBBB', dzr, o, FIELD, 0, 0, 0xF0, 0xFF, 0)

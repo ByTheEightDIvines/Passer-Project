@@ -13,6 +13,8 @@
 #include "mod_sounds.hpp"
 #include "mods/svc/audio_res.h"
 #include "Z2AudioLib/Z2AudioMgr.h"
+#include "mods/svc/actor.h"
+#include "sky_actor.hpp"
 
 
 namespace {
@@ -32,6 +34,11 @@ constexpr u8 kMusicProgram = 0xF5;
 constexpr u32 kMusicSamples = 2246427;        // res/music/beedle_shop.wav, 32 kHz mono
 constexpr f32 kMusicVolume = 0.8f;
 u32 g_musicId = 0;
+constexpr u8 kGreetProgram = 0xF6;
+constexpr u32 kGreetSamples = 44226;           // res/voices/beedle_0038.wav (Wind Waker shop clip #38)
+u32 g_greetId = 0;
+JAISoundHandle g_greet;
+bool g_visitStarted = false;                  // the sky and the greeting, once per visit
 JAISoundHandle g_music;
 JGeometry::TVec3<f32> g_musicPos;
 
@@ -60,6 +67,9 @@ bool installMusic() {
     info.volume = 1.0f;
     info.pitch = 1.0f;
     g_musicId = mod_sounds::addSound(SE_CATEGORY_OBJECT_SE, kMusicProgram, &info);
+    if (mod_sounds::loadWave(kGreetProgram, "res/voices/beedle_0038.wav", false, kGreetSamples)) {
+        g_greetId = mod_sounds::addSound(SE_CATEGORY_CHARA_VOICE, kGreetProgram, &info);
+    }
     return g_musicId != 0;
 }
 
@@ -73,8 +83,9 @@ void musicTick(bool inside, bool settled) {
     if (!settled) return;   // wait until the shop has settled (the game brings its sound back up after a stage change)
     if (++g_musicLog >= 150) {   // every 5 seconds: is it still going, and how loud
         g_musicLog = 0;
-        travellers::diagLine("shop    music %s volume %.2f", g_music ? "still playing" : "stopped",
-                             g_music ? g_music->getAuxiliary().params_.mVolume : 0.0f);
+        travellers::diagLine("shop    music %s volume %.2f (our waves found by the game so far: %d)",
+                             g_music ? "still playing" : "stopped",
+                             g_music ? g_music->getAuxiliary().params_.mVolume : 0.0f, mod_sounds::lookupsAnswered());
     }
     if (auto* link = dComIfGp_getPlayer(0)) {
         g_musicPos.set(link->current.pos.x, link->current.pos.y + 100.0f, link->current.pos.z);
@@ -115,7 +126,27 @@ void enter(const cXyz& doorOut, s16 yawOut, int fieldRoom) {
 void tick() {
     if (g_cool > 0) --g_cool;
     musicTick(inShop(), g_settle >= 30);
-    if (!inShop()) { g_settle = 0; return; }
+    if (!inShop()) { g_settle = 0; g_visitStarted = false; return; }
+    if (g_settle >= 30 && !g_visitStarted) {
+        g_visitStarted = true;
+        // the field outside, through the doorway and windows (goes with the stage when Link leaves)
+        ActorSpawnParams sp{};
+        sp.parameters = 0; sp.argument = -1; sp.room_num = 0;
+        sp.position.x = sp.position.y = sp.position.z = 0.0f;
+        sp.scale.x = sp.scale.y = sp.scale.z = 1.0f;
+        ActorId sky{};
+        const bool skyOk = svc_actor->create_actor_from_name(mod_ctx, PSR_SKY_NAME, &sp, &sky) == MOD_OK;
+        // Beedle's greeting (his Wind Waker shop clip #38): also a test of our sounds in this stage
+        const int before = mod_sounds::lookupsAnswered();
+        if (g_greetId != 0) {
+            if (auto* link = dComIfGp_getPlayer(0)) {
+                g_musicPos.set(link->current.pos.x, link->current.pos.y + 100.0f, link->current.pos.z);
+            }
+            Z2GetAudioMgr()->startSound(JAISoundID(g_greetId), &g_greet, &g_musicPos);
+        }
+        travellers::diagLine("shop    sky %s, greeting %s (wave lookups found so far %d)", skyOk ? "placed" : "NOT placed",
+                             g_greet ? "started" : "did not start", before);
+    }
     // the lamp flames (fireWd2, switch 0x20, lit while it's off): out by day, lit at night
     if (dKy_daynight_check()) dComIfGs_offSwitch(0x20, 0);
     else dComIfGs_onSwitch(0x20, 0);

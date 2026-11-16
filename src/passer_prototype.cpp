@@ -26,6 +26,7 @@
 #include "camp_music.hpp"
 #include "mod_sounds.hpp"
 #include "shop_stage.hpp"
+#include "sky_actor.hpp"
 #include "soul_actor.hpp"
 #include "note_actor.hpp"
 #include "bubble_actor.hpp"
@@ -2829,6 +2830,9 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     }
     if (psr_tent::registerActor() != MOD_OK) {
         return mods::set_error(error, MOD_ERROR, "failed to register the tent actor");
+    }
+    if (psr_sky::registerActor() != MOD_OK) {
+        return mods::set_error(error, MOD_ERROR, "failed to register the shop sky actor");
     }
     if (psr_spawner::registerAndPlace() != MOD_OK) {
         return mods::set_error(error, MOD_ERROR, "failed to register or place the traveller spawners");

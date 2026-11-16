@@ -27,6 +27,8 @@ public:
     J3DModel* mpFlap[2];        // small tent only: the door flaps, left and right (the right is the left mirrored)
     J3DModel* mpLit[3];         // small tent at night with someone inside: lit from within (tent, both flaps)
     bool mLit = false;
+    ActorId mFlame = 0;         // Beedle's tent at night: the game's flame (fireWd2) in the entry lantern
+    bool mHasFlame = false;
     f32 mFlapOpen = 1.0f;       // 1 = tied back open, 0 = shut
     f32 mFlapTarget = 1.0f;
     void setFlaps(bool open) { mFlapTarget = open ? 1.0f : 0.0f; }

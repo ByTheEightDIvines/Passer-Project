@@ -35,7 +35,7 @@ from multibmd import write_multi
 Lw, Lhw, Lhr, LZB, LZF = scene.LAY['W'], scene.LAY['Hw'], scene.LAY['Hr'], scene.LAY['ZB'], scene.LAY['ZF']
 ZVg = 500.0 - 70.0 * 1.6                      # the curtain line, in shop units
 zc = (-500.0 + ZVg) / 2
-LIFT = 5.0                                    # tent units
+LIFT = 15.0                                   # tent units
 def shell(P):
     c = P.mean(0)
     if abs(abs(c[0]) - Lw / 2) < 6 and np.ptp(P[:, 0]) < 3: return True
