@@ -35,7 +35,7 @@ def a_tent_col():
     t += poly_tris([V(-W / 2, 0, zf), V(W / 2, 0, zf), V(0, H, zf)], V(0, 0, 1))      # door kept shut for collision
     return t
 
-def wall_tent_col(Wt, Lt, Hw, Hr, eave, ends, door, vest=None):
+def wall_tent_col(Wt, Lt, Hw, Hr, eave, ends, door, vest=None, shoulder=None):
     zf, zb = Lt / 2, -Lt / 2; ey = Hw + 4
     t = []
     for s in (-1, 1):   # roof (both faces: a ceiling from inside)
@@ -43,8 +43,14 @@ def wall_tent_col(Wt, Lt, Hw, Hr, eave, ends, door, vest=None):
                        V(s * (Hr - ey), Wt / 2 + eave, 0), both=True)
         t += quad_tris(V(s * Wt / 2, 0, zb), V(s * Wt / 2, 0, zf), V(s * Wt / 2, Hw, zf), V(s * Wt / 2, Hw, zb), V(s, 0, 0), both=True)
     t += poly_tris([V(-Wt / 2, 0, zb), V(Wt / 2, 0, zb), V(Wt / 2, Hw, zb), V(0, Hr, zb), V(-Wt / 2, Hw, zb)], V(0, 0, -1), both=True)
-    t += poly_tris([V(-Wt / 2, 0, zf), V(-door, 0, zf), V(0, Hr, zf), V(-Wt / 2, Hw, zf)], V(0, 0, 1), both=True)
-    t += poly_tris([V(door, 0, zf), V(Wt / 2, 0, zf), V(Wt / 2, Hw, zf), V(0, Hr, zf)], V(0, 0, 1), both=True)
+    if shoulder:   # doorway with near-upright sides up to the shoulder, then up to the ridge
+        ds, dy = shoulder; gx = (Hr - dy) / (Hr - Hw) * Wt / 2
+        for s in (-1, 1):
+            t += poly_tris([V(s * door, 0, zf), V(s * Wt / 2, 0, zf), V(s * Wt / 2, Hw, zf), V(s * gx, dy, zf), V(s * ds, dy, zf)], V(0, 0, 1), both=True)
+            t += poly_tris([V(s * ds, dy, zf), V(s * gx, dy, zf), V(0, Hr, zf)], V(0, 0, 1), both=True)
+    else:
+        t += poly_tris([V(-Wt / 2, 0, zf), V(-door, 0, zf), V(0, Hr, zf), V(-Wt / 2, Hw, zf)], V(0, 0, 1), both=True)
+        t += poly_tris([V(door, 0, zf), V(Wt / 2, 0, zf), V(Wt / 2, Hw, zf), V(0, Hr, zf)], V(0, 0, 1), both=True)
     if vest:   # Beedle's entry: side walls and the curtain (the curtain is where the room load will trigger)
         vx, vd = vest; zv = zf - vd
         roof_y = lambda x: Hr - (Hr - ey) * abs(x) / (Wt / 2 + eave) - 4

@@ -23,7 +23,7 @@ namespace {
 const char* kArcName = "PsrTent";
 const char* kModel[PSR_TENT_KIND_NUM] = {"a_tent.bmd", "wall_tent.bmd", "beedle_tent.bmd"};
 const char* kCollision[PSR_TENT_KIND_NUM] = {"a_tent.dzb", "wall_tent.dzb", "beedle_tent.dzb"};
-const char* kGlow = "beedle_glow.bmd";
+const char* kRoom[2] = {"beedle_room.bmd", "beedle_room_n.bmd"};   // the baked room, by day and by night
 // Room for the model instance, its display lists and the collider (the tents are big meshes).
 constexpr u32 kHeapSize = 0x80000;
 
@@ -35,10 +35,7 @@ struct StageProp {
     f32 x, y, z, scale;
 };
 constexpr StageProp kStage[] = {
-    {"HTable", "ytable.bmd", -130.0f, 0.0f, -50.0f, 0.62f},
-    {"HTable", "ytable.bmd", 130.0f, 0.0f, -50.0f, 0.62f},
-    {"Obj_kntr", "ob_kantera.bmd", 0.0f, 250.0f, 40.0f, 1.6f},     // hanging behind the curtain
-    {"Obj_kntr", "ob_kantera.bmd", 0.0f, 205.0f, 250.0f, 1.6f},    // the entry lantern
+    {"Obj_kntr", "ob_kantera.bmd", 0.0f, 205.0f, 282.5f, 1.6f},    // the entry lantern
 };
 static_assert(sizeof(kStage) / sizeof(kStage[0]) <= psrTent_c::kStageMax);
 
@@ -54,7 +51,6 @@ psrTent_c::~psrTent_c() {
     }
     dComIfG_resDelete(&mPhase, kArcName);
     if ((fopAcM_GetParam(this) & 0xFF) == PSR_TENT_BEEDLE) {
-        dComIfG_resDelete(&mPhaseTable, "HTable");
         dComIfG_resDelete(&mPhaseLamp, "Obj_kntr");
     }
 }
@@ -67,17 +63,13 @@ cPhs_Step psrTent_c::create() {
     }
     if ((fopAcM_GetParam(this) & 0xFF) == PSR_TENT_BEEDLE) {
         // The stage props come straight from the disc archives, so they match the player's mods/HD packs.
-        const cPhs_Step t = dComIfG_resLoad(&mPhaseTable, "HTable");
         const cPhs_Step l = dComIfG_resLoad(&mPhaseLamp, "Obj_kntr");
-        if (t == cPhs_ERROR_e || l == cPhs_ERROR_e) {
-            return cPhs_ERROR_e;
-        }
-        if (t != cPhs_COMPLEATE_e || l != cPhs_COMPLEATE_e) {
-            return t != cPhs_COMPLEATE_e ? t : l;
+        if (l != cPhs_COMPLEATE_e) {
+            return l;
         }
     }
     mpModel = NULL;
-    mpGlow = NULL;
+    mpRoom[0] = mpRoom[1] = NULL;
     mpCollider = NULL;
     mGrounded = false;
     mStageNum = 0;
@@ -157,7 +149,7 @@ int psrTent_c::CreateHeap() {
     if (mpModel == NULL) {
         return 0;
     }
-    mpGlow = NULL;
+    mpRoom[0] = mpRoom[1] = NULL;
     mStageNum = 0;
     if (mKind == PSR_TENT_BEEDLE) {
         for (const StageProp& prop : kStage) {
@@ -170,9 +162,9 @@ int psrTent_c::CreateHeap() {
                 mpStage[mStageNum++] = m;
             }
         }
-        auto* glow = static_cast<J3DModelData*>(dComIfG_getObjectRes(kArcName, kGlow));
-        if (glow != NULL) {
-            mpGlow = mDoExt_J3DModel__create(glow, 0x80000, 0x11000084);
+        for (int i = 0; i < 2; i++) {
+            auto* room = static_cast<J3DModelData*>(dComIfG_getObjectRes(kArcName, kRoom[i]));
+            mpRoom[i] = room != NULL ? mDoExt_J3DModel__create(room, 0x80000, 0x11000084) : NULL;
         }
     }
     mpCollider = JKR_NEW dBgW();
@@ -210,8 +202,8 @@ int psrTent_c::Execute() {
     const f32 k = psr_tent::kScale[mKind];
     mDoMtx_stack_c::scaleM(k, k, k);
     mpModel->setBaseTRMtx(mDoMtx_stack_c::get());
-    if (mpGlow != NULL) {
-        mpGlow->setBaseTRMtx(mDoMtx_stack_c::get());
+    for (J3DModel* room : mpRoom) {
+        if (room != NULL) room->setBaseTRMtx(mDoMtx_stack_c::get());
     }
     for (int i = 0; i < mStageNum; i++) {
         const StageProp& prop = kStage[i];
@@ -243,9 +235,10 @@ int psrTent_c::Draw() {
         g_env_light.setLightTevColorType_MAJI(mpStage[i], &tevStr);
         mDoExt_modelUpdateDL(mpStage[i]);
     }
-    if (mpGlow != NULL && isNight()) {
-        // Lit from inside: drawn without the scene's lighting so it stays bright in the dark.
-        mDoExt_modelUpdateDL(mpGlow);
+    // The room is baked with its own lamplight, so it's drawn without the scene's lighting: the day
+    // room as painted, the night room glowing out through the door and windows.
+    if (J3DModel* room = mpRoom[isNight() ? 1 : 0]) {
+        mDoExt_modelUpdateDL(room);
     }
     return 1;
 }

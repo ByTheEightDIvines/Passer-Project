@@ -17,13 +17,12 @@ enum PsrTentKind : u8 { PSR_TENT_A = 0, PSR_TENT_WALL = 1, PSR_TENT_BEEDLE = 2, 
 class psrTent_c : public fopAc_ac_c {
 public:
     request_of_phase_process_class mPhase;
-    request_of_phase_process_class mPhaseTable;   // HTable.arc (Beedle's stage)
     request_of_phase_process_class mPhaseLamp;    // Obj_kntr.arc (the passers' lantern)
     J3DModel* mpModel;
     static constexpr int kStageMax = 4;
     J3DModel* mpStage[kStageMax];                 // the game's own props behind Beedle's curtain
     int mStageNum;
-    J3DModel* mpGlow;           // Beedle's tent only: windows, lantern and the room through the curtain
+    J3DModel* mpRoom[2];        // Beedle's tent only: the baked room, day and night
     Mtx mColliderMtx;
     dBgW* mpCollider;
     u8 mKind;
@@ -49,8 +48,8 @@ namespace psr_tent {
 // How much bigger than the modelled size each tent stands in the world (A-tent, wall tent, Beedle's).
 constexpr f32 kScale[PSR_TENT_KIND_NUM] = {1.3f, 1.3f, 1.6f};
 // Half the size of each tent's footprint on the ground at that scale (x across, z front to back).
-constexpr f32 kFootX[PSR_TENT_KIND_NUM] = {150.0f * 1.3f, 310.0f * 1.3f, 350.0f * 1.6f};
-constexpr f32 kFootZ[PSR_TENT_KIND_NUM] = {245.0f * 1.3f, 445.0f * 1.3f, 515.0f * 1.6f};
+constexpr f32 kFootX[PSR_TENT_KIND_NUM] = {150.0f * 1.3f, 310.0f * 1.3f, 380.0f * 1.6f};
+constexpr f32 kFootZ[PSR_TENT_KIND_NUM] = {245.0f * 1.3f, 445.0f * 1.3f, 548.0f * 1.6f};
 
 // Someone (a traveller, the cook) ended up standing on a tent's canvas: the sloped roof counts as
 // ground, so anyone who bumped into a tent walked up onto it. Puts them back down on the grass just

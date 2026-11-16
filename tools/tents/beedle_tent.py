@@ -15,10 +15,11 @@ OUT = sys.argv[1]
 HERE = os.path.dirname(os.path.abspath(__file__))
 rng = np.random.default_rng(23)
 
-Wt, Lt = 440.0, 560.0
+Wt, Lt = 500.0, 625.0         # 800 x 1000 in game units: the size of the room inside
 Hw, Hr = 145.0, 345.0
 EAVE, ENDS = 18.0, 14.0
-DOOR = 82.0                   # half-width of the doorway at the ground
+DOOR = 94.0                   # half-width of the doorway at the ground
+DS, DY = 86.0, 190.0          # the doorway's shoulder: near-upright sides up to here, then up to the ridge
 VD = 70.0                     # vestibule depth behind the door
 TIP = 22.0
 ZF, ZB = Lt / 2, -Lt / 2
@@ -124,6 +125,8 @@ for sgn in (-1, 1):
     valance_run(a, b, sgn)
 
 # ---------------- long walls ----------------
+WIN_W, WIN_H, WIN_Y = 74.0, 54.0, 82.0
+WIN_T = (0.28, 0.72)
 def wall_point(sgn, t, s, inset=0.0):
     z = ZB + t * Lt
     bulge = 4.0 * math.sin(math.pi * s) * math.sin(math.pi * t)
@@ -131,9 +134,13 @@ def wall_point(sgn, t, s, inset=0.0):
     return np.array([sgn * (Wt / 2 + flare - bulge - inset), Hw * (1 - s), z])
 for sgn in (-1, 1):
     uu = (lambda t: t) if sgn < 0 else (lambda t: 1 - t)
-    for i in range(NZ):
-        for j in range(4):
-            t0, t1, s0, s1 = i / NZ, (i + 1) / NZ, j / 4, (j + 1) / 4
+    TS = sorted(set([i / NZ for i in range(NZ + 1)] + [t + d * WIN_W / 2 / Lt for t in WIN_T for d in (-1, 1)]))
+    SS = sorted(set([j / 4 for j in range(5)] + [1 - (WIN_Y + d * WIN_H / 2) / Hw for d in (-1, 1)]))
+    for i in range(len(TS) - 1):
+        for j in range(len(SS) - 1):
+            t0, t1, s0, s1 = TS[i], TS[i + 1], SS[j], SS[j + 1]
+            tm, ym = (t0 + t1) / 2, Hw * (1 - (s0 + s1) / 2)
+            if any(abs(tm - t) * Lt < WIN_W / 2 for t in WIN_T) and abs(ym - WIN_Y) < WIN_H / 2: continue
             P = [wall_point(sgn, t0, s0), wall_point(sgn, t1, s0), wall_point(sgn, t1, s1), wall_point(sgn, t0, s1)]
             U = [uvmap('wall', uu(t0), s0), uvmap('wall', uu(t1), s0), uvmap('wall', uu(t1), s1), uvmap('wall', uu(t0), s1)]
             Pi = [wall_point(sgn, t0, s0, 2), wall_point(sgn, t1, s0, 2), wall_point(sgn, t1, s1, 2), wall_point(sgn, t0, s1, 2)]
@@ -151,17 +158,10 @@ def window(center, right, up, normal):
     corners = [c - right * WIN_W / 2 - up * WIN_H / 2, c + right * WIN_W / 2 - up * WIN_H / 2,
                c + right * WIN_W / 2 + up * WIN_H / 2, c - right * WIN_W / 2 + up * WIN_H / 2]
     u = [(0, 1), (1, 1), (1, 0), (0, 0)]
-    quad(*corners, *[uvmap('pane', *x) for x in u])
-    gquad(*[p + normal * 0.6 for p in corners], *[guv('pane', *x) for x in u])
-    # the same pane seen from inside
-    quad(*[p - normal * 3.6 for p in corners[::-1]], *[uvmap('pane', *x) for x in u[::-1]])
     # rolled canvas frame
     ring = corners + [corners[0]]
     for a, b in zip(ring[:-1], ring[1:]):
         tube([a + normal * 1.5, b + normal * 1.5], 2.4, 'hem', sides=6)
-    # cross ties on the pane
-    for a, b in ((corners[0], corners[2]), (corners[1], corners[3])):
-        tube([a + normal * 1.9, b + normal * 1.9], 0.6, 'rope', sides=4, tile=24)
     # outer flap rolled up above the window and tied with two cords
     top = c + up * (WIN_H / 2 + 7) + normal * 4
     tube([top - right * (WIN_W / 2 + 8), top + right * (WIN_W / 2 + 8)], 5.5, 'roll', sides=8, twist=2.0, cap=True)
@@ -169,7 +169,7 @@ def window(center, right, up, normal):
         p = top + right * WIN_W * f
         tube([p + up * 8 + normal * -3, p + normal * 6.5, p - up * 8 + normal * -1], 0.8, 'rope', sides=4, tile=24)
 for sgn in (-1, 1):
-    for t in (0.28, 0.72):
+    for t in WIN_T:
         z = ZB + t * Lt
         n = np.array([sgn, 0, 0.0])
         window(np.array([sgn * (Wt / 2 - 4.0 * math.sin(math.pi * (1 - WIN_Y / Hw)) * math.sin(math.pi * t)), WIN_Y, z]),
@@ -187,10 +187,16 @@ def poly(points, z, inward, flip, hole=None):
         ti = [p + np.array([0, 0, inward]) for p in tr[::-1]]
         tri(ti, [gable_uv(p, 'inner') for p in tr[::-1]])
 # back gable, built as a pentagon from two convex pieces so the back window sits on flat cloth
-poly([(-Wt / 2, 0), (Wt / 2, 0), (Wt / 2, Hw), (-Wt / 2, Hw)], ZB, 2.0, flip=True)
+BW0, BW1 = WIN_Y + 20 - WIN_H / 2, WIN_Y + 20 + WIN_H / 2      # the back window's opening
+for rect in ([(-Wt / 2, 0), (Wt / 2, 0), (Wt / 2, BW0), (-Wt / 2, BW0)], [(-Wt / 2, BW1), (Wt / 2, BW1), (Wt / 2, Hw), (-Wt / 2, Hw)],
+             [(-Wt / 2, BW0), (-WIN_W / 2, BW0), (-WIN_W / 2, BW1), (-Wt / 2, BW1)], [(WIN_W / 2, BW0), (Wt / 2, BW0), (Wt / 2, BW1), (WIN_W / 2, BW1)]):
+    poly(rect, ZB, 2.0, flip=True)
 poly([(-Wt / 2, Hw), (Wt / 2, Hw), (0, Hr)], ZB, 2.0, flip=True)
-poly([(-Wt / 2, 0), (-DOOR, 0), (0, Hr), (-Wt / 2, Hw)], ZF, -2.0, flip=False)
-poly([(DOOR, 0), (Wt / 2, 0), (Wt / 2, Hw), (0, Hr)], ZF, -2.0, flip=False)
+GX = (Hr - DY) / (Hr - Hw) * Wt / 2      # where the shoulder height meets the gable's edge
+poly([(-Wt / 2, 0), (-DOOR, 0), (-DS, DY), (-GX, DY), (-Wt / 2, Hw)], ZF, -2.0, flip=False)
+poly([(-GX, DY), (-DS, DY), (0, Hr)], ZF, -2.0, flip=False)
+poly([(DOOR, 0), (Wt / 2, 0), (Wt / 2, Hw), (GX, DY), (DS, DY)], ZF, -2.0, flip=False)
+poly([(DS, DY), (GX, DY), (0, Hr)], ZF, -2.0, flip=False)
 for z in (ZB, ZF):
     tube([np.array([-Wt / 2 + i * Wt / 12, 2.2, z]) for i in range(13)], 2.6, 'hem', sides=6)
 # valance across both gable ends too, under the roof's end overhang
@@ -208,8 +214,12 @@ for z in (ZB - ENDS + 1, ZF + ENDS - 1):
 
 # door flaps rolled back and tied out to the sides
 for sgn in (-1, 1):
-    pts = [np.array([sgn * DOOR * f + sgn * 6 * math.sin(math.pi * f), Hr * (1 - f), ZF + 4 + 5 * math.sin(math.pi * f)])
-           for f in np.linspace(0, 1, 12)]
+    def edge(f):   # along the doorway's edge, ridge (f=0) to ground (f=1)
+        L1 = math.hypot(DS, Hr - DY); L2 = math.hypot(DOOR - DS, DY); d = f * (L1 + L2)
+        if d < L1: q = d / L1; return DS * q, Hr + (DY - Hr) * q
+        q = (d - L1) / L2; return DS + (DOOR - DS) * q, DY * (1 - q)
+    pts = [np.array([sgn * (edge(f)[0] + 6 * math.sin(math.pi * f)), edge(f)[1], ZF + 4 + 5 * math.sin(math.pi * f)])
+           for f in np.linspace(0, 1, 14)]
     tube(pts, lambda f: 3.0 + 11.0 * math.sin(math.pi * min(1, f * 1.1)) ** 0.8, 'roll', sides=8, twist=3.0, cap=True)
     mid = pts[7]
     tube([mid + 16 * np.array([math.cos(a) * 0.9, math.sin(a), 0.5 * math.cos(a)]) for a in np.linspace(0, 2 * math.pi, 9)], 1.2, 'rope', sides=5, tile=24)
@@ -231,36 +241,12 @@ for sgn in (-1, 1):     # side walls of the vestibule (inner canvas)
 # rug on the floor
 quad(np.array([-VX + 10, 0.9, ZF - 6]), np.array([VX - 10, 0.9, ZF - 6]), np.array([VX - 10, 0.9, ZV + 4]), np.array([-VX + 10, 0.9, ZV + 4]),
      uvmap('blanket', 0, 1), uvmap('blanket', 1, 1), uvmap('blanket', 1, 0), uvmap('blanket', 0, 0))
-GAP_W = 26.0
+GAP_W = 46.0
 # ---- the room behind the curtain, Rockstar style: real 3D up close, a painted backdrop far back ----
 # Near: the Kakariko rug running back from the curtain, two display tables, a hanging lantern (props
 # drawn from the game's own archives, listed in STAGE). Far: a backdrop card rendered through this exact
 # frame from where the player's camera usually stands, so its perspective lines up with the 3D in front.
-CARD_Z, CARD_X, CARD_H = -110.0, 125.0, 345.0
-for z0, z1 in ((ZV - 2, ZV - 160), (ZV - 162, CARD_Z + 2)):
-    quad(np.array([-62, 0.9, z0]), np.array([62, 0.9, z0]), np.array([62, 0.9, z1]), np.array([-62, 0.9, z1]),
-         uvmap('blanket', 0, 1), uvmap('blanket', 1, 1), uvmap('blanket', 1, 0), uvmap('blanket', 0, 0))
-# the card is cut to the tent's cross-section so it can't poke through the roof
-yc = roof_y_at(CARD_X) - 4
-card_pts = [(-CARD_X, 0), (CARD_X, 0), (CARD_X, yc), (0, Hr - 8), (-CARD_X, yc)]
-cuv = lambda x, y: ((x + CARD_X) / (2 * CARD_X), 1 - y / CARD_H)
-P3 = [np.array([x, y, CARD_Z]) for x, y in card_pts]; c3 = sum(P3) / 5
-for a_, b_ in zip(P3, P3[1:] + P3[:1]):
-    tri_uv = [cuv(q[0], q[1]) for q in (c3, a_, b_)]
-    TRIS.append((np.array([c3, a_, b_]), np.array([uvmap('gap', *t) for t in tri_uv])))
-    GLOW.append((np.array([c3, a_, b_]) + np.array([0, 0, 0.5]), np.array([guv('gap', *t) for t in tri_uv])))
-STAGE = [('HTable', 'ytable.bmd', (-130.0, 0.0, -50.0), 0.0, 0.62), ('HTable', 'ytable.bmd', (130.0, 0.0, -50.0), 0.0, 0.62),
-         ('Obj_kntr', 'ob_kantera.bmd', (0.0, 250.0, 40.0), 0.0, 1.6)]
-tube([np.array([0, Hr - 6, 40.0]), np.array([0, 280, 40.0])], 0.7, 'rope', sides=4, tile=24)
-def cushion(c):
-    for k in range(12):
-        a0, a1 = 2 * math.pi * k / 12, 2 * math.pi * (k + 1) / 12
-        for (y0, r0), (y1, r1) in zip([(0, 18), (3, 19), (6, 15)], [(3, 19), (6, 15), (7, 0)]):
-            p = [c + np.array([r0 * math.cos(a0), y0, r0 * math.sin(a0)]), c + np.array([r0 * math.cos(a1), y0, r0 * math.sin(a1)]),
-                 c + np.array([r1 * math.cos(a1), y1, r1 * math.sin(a1)]), c + np.array([r1 * math.cos(a0), y1, r1 * math.sin(a0)])]
-            quad(*p, uvmap('curtain', k / 12, 0.3), uvmap('curtain', (k + 1) / 12, 0.3), uvmap('curtain', (k + 1) / 12, 0.32), uvmap('curtain', k / 12, 0.32))
-for x in (-130.0, 130.0):
-    cushion(np.array([x, 104 * 0.62 + 0.5, -50.0]))
+STAGE = []   # the room itself is the baked box (beedle_room.bmd), drawn by the tent actor
 # the curtain: two heavy drapes parting in the middle, folds rippling, gathered toward the bottom
 CUR_TOP = roof_y_at(VX) - 8
 def drape(sgn):
@@ -269,7 +255,7 @@ def drape(sgn):
         for j in range(rows):
             def pt(ci, rj):
                 f = ci / cols; g = rj / rows
-                inner_edge = GAP_W * (0.25 + 0.75 * g ** 1.5)      # parting widens toward the floor
+                inner_edge = GAP_W * (0.55 + 0.9 * g ** 1.3)       # tied back: parted wide, widest at the floor
                 x = sgn * (inner_edge + (VX - inner_edge) * f)
                 y = CUR_TOP * (1 - g)
                 z = ZV + 3.5 * math.sin(f * cols * math.pi * 0.9 + sgn) + 2
@@ -561,8 +547,7 @@ def room_glimpse(h, w, bright):
 
 ys, xs, h, w = region_px('gap')
 # the screenshot of the real interior, edited for daylight (see edit_glimpse.py)
-_g = cv2.cvtColor(cv2.imread(os.path.join(HERE, 'interior2/card_day.png')), cv2.COLOR_BGR2RGB).astype(np.float32)
-A[ys, xs] = cv2.resize(_g, (w, h), interpolation=cv2.INTER_AREA)
+A[ys, xs] = 0
 
 # banner: Beedle's own face banner from his pack, cleaned up and scaled into place
 ys, xs, h, w = region_px('banner')
@@ -592,8 +577,7 @@ img *= (1 - 0.45 * sil)[..., None]
 img *= (0.85 + 0.15 * duck_weave(h, w, 995, period=3.0))[..., None]
 GL[ys, xs] = img
 ys, xs, h, w = gpx('gap')
-_g = cv2.cvtColor(cv2.imread(os.path.join(HERE, 'interior2/card_night.png')), cv2.COLOR_BGR2RGB).astype(np.float32)
-GL[ys, xs] = cv2.resize(_g, (w, h), interpolation=cv2.INTER_AREA)
+GL[ys, xs] = 0
 ys, xs, h, w = gpx('lamp')
 yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
 u, v = xx / w, yy / h
