@@ -13,13 +13,46 @@ files = {k.split('/', 1)[1] if k.count('/') > 1 else k: v for k, v in old.items(
 atlas = np.array(Image.open(os.path.join(CAMP, 'camp_tent_atlas.png')).convert('RGB'))
 T = pickle.load(open(os.path.join(CAMP, 'camp_tent_tris.pkl'), 'rb'))
 F = pickle.load(open(os.path.join(CAMP, 'camp_flap_tris.pkl'), 'rb'))
+import normals as _nrm
+# Normals, set out explicitly: the canvas is two layers (its outside and, just behind it, its inside),
+# which a guess from the shape alone gets backwards. Outside faces point away from the middle of the
+# tent, inside faces toward it, the groundsheet up; poles, ropes and stakes are smoothed round their
+# own middle as before. The flaps point out of the doorway (the tent actor turns them as they swing).
+A_ = 512.0
+def region_of(uv):
+    u = float(np.mean(uv[:, 0])) * A_; v = float(np.mean(uv[:, 1])) * A_
+    if u < 256 or u >= 480: return 'cloth'
+    if 352 <= u < 384 and v >= 128: return 'cloth'      # the stripe binding
+    return 'rod'
+def tent_normals(tris, cols):
+    out = [None] * len(tris)
+    rods = [i for i, (P, UV) in enumerate(tris) if region_of(np.asarray(UV)) == 'rod']
+    if rods:
+        sm = _nrm.smooth(np.array([np.asarray(tris[i][0], float) for i in rods]), crease=75.0)
+        for k, i in enumerate(rods): out[i] = np.asarray(sm[k], float)
+    for i, (P, UV) in enumerate(tris):
+        if out[i] is not None: continue
+        P = np.asarray(P, float); c = P.mean(0)
+        n = np.cross(P[1] - P[0], P[2] - P[0]); n /= max(np.linalg.norm(n), 1e-9)
+        shade = float(np.asarray(cols[i])[0, 0]) if cols is not None else 1.0
+        if np.ptp(P[:, 1]) < 0.01 and c[1] < 2.0:                 # the groundsheet
+            n = np.array([0.0, 1.0, 0.0])
+        else:
+            mid = np.array([0.0, 60.0, np.clip(c[2], -105.0, 105.0)])
+            away = (c - mid) @ n > 0
+            inside = shade < 0.5
+            if away == inside: n = -n
+        out[i] = np.array([n, n, n])
+    return out
 def put(name, tris, **kw):
     p = os.path.join(OUT, name + '.bmd')
     write_rigid_bmd(p, [(np.asarray(a, float), np.asarray(b, float)) for a, b in tris], atlas, texname=name, jointname=name, matname=name + '_m', **kw)
     files['bmdr/%s.bmd' % name] = open(p, 'rb').read()
     print(name, len(tris), 'tris,', len(BMD(files['bmdr/%s.bmd' % name]).tris), 'read back,', len(files['bmdr/%s.bmd' % name]) // 1024, 'KB')
-put('a_tent', T['tris'], colors=[np.asarray(c, float) for c in T['cols']])
-put('camp_flap', F['tris'])
+NT = tent_normals(T['tris'], T['cols'])
+NF = [np.array([[0.0, 0.0, 1.0]] * 3) for _ in F['tris']]
+put('a_tent', T['tris'], colors=[np.asarray(c, float) for c in T['cols']], normals=NT)
+put('camp_flap', F['tris'], normals=NF)
 # lit from inside (drawn unlit at night): the cloth glows lamp-warm, thicker at the border; the wood and
 # rope outside it stay dark against it
 day = atlas
@@ -36,8 +69,8 @@ cols = []
 for c in T['cols']:
     k = float(np.asarray(c)[0, 0])
     cols.append(np.ones((3, 4)) * (0.55 if k < 0.35 else 1.0))   # inside: the groundsheet a bit darker
-put('a_tent_n', T['tris'], colors=cols)
-put('camp_flap_n', F['tris'])
+put('a_tent_n', T['tris'], colors=cols, normals=NT)
+put('camp_flap_n', F['tris'], normals=NF)
 atlas = day
 # collision: the door is open now (they crawl in)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

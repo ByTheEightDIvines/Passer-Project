@@ -290,8 +290,16 @@ int psrTent_c::Execute() {
             const f32 dx = link->current.pos.x - current.pos.x, dz = link->current.pos.z - current.pos.z;
             const f32 c = cM_scos(shape_angle.y), sn = cM_ssin(shape_angle.y);
             const f32 lx = dx * c - dz * sn, lz = dx * sn + dz * c;          // into the tent's own frame
-            if (lz < kCurtainZ + 18.0f && lz > kCurtainZ - 60.0f && std::abs(lx) < kCurtainHalfW &&
-                std::abs(link->current.pos.y - current.pos.y) < 80.0f && !dComIfGp_event_runCheck()) {
+            // Link's own body keeps him about 40 short of the curtain's collision: anywhere in the back
+            // half of the entry counts
+            static bool s_inEntry = false;
+            const bool entry = lz < kDoorZ && lz > kCurtainZ - 60.0f && std::abs(lx) < kCurtainHalfW;
+            if (entry != s_inEntry) {
+                s_inEntry = entry;
+                if (entry) travellers::diagLine("shop    Link in the tent's entry (%.0f from the curtain)", lz - kCurtainZ);
+            }
+            if (lz < kCurtainZ + 75.0f && lz > kCurtainZ - 60.0f && std::abs(lx) < kCurtainHalfW &&
+                std::abs(link->current.pos.y - current.pos.y) < 120.0f && !dComIfGp_event_runCheck()) {
                 const f32 out = kDoorZ + 110.0f;
                 cXyz door(current.pos.x + sn * out, current.pos.y, current.pos.z + c * out);
                 shop_stage::enter(door, shape_angle.y, fopAcM_GetRoomNo(this));

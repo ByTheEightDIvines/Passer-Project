@@ -37,7 +37,7 @@ for P, UV in B['tris']:
     box.append((P[[0, 2, 1]], np.asarray(UV, float)[[0, 2, 1]]))                   # the game's front faces wind the other way
     nrm.append(np.array([n, n, n]))
 for nm, img in (('beedle_room', 'room_day.png'), ('beedle_room_n', 'room_night.png')):
-    put(nm, box, rgb(os.path.join(ROOM, img), 1024), normals=nrm, cull=2)
+    put(nm, box, rgb(os.path.join(ROOM, img), 1024), normals=nrm, cull=0)
 col = ET.wall_tent_col(500, 625, 145, 345, 18, 14, 94, vest=(108, 70), shoulder=(86, 190))
 files['dzb/beedle_tent.dzb'] = write_dzb([tuple(map(tuple, t)) for t in col], name='beedle_tent')
 print('collision', len(col), 'tris')
