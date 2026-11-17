@@ -7,11 +7,15 @@ d_kankyo.cpp, d_a_bg.cpp):
   - Hyrule Field's time-of-day lighting: F_SP122's Env/Col/PAL/VRB tables appended, every layer's table
     header pointed at them (lighting picks its entry by room number: entry 0 is F_SP122 room 8's)
   - time passing in our room (room table byte 2 & 3, the field's value 9)
-  - room 0: F_SP122 room 8's terrain (model.bmd) and the shop where the tent stands (model1.bmd),
-    the shop's collision there, the spawn inside the curtain and the three lantern flames
+  - room 0: F_SP122 room 8's terrain with the part under the tent cut away (model.bmd, cut_terrain.py)
+    and the shop where the tent stands (model5.bmd: the room loader lights each model file by its slot,
+    l_tevStrType {BG0, BG1, BG2, BG3, BG3, BG0}; model5 takes BG0 like the field's own ground: the sun by
+    day, the moon and nearby lamp lights at night), its windows cut open, the shop's collision there,
+    the spawn inside the curtain and the three lantern flames
 Usage: python3 -I build_shop_kak.py ROM_STAGE_DIR SHOP_DIR OUT_DIR"""
-import sys, os, struct, math, subprocess
-sys.path[:0] = ['/home/claude/anim']
+import sys, os, struct, math, subprocess, hashlib
+import numpy as np
+sys.path[:0] = ['/home/claude/anim', '/home/claude/room']
 from rarc import rarc
 from rarcwrite import write_rarc
 STAGE, SHOP, OUT = sys.argv[1:4]
@@ -105,14 +109,76 @@ while len(dzr) % 4: dzr.append(0)
 C = chunks(dzr)
 struct.pack_into('>II', dzr, C['ACTR'][0], 3, len(dzr))
 dzr += acts
+# ---- the shop model, in the world where the tent stands, its windows open ----
+# the windows painted on the canvas (measured off the wall texture), cut through: (wall, u range, y range)
+# back wall z = -500 (u = x); side walls x = +-400 (u = z)
+WINDOWS = [('back', (-60.0, 60.0), (255.0, 345.0)),
+           ('side', (-262.0, -134.0), (84.0, 176.0)), ('side', (134.0, 262.0), (84.0, 176.0))]
+def wall_uv(kind, P):
+    if kind == 'back':
+        return (P[:, 0], P[:, 1]) if np.all(np.abs(P[:, 2] + 500.0) < 3.0) else None
+    for sx in (400.0, -400.0):
+        if np.all(np.abs(P[:, 0] - sx) < 3.0): return (P[:, 2], P[:, 1])
+    return None
+def cut_holes(tris):
+    out = []
+    for ti, P, UV in tris:
+        P = np.asarray(P, float); UV = np.asarray(UV, float)
+        pieces = [(P, UV)]
+        for kind, (u0, u1), (y0, y1) in WINDOWS:
+            nxt = []
+            for Pp, Uq in pieces:
+                w = wall_uv(kind, Pp)
+                if w is None or w[0].max() <= u0 or w[0].min() >= u1 or w[1].max() <= y0 or w[1].min() >= y1:
+                    nxt.append((Pp, Uq)); continue
+                axis_u = 0 if kind == 'back' else 2
+                f_u = lambda V: V[0][axis_u]; f_y = lambda V: V[0][1]
+                regions = [[lambda V: u0 - f_u(V)], [lambda V: f_u(V) - u1],
+                           [lambda V: f_u(V) - u0, lambda V: u1 - f_u(V), lambda V: y0 - f_y(V)],
+                           [lambda V: f_u(V) - u0, lambda V: u1 - f_u(V), lambda V: f_y(V) - y1]]
+                for fs in regions:
+                    poly = [(Pp[k], Uq[k]) for k in range(3)]
+                    for f in fs:
+                        new = []
+                        for k in range(len(poly)):
+                            A, B = poly[k], poly[(k + 1) % len(poly)]
+                            fa, fb = f(A), f(B)
+                            if fa >= 0: new.append(A)
+                            if (fa >= 0) != (fb >= 0):
+                                t = fa / (fa - fb); new.append((A[0] + (B[0] - A[0]) * t, A[1] + (B[1] - A[1]) * t))
+                        poly = new
+                        if len(poly) < 3: break
+                    for k in range(1, len(poly) - 1):
+                        nxt.append((np.array([poly[0][0], poly[k][0], poly[k + 1][0]]), np.array([poly[0][1], poly[k][1], poly[k + 1][1]])))
+            pieces = nxt
+        out += [(ti, Pp, Uq) for Pp, Uq in pieces
+                if np.linalg.norm(np.cross(Pp[1] - Pp[0], Pp[2] - Pp[0])) > 1e-3]   # no zero-area slivers along the cuts
+    return out
+import scene
+from multibmd import write_multi
+S, TX = scene.build(False, clear_floor=False)
+S = cut_holes(S)
+groups = {}; order = []
+for ti, P, UV in S:
+    Q = np.array([place(*p) for p in np.asarray(P, float)])
+    tex = (np.clip(TX[ti], 0, 1) * 255).astype(np.uint8)
+    if tex.shape[2] == 3: tex = np.dstack([tex, np.full(tex.shape[:2], 255, np.uint8)])
+    k = hashlib.md5(tex.tobytes()).hexdigest()
+    if k not in groups: groups[k] = (tex, bool(tex[..., 3].min() < 128), []); order.append(k)
+    groups[k][2].append((Q, np.asarray(UV, float)))
+write_multi(f'{SHOP}/shop_world.bmd', [groups[k] for k in order], jointname='shop', cull=0)
 # the shop's collision where the tent stands
 subprocess.run([sys.executable, '-I', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'shop_collision.py'),
                 SHOP, str(TENT[0]), str(TENT[1]), str(TENT[2]), str(YAW)], check=True)
 r8 = rarc(open(f'{STAGE}/F_SP122/R08_00.arc', 'rb').read())
+open(f'{SHOP}/field_r8.bmd', 'wb').write([v for k, v in r8.items() if k.endswith('model.bmd')][0])
+subprocess.run([sys.executable, '-I', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cut_terrain.py'),
+                f'{SHOP}/field_r8.bmd', f'{SHOP}/field_r8_cut.bmd', str(TENT[0]), str(TENT[1]), str(TENT[2]), str(YAW),
+                '405', '505'], check=True)
 r160 = rarc(open(f'{STAGE}/R_SP160/R00_00.arc', 'rb').read())
 write_rarc(f'{OUT}/{NAME}/R00_00.arc', 'R00_00', {
-    'bmdr/model.bmd': [v for k, v in r8.items() if k.endswith('model.bmd')][0],   # the field round the tent
-    'bmdr/model1.bmd': open(f'{SHOP}/shop_world.bmd', 'rb').read(),                # the shop, in the world
+    'bmdr/model.bmd': open(f'{SHOP}/field_r8_cut.bmd', 'rb').read(),   # the field round the tent, none of it inside
+    'bmdr/model5.bmd': open(f'{SHOP}/shop_world.bmd', 'rb').read(),     # the shop, in the world, lit as the ground is
     'dzr/room.dzr': bytes(dzr),
     'kcl/room.kcl': open(f'{SHOP}/room.kcl', 'rb').read(),
     'plc/room.plc': r160[[k for k in r160 if k.endswith('room.plc')][0]],
