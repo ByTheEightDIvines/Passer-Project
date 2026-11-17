@@ -14,6 +14,15 @@ NAME, ROOM = 'R_PSR00', 8
 TENT = (-72921.4, -1551.7, 5115.4)     # Beedle's tent spot (travel network node 16, F_SP122 room 8)
 YAW = 9935
 FIELD = b'F_SP122'
+def _house(arc_name, tag, size):
+    a = rarc(open(f'{STAGE}/R_SP109/{arc_name}', 'rb').read())
+    d = [v for k, v in a.items() if k.endswith('.dzs') and 'stage' in k or k.endswith('room.dzr')][0]
+    n = struct.unpack_from('>I', d, 0)[0]
+    for i in range(n):
+        t, cnt, off = struct.unpack_from('>4sII', d, 4 + 12 * i)
+        if t == tag: return d[off:off + size]
+HOUSE_MAP = struct.unpack('>H', _house('STG_00.arc', b'STAG', 0x34)[0xA:0xC])[0]   # 0x6063
+HOUSE_FILI = _house('R00_00.arc', b'FILI', 0x20)                                      # minimap 3
 
 def chunks(v):
     n = struct.unpack('>I', v[:4])[0]
@@ -30,6 +39,11 @@ files = {(k.split('/', 1)[1] if k.count('/') > 1 else k): bytearray(v) for k, v 
 dzs = files['dzs/stage.dzs']
 for t in list(chunks(dzs)):
     if t[:3] in ('ACT', 'SCO', 'SON') or t == 'SOND': set_count(dzs, t, 0)
+# not a field-map stage: a field stage (map setting 0) loads its rooms' extra data from the game's shared
+# field-map archive by stage name, which has nothing for R_PSR00 (the crash going in). 3 as an interior.
+_, _, o = chunks(dzs)['STAG']
+struct.pack_into('>H', dzs, o + 0xA, HOUSE_MAP)
+set_count(dzs, 'MULT', 0)
 os.makedirs(f'{OUT}/{NAME}', exist_ok=True)
 write_rarc(f'{OUT}/{NAME}/STG_00.arc', 'STG_00', {k: bytes(v) for k, v in files.items()})
 
@@ -40,6 +54,8 @@ dzr = bytearray(get('room.dzr'))
 for t in list(chunks(dzr)):
     if t[:3] in ('ACT', 'SCO', 'SON', 'LGT', 'TRE') or t in ('REVT',): set_count(dzr, t, 0)
 C = chunks(dzr)
+# room flags as the Kakariko house's (its minimap type: the field's expects the field map)
+dzr[C['FILI'][2]:C['FILI'][2] + 0x20] = HOUSE_FILI
 # spawn 0: inside the curtain (250 in from the doorway), facing into the shop
 _, n, o = C['PLYR']
 x, y, z = place(0.0, 0.0, 250.0)
