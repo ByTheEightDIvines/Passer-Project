@@ -85,7 +85,7 @@ const Look* lookFor(int type) {
         {},
         {"P_MAS_a", "mas_a.bmd", "mas_a.btp", "pack_mas_a.bmd"},       // 6
         {"P_MBN_a", "mbn_a.bmd", "mbn_a.btp", "pack_mbn_a.bmd"},       // 7
-        {"P_MAN_a2", "man_a2.bmd", "man_a2.btp", nullptr},             // 8 (the bowman: quiver and bow instead)
+        {"P_MAN_a2", "man_a2.bmd", "man_a2.btp", "pack_man_a2.bmd"},   // 8 (the bowman: quiver and bow under it)
         {"P_MAD_a2", "mad_a2.bmd", "mad_a2.btp", "pack_mad_a2.bmd"},   // 9
         {},
         {"P_MON_a2", "mon_a2.bmd", "mon_a2.btp", "pack_mon_a2.bmd"},   // 11
@@ -267,6 +267,8 @@ constexpr f32 kArrowLength = 114.0f;     // Link's arrow, nock (its origin) to t
 constexpr f32 kStringRest = 30.0f;       // the string's middle off the grip, at rest and fully drawn
 constexpr f32 kStringFull = 80.0f;
 constexpr f32 kFingerReach = 7.0f;       // the string sits this far along the drawing hand
+// The quiver and the bow on his back sit this far in against him (backbone space), under his pack.
+const Mtx kUnderPack = {{1.0f, 0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f, -8.0f}, {0.0f, 0.0f, 1.0f, 0.0f}};
 
 // Poses the bow's joints (bow_loc, center, bow_1, bow_2, line) from the pose its model carries.
 int bowJointCB(J3DJoint* joint, int param) {
@@ -582,12 +584,13 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
         mDoExt_modelUpdateDL(g->guitar);
     }
     drawOn(g->pack, kBackbone, nullptr);
-    drawOn(g->quiver, kBackbone, nullptr);   // fitted in the backbone's own space
+    drawOn(g->quiver, kBackbone, &kUnderPack);   // fitted in the backbone's own space, pushed under the pack
     if (g->bow != nullptr) {
         // in his left hand while he shoots (the string on his fingers once drawn), else across his back
         const fighter_anim::BowView v = fighter_anim::bowView(passer);
         Gear::BowPose& p = g->bowPose;
         mDoMtx_copy(body->getAnmMtx(v.inHand ? kHandL : kBackbone), mDoMtx_stack_c::now);
+        if (!v.inHand) mDoMtx_stack_c::concat(kUnderPack);
         mDoMtx_stack_c::concat(v.inHand ? kBowGripL : kBowOnBack);
         Mtx base;
         mDoMtx_copy(mDoMtx_stack_c::now, base);
