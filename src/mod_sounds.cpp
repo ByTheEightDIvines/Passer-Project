@@ -18,7 +18,22 @@ IMPORT_SERVICE(AudioResService, svc_audio_res);
 
 namespace {
 constexpr u8 kBank = 0x35;             // a sound-effect bank (its programs stop at 0x86)
-constexpr u8 kKey = 0x3C;              // the note, at the waves' own base key: no pitch change
+constexpr u8 kKey = 0x3C;              // the waves' base key (pitch comes from the wave alone: see below)
+// What the game is told: an instrument number below 0xF0 (JASBank::noteOn plays 0xF0 and up as its own
+// test-tone oscillators and never asks for an instrument: our sounds on them were silent) plus a note.
+// Each of our sound numbers (0x88..0xFF) becomes instrument 0x88 or 0x89 and one of 64 notes; the
+// instrument hook turns the pair back into the sound, and sets "don't set key" so the note never
+// changes the pitch.
+constexpr u8 kPhysProg0 = 0x88;
+constexpr int kNotesPerProg = 64;
+constexpr u8 kNote0 = 0x10;
+u8 physProg(u8 program) { return static_cast<u8>(kPhysProg0 + (program - 0x88) / kNotesPerProg); }
+u8 physNote(u8 program) { return static_cast<u8>(kNote0 + (program - 0x88) % kNotesPerProg); }
+int ourProgram(int prg, int key) {    // the game's (instrument, note) -> our sound number, or -1
+    if (prg < kPhysProg0 || key < kNote0 || key >= kNote0 + kNotesPerProg) return -1;
+    const int p = 0x88 + (prg - kPhysProg0) * kNotesPerProg + (key - kNote0);
+    return p <= 0xFF ? p : -1;
+}
 constexpr int kMaxSounds = 112;
 constexpr u32 kRoot0 = 0x60;           // after the two shared routines
 struct Sound { u32 id; u8 program; };
@@ -37,7 +52,7 @@ void writeSeq(int i, u8 program) {
     u8* r = g_seq + kRoot0 + 0x20 * i;
     const u32 sub = kRoot0 + 0x20 * i + 0x10;
     const u8 root[] = {0xc1, 0x00, static_cast<u8>(sub >> 16), static_cast<u8>(sub >> 8), static_cast<u8>(sub), 0xc7, 0x00, 0x00, 0x4d};
-    const u8 note[] = {0xc3, 0x00, 0x00, 0x30, 0xe1, kBank, program, kKey, 0x00, 0x7f, 0x00, 0xff};
+    const u8 note[] = {0xc3, 0x00, 0x00, 0x30, 0xe1, kBank, physProg(program), physNote(program), 0x00, 0x7f, 0x00, 0xff};
     std::memcpy(r, root, sizeof(root));
     std::memcpy(r + 0x10, note, sizeof(note));
 }
@@ -66,8 +81,8 @@ const JASOscillator::Data* kOscillators[2] = {&kEnvelope, nullptr};
 DEFINE_HOOK_SYMBOL("JASBasicBank::getInstParam", bool(const JASBasicBank*, int, int, int, JASInstParam*), InstLookup);
 void onInstLookupPost(ModContext*, void* args, void* retval, void*) {
     if (*static_cast<bool*>(retval)) return;          // the game has an instrument there: never ours
-    const int prg = mods::arg<int>(args, 1);
-    if (prg < 0 || prg > 0xFF || g_wave[prg] == 0) return;
+    const int prg = ourProgram(mods::arg<int>(args, 1), mods::arg<int>(args, 2));
+    if (prg < 0 || g_wave[prg] == 0) return;
     auto* p = mods::arg<JASInstParam*>(args, 4);
     p->init();
     p->mWaveId = g_wave[prg];
@@ -75,7 +90,7 @@ void onInstLookupPost(ModContext*, void* args, void* retval, void*) {
     p->mOscillators = const_cast<JASOscillator::Data**>(kOscillators);
     p->mOscillatorCount = 1;
     p->mDirectRelease = 0;
-    p->mDontSetKey = 0;
+    p->mDontSetKey = 1;                               // the note picks the sound, not the pitch
     *static_cast<bool*>(retval) = true;
     ++g_instAnswered;
 }
