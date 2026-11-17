@@ -125,6 +125,7 @@ constexpr f32 kThreatRadius = 900.0f;
 // A traveller with an enemy this close stays in the world even when the camera can't see it, so
 // the enemy can actually chase it down. Once it has gotten away, the game may tidy it up again.
 constexpr f32 kChasedRadius = 3000.0f;
+constexpr int kShooterFrames = 600;   // twenty seconds after the last arrow, a fighter keeps after the archer
 // Old women run at this share of a normal traveller's flight speed.
 constexpr f32 kOldWomanRunScale = 0.85f;
 // The body's own voice lines (what a townsperson says when you talk to them): 1 surprise, 2 fear, 3 hey.
@@ -200,6 +201,8 @@ struct PasserState {
     u8 anim = 0xFF;         // animation the camp guard last set (so it isn't restarted every frame)
     int invuln = 0;         // frames left of the short invincible moment after being hit (like Link's)
     bool chasing = false;   // a camp defender running after its enemy (not yet in reach)
+    fpc_ProcID shooter = fpcM_ERROR_PROCESS_ID_e;   // a healthy fighter shot from afar: the archer it goes after
+    int shooterFrames = 0;                          // ... for this long since the last arrow
     bool swingReq = false;  // a fighter in reach and due a swing (the blow lands on the swing's frames)
     bool onGuard = false;   // this frame: a fighter with an enemy to face (draws and squares up)
     bool turning = false;   // this frame: still turning to face it (shuffles round instead of spinning)
@@ -2370,6 +2373,17 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         if (holdsGround(passer) && !wolfShy(passer)) {
             enemy = nearerFoe(passer->current.pos, enemy, wolfLinkNear(passer->current.pos, kThreatRadius));
         }
+        if (state->shooterFrames > 0) {
+            // shot at: the archer is its enemy (it charges him) however far off, while he keeps it up
+            --state->shooterFrames;
+            fopAc_ac_c* archer = fopAcM_SearchByID(state->shooter);
+            if (!holdsGround(passer) || archer == nullptr || fopAcM_GetGroup(archer) != fopAc_ENEMY_e ||
+                passer->current.pos.absXZ(archer->current.pos) > kChasedRadius) {
+                state->shooterFrames = 0;
+            } else if (enemy == nullptr) {
+                enemy = archer;
+            }
+        }
         state->vsWolf = enemy != nullptr && enemy == dComIfGp_getPlayer(0);
         if (enemy == nullptr && state->chasing) {
             state->chasing = false;
@@ -2511,7 +2525,15 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         if (life <= 0) {
             beginDeath(passer, *state);
         } else if (holdsGround(passer)) {
-            // a fighter takes it and stays put
+            // a fighter takes it and stays put; shot by an arrow, it goes after the archer (the nearest
+            // monster within kChasedRadius: the threat radius doesn't reach where archers shoot from)
+            if (isProjectile(attacker)) {
+                if (auto* archer = nearestEnemy(passer, kChasedRadius)) {
+                    if (state->shooterFrames == 0) travellers::noteAct(passer, "shot at: going after the archer");
+                    state->shooter = fopAcM_GetID(archer);
+                    state->shooterFrames = kShooterFrames;
+                }
+            }
         } else if (!travellers::isFighter(passer) &&
                    travellers::campInfo(passer, nullptr, nullptr, nullptr)) {
             // a camper who can't fight keeps cowering by the fire (the camp guard)
