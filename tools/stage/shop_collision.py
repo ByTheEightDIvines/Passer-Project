@@ -77,11 +77,18 @@ for arc, model, pos, yaw, sc in PROPS:
     mn, mx = Pm.min(0) * sc, Pm.max(0) * sc
     box(np.asarray(pos, float) + V((mn[0] + mx[0]) / 2, (mn[1] + mx[1]) / 2, (mn[2] + mx[2]) / 2) * np.array([1, 1, 1]),
         (mx - mn) * 0.9, math.radians(yaw))
+# optionally placed in the world: shop_collision.py OUT x y z yaw16 (the shop as room 8 of the field copy)
+if len(sys.argv) > 5:
+    ox, oy, oz = map(float, sys.argv[2:5]); a = int(sys.argv[5]) / 65536 * 2 * math.pi
+    c, sn = math.cos(a), math.sin(a)
+    def place(p): return np.array([ox + p[0] * c + p[2] * sn, oy + p[1], oz - p[0] * sn + p[2] * c])
+    T = [tuple(place(np.asarray(v, float)) for v in t) for t in T]
 data, n = write_kcl(T)
 out = sys.argv[1] if len(sys.argv) > 1 else '/home/claude/shopstage'
 open(f'{out}/room.kcl', 'wb').write(data)
 print('collision triangles', n, 'kcl', len(data) // 1024, 'KB')
 # checks: standing spots
+if len(sys.argv) > 5: sys.exit(0)
 for nm, (x, y, z) in {'doorway': (0, 300, ZF - 60), 'aisle': (0, 300, 0), 'on the counter': (0, 300, CZ),
                       'on a table': (130, 300, 60), 'beside a table': (40, 300, 60), 'on a shelf unit': (370, 400, 110)}.items():
     print(f'  ground {nm:16s} {ground_at(data, x, y, z)}')

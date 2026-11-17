@@ -122,6 +122,10 @@ cPhs_Step psrTent_c::create() {
     fopAcM_SetMtx(this, mpModel->getBaseTRMtx());
     // Generous cull box: Beedle's banner pole stands about 5 m tall, guy ropes reach 3 m out.
     fopAcM_setCullSizeBox(this, -860.0f, -40.0f, -860.0f, 860.0f, 900.0f, 860.0f);
+    if (mKind == PSR_TENT_BEEDLE) {   // where it really stands (the shop stage copies this spot)
+        travellers::diagLine("tent    Beedle's tent at %.1f %.1f %.1f facing %d", current.pos.x, current.pos.y,
+                             current.pos.z, static_cast<int>(static_cast<u16>(shape_angle.y)));
+    }
     Execute();
     return step;
 }

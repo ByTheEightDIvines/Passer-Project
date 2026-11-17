@@ -17,4 +17,6 @@ bool loadWave(u8 program, const char* path, bool loop, u32 loopEnd);
 void unloadWave(u8 program);
 bool hasWave(u8 program);
 int lookupsAnswered();                           // our waves found by the wave lookup (diary)
+int seqAnswered();                               // our sounds' note sequences handed to the game (diary)
+int instAnswered();                              // our instruments handed to the game (diary)
 }  // namespace mod_sounds

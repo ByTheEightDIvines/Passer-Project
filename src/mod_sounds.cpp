@@ -44,10 +44,12 @@ void writeSeq(int i, u8 program) {
 
 DEFINE_HOOK_SYMBOL("JAUSeqDataMgr_SeqCollection::getSeqData",
                    JAISeqDataMgr::SeqDataReturnValue(JAUSeqDataMgr_SeqCollection*, JAISoundID, JAISeqData*), SeqLookup);
+int g_seqAnswered = 0, g_instAnswered = 0;   // diary: how far our sounds get (sequence, instrument, wave)
 void onSeqLookupPost(ModContext*, void* args, void* retval, void*) {
     const u32 id = static_cast<u32>(mods::arg<JAISoundID>(args, 1));
     for (int i = 0; i < g_count; i++) {
         if (g_sounds[i].id != id) continue;
+        ++g_seqAnswered;
         mods::arg<JAISeqData*>(args, 2)->set(g_seq, kRoot0 + 0x20 * i);
         *static_cast<JAISeqDataMgr::SeqDataReturnValue*>(retval) = JAISeqDataMgr::SeqDataReturnValue_2;
         return;
@@ -75,6 +77,7 @@ void onInstLookupPost(ModContext*, void* args, void* retval, void*) {
     p->mDirectRelease = 0;
     p->mDontSetKey = 0;
     *static_cast<bool*>(retval) = true;
+    ++g_instAnswered;
 }
 
 bool ours(u32 wave) {
@@ -148,5 +151,7 @@ void unloadWave(u8 program) {
 
 bool hasWave(u8 program) { return g_wave[program] != 0; }
 int lookupsAnswered() { return g_answered; }
+int seqAnswered() { return g_seqAnswered; }
+int instAnswered() { return g_instAnswered; }
 
 }  // namespace mod_sounds
