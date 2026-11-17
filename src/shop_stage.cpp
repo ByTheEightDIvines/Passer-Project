@@ -12,7 +12,7 @@
 #include "mods/svc/stage.h"
 #include "travellers.hpp"
 #include "mods/svc/audio_res.h"
-#include "Z2AudioLib/Z2SeqMgr.h"
+#include "Z2AudioLib/Z2AudioMgr.h"
 
 
 namespace {
@@ -64,17 +64,25 @@ bool installMusic() {
     return g_streamOk;
 }
 
+// The game's music manager is the audio manager itself (class Z2AudioMgr : ... public Z2SeqMgr), reached
+// through Z2AudioMgr::getInterface() (exported game data), as the game's own mDoAud_bgmStream* do. Not
+// Z2GetSeqMgr(): its JASGlobalInstance<Z2SeqMgr> is a template global, so in a mod it is the mod's own
+// (empty) copy, not the game's.
+Z2SeqMgr* seqMgr() { return Z2AudioMgr::getInterface(); }
+
 void musicTick(bool inside, bool settled) {
     if (!g_streamOk) return;
+    Z2SeqMgr* seq = seqMgr();
+    if (seq == nullptr) return;
     if (!inside) {
-        if (g_musicOn && Z2GetSeqMgr()->getStreamBgmID() == musicSoundId()) Z2GetSeqMgr()->bgmStreamStop(30);
+        if (g_musicOn && seq->getStreamBgmID() == musicSoundId()) seq->bgmStreamStop(30);
         g_musicOn = false;
         return;
     }
     if (g_musicOn || !settled) return;   // once the shop has settled (the game brings its sound back up after a stage change)
     g_musicOn = true;
-    Z2GetSeqMgr()->bgmStreamPrepare(musicSoundId());
-    Z2GetSeqMgr()->bgmStreamPlay();
+    seq->bgmStreamPrepare(musicSoundId());
+    seq->bgmStreamPlay();
     travellers::diagLine("shop    music stream %04x started", g_streamId);
 }
 
