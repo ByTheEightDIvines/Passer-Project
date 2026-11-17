@@ -1866,8 +1866,21 @@ void stepToward(daNpcPasser_c* passer, const cXyz& to, f32 speed) {
     const s16 yaw = cLib_targetAngleY(&passer->current.pos, &aim);
     cLib_addCalcAngleS2(&passer->current.angle.y, yaw, 4, 0x1000);
     passer->shape_angle.y = passer->current.angle.y;
-    passer->current.pos.x += cM_ssin(passer->current.angle.y) * speed;
-    passer->current.pos.z += cM_scos(passer->current.angle.y) * speed;
+    // Closer than its turning circle (at most 0x1000 a frame, so a circle of speed / 0.39 across: about
+    // 2.6 steps), heading-first stepping can orbit the spot without ever reaching it (the bedtime
+    // circling). There it steps straight at the spot, never past it, and only the body turns.
+    const f32 dx = aim.x - passer->current.pos.x, dz = aim.z - passer->current.pos.z;
+    const f32 d = std::sqrt(dx * dx + dz * dz);
+    if (d < speed * 3.0f) {
+        const f32 step = std::min(speed, d);
+        if (d > 0.001f) {
+            passer->current.pos.x += dx / d * step;
+            passer->current.pos.z += dz / d * step;
+        }
+    } else {
+        passer->current.pos.x += cM_ssin(passer->current.angle.y) * speed;
+        passer->current.pos.z += cM_scos(passer->current.angle.y) * speed;
+    }
     passer->mAcch.CrrPos(dComIfG_Bgsp());
 }
 
@@ -2480,10 +2493,12 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         if (life > 0 && isOldWoman(passer)) {
             // the old women: the second blow in a fight, and she turns and freezes whoever dealt it
             state->quietFrames = 0;
-            if (++state->hitsThisFight >= 2 && state->castCooldown == 0 && state->casting == 0) {
+            // shot (an arrow): the one who shot it, if he's within her reach; out of reach she runs
+            fopAc_ac_c* culprit = isProjectile(attacker) ? nearestEnemy(passer, kCastReach) : attacker;
+            if (++state->hitsThisFight >= 2 && state->castCooldown == 0 && state->casting == 0 && culprit != nullptr) {
                 state->casting = 1;
                 state->castFired = false;
-                state->castTarget = fopAcM_GetID(attacker);
+                state->castTarget = fopAcM_GetID(culprit);
                 state->standing = false;
                 state->arrived = false;
                 state->cowering = false;
@@ -2500,11 +2515,13 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         } else if (!travellers::isFighter(passer) &&
                    travellers::campInfo(passer, nullptr, nullptr, nullptr)) {
             // a camper who can't fight keeps cowering by the fire (the camp guard)
-        } else if (nearestEnemy(passer, kThreatRadius) != nullptr) {
+        } else {
+            // hit by a monster: run, however far off it is (an archer shoots from well outside the
+            // threat radius; the run itself goes away from the nearest monster within kChasedRadius)
             state->standing = false;
             state->arrived = false;  // running away replaces waiting at the end of the road
             state->cowering = false;
-            passer->setAction(daNpcPasser_c::MODE_1);
+            if (passer->mActionIdx != daNpcPasser_c::MODE_1) passer->setAction(daNpcPasser_c::MODE_1);
         }
     }
     return HOOK_CONTINUE;

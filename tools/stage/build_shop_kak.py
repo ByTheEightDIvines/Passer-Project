@@ -11,7 +11,7 @@ d_kankyo.cpp, d_a_bg.cpp):
     and the shop where the tent stands (model5.bmd: the room loader lights each model file by its slot,
     l_tevStrType {BG0, BG1, BG2, BG3, BG3, BG0}; model5 takes BG0 like the field's own ground: the sun by
     day, the moon and nearby lamp lights at night), its windows cut open, the shop's collision there,
-    the spawn inside the curtain and the three lantern flames
+    the spawn inside the curtain (the lantern flames are the mod's)
 Usage: python3 -I build_shop_kak.py ROM_STAGE_DIR SHOP_DIR OUT_DIR"""
 import sys, os, struct, math, subprocess, hashlib
 import numpy as np
@@ -101,14 +101,9 @@ set_count(dzr, 'PLYR', 1)
 _, n, o = C['SCLS']
 struct.pack_into('>8sBbBBB', dzr, o, b'F_SP122', 0, 8, 0xF0, 0xFF, 0)
 set_count(dzr, 'SCLS', 1)
-# the three hanging lanterns: the game's own lamp flame (fireWd2) with its point light; switch 0x20 puts
-# them out (the mod sets it by day, clears it at night)
-acts = b''.join(struct.pack('>8sI3f3hH', b'fireWd2', 0xFF010120, *place(0.0, 340.0, lz), 0, 0, 0, 0xFFFF)
-                for lz in (-330.0, 0.0, 330.0))
-while len(dzr) % 4: dzr.append(0)
-C = chunks(dzr)
-struct.pack_into('>II', dzr, C['ACTR'][0], 3, len(dzr))
-dzr += acts
+# no actors: the lanterns' flames and their light are the mod's (shop_stage.cpp lanternTick: Link's lantern
+# fire sized to the lanterns; the game's lamp flame, fireWd2, has no size setting and burns far too big)
+set_count(dzr, 'ACTR', 0)
 # ---- the shop model, in the world where the tent stands, its windows open ----
 # the windows painted on the canvas (measured off the wall texture), cut through: (wall, u range, y range)
 # back wall z = -500 (u = x); side walls x = +-400 (u = z)
@@ -174,7 +169,7 @@ r8 = rarc(open(f'{STAGE}/F_SP122/R08_00.arc', 'rb').read())
 open(f'{SHOP}/field_r8.bmd', 'wb').write([v for k, v in r8.items() if k.endswith('model.bmd')][0])
 subprocess.run([sys.executable, '-I', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cut_terrain.py'),
                 f'{SHOP}/field_r8.bmd', f'{SHOP}/field_r8_cut.bmd', str(TENT[0]), str(TENT[1]), str(TENT[2]), str(YAW),
-                '405', '505'], check=True)
+                '398', '498'], check=True)   # 2 inside the floor's edges (x +-400, z +-500): the grass tucks under it, no gap
 r160 = rarc(open(f'{STAGE}/R_SP160/R00_00.arc', 'rb').read())
 write_rarc(f'{OUT}/{NAME}/R00_00.arc', 'R00_00', {
     'bmdr/model.bmd': open(f'{SHOP}/field_r8_cut.bmd', 'rb').read(),   # the field round the tent, none of it inside

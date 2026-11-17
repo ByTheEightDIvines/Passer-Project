@@ -13,6 +13,7 @@
 #include "travellers.hpp"
 #include "mods/svc/audio_res.h"
 #include "Z2AudioLib/Z2AudioMgr.h"
+#include "d/d_particle_name.h"
 
 
 namespace {
@@ -41,6 +42,46 @@ u16 g_streamId = 0;
 bool g_streamOk = false;
 bool g_musicOn = false;
 u32 musicSoundId() { return 0x02000000u | g_streamId; }    // section 2 (streams), the allocated ID
+
+// The three hanging lanterns' flames, at night: Link's own lantern fire (what the travellers' lanterns
+// burn), sized to the shop's lanterns (Obj_kntr at 1.6), each with the warm point light the game's lamp
+// flame (fireWd2) gives (its colour and strength: that lit the room right). The scene's lighting clears
+// its point lights when it is made and torn down (d_kankyo plight_init), so they are added again every
+// night frame (dKy_plight_set never adds one twice) and only taken out by us while still in the shop.
+constexpr f32 kShopY = -1551.7f;
+constexpr f32 kLanternFlameY = 330.0f + 23.0f * 1.6f;   // the lantern's base, plus the lantern flame's height on it
+constexpr f32 kLanternZ[3] = {-330.0f, 0.0f, 330.0f};
+constexpr f32 kLanternFlameScale = 1.3f;
+u32 g_flame[3] = {};
+LIGHT_INFLUENCE g_glow[3] = {};
+bool lightIsOurs(LIGHT_INFLUENCE& l) {
+    const int i = (l.mIndex < 0 ? -l.mIndex : l.mIndex) & 0xFFF;
+    return i >= 1 && i <= 50 && g_env_light.pointlight[i - 1] == &l;
+}
+void lanternTick(bool inside) {
+    const bool lit = inside && dKy_daynight_check();
+    const f32 c = cM_scos(kShopYaw), sn = cM_ssin(kShopYaw);
+    for (int i = 0; i < 3; ++i) {
+        if (!lit) {
+            if (inside && lightIsOurs(g_glow[i])) dKy_plight_cut(&g_glow[i]);   // daybreak in the shop
+            g_glow[i].mIndex = 0;
+            g_flame[i] = 0;
+            continue;
+        }
+        const f32 lz = kLanternZ[i];
+        const cXyz flame(kShopX + lz * sn, kShopY + kLanternFlameY, kShopZ + lz * c);   // local (0, y, lz) in the world
+        const cXyz scale(kLanternFlameScale, kLanternFlameScale, kLanternFlameScale);
+        g_flame[i] = dComIfGp_particle_set(g_flame[i], ID_ZI_J_KANTERA_FIRE, &flame, nullptr, nullptr, &scale,
+                                           0xFF, nullptr, -1, nullptr, nullptr, nullptr);
+        g_glow[i].mPosition.set(flame.x, flame.y + 10.0f, flame.z);
+        g_glow[i].mColor.r = 0xBC;
+        g_glow[i].mColor.g = 0x66;
+        g_glow[i].mColor.b = 0x42;
+        g_glow[i].mPow = 500.0f;
+        g_glow[i].mFluctuation = 1.0f;
+        dKy_plight_set(&g_glow[i]);
+    }
+}
 
 bool stageIs(const char* name) {
     const char* s = dComIfGp_getStartStageName();
@@ -115,10 +156,8 @@ void enter(const cXyz& doorOut, s16 yawOut, int fieldRoom) {
 void tick() {
     if (g_cool > 0) --g_cool;
     musicTick(inShop(), g_settle >= 30);
+    lanternTick(inShop());
     if (!inShop()) { g_settle = 0; return; }
-    // the lamp flames (fireWd2, switch 0x20, lit while it's off): out by day, lit at night
-    if (dKy_daynight_check()) dComIfGs_offSwitch(0x20, kShopRoom);
-    else dComIfGs_onSwitch(0x20, kShopRoom);
     auto* link = dComIfGp_getPlayer(0);
     if (link == nullptr || dComIfGp_event_runCheck()) return;
     if (++g_settle < 30 || g_cool > 0) return;
