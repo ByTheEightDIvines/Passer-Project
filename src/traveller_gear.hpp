@@ -2,6 +2,7 @@
 // Traveller looks: retextured bodies and packs (see traveller_gear.cpp).
 class daNpcPasser_c;
 class cXyz;
+class fopAc_ac_c;
 #include "global.h"
 
 namespace traveller_gear {
@@ -29,6 +30,11 @@ void takeTorch(daNpcPasser_c* passer);
 // The bard (MAN_b): his guitar out (the game's j_guitar on his chest) or put away.
 bool isBard(const daNpcPasser_c* passer);
 void setPlaying(daNpcPasser_c* passer, bool on);
+// The bowman: an arrow off his bow at a monster (the Bulblins' arrow actor, aimed as they aim, made
+// to hurt monsters only and drawn as Link's arrow). False if none could be loosed.
+bool shootArrow(daNpcPasser_c* passer, fopAc_ac_c* target);
+// One of his arrows (never hurts a traveller).
+bool isOurArrow(const fopAc_ac_c* actor);
 // The old women: where the lantern on the staff hangs (its base), false if she has no staff.
 bool lanternMtx(daNpcPasser_c* passer, Mtx out);
 }

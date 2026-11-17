@@ -14,6 +14,9 @@
 
 #include "d/actor/d_a_npc_cd2.h"
 #include "d/actor/d_a_npc_passer.h"
+#include "d/actor/d_a_e_arrow.h"
+#include "d/actor/d_a_alink.h"
+#include "JSystem/J3DGraphAnimator/J3DJoint.h"
 #include "d/d_com_inf_game.h"
 #include "d/d_kankyo.h"
 #include "SSystem/SComponent/c_math.h"
@@ -31,7 +34,9 @@
 #include "fighter_anim.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 
@@ -80,7 +85,7 @@ const Look* lookFor(int type) {
         {},
         {"P_MAS_a", "mas_a.bmd", "mas_a.btp", "pack_mas_a.bmd"},       // 6
         {"P_MBN_a", "mbn_a.bmd", "mbn_a.btp", "pack_mbn_a.bmd"},       // 7
-        {"P_MAN_a2", "man_a2.bmd", "man_a2.btp", "pack_man_a2.bmd"},   // 8
+        {"P_MAN_a2", "man_a2.bmd", "man_a2.btp", nullptr},             // 8 (the bowman: quiver and bow instead)
         {"P_MAD_a2", "mad_a2.bmd", "mad_a2.btp", "pack_mad_a2.bmd"},   // 9
         {},
         {"P_MON_a2", "mon_a2.bmd", "mon_a2.btp", "pack_mon_a2.bmd"},   // 11
@@ -146,6 +151,19 @@ struct Gear {
     bool lit = false;             // its point light is registered
     LIGHT_INFLUENCE glow{};
     u32 flame = 0;                // the flame particle
+    // the bowman (passer 8): the Bulblin's bow and quiver, reskinned; Link's arrows (in his hand, and
+    // the ones he has shot while they fly or stick)
+    J3DModel* bow = nullptr;
+    J3DModel* quiver = nullptr;
+    J3DModel* nockArrow = nullptr;
+    J3DModel* flyArrows[6] = {};
+    struct BowPose {
+        Mtx center;               // the grip joint, in the bow's base frame
+        f32 a = 160.0f, b = 20.0f;   // the limbs' bend (degrees)
+        Vec line = {0.0f, 30.0f, 0.0f};   // the string's middle, in the grip frame
+    } bowPose;
+    cXyz gripAt;                  // where the bow's grip was last drawn (the arrows leave from there)
+    bool gripSeen = false;        // ... in his hand
 };
 std::array<Gear, 32> g_gear{};
 
@@ -239,6 +257,84 @@ void staffMtx(daNpcPasser_c* passer, const Mtx hand, f32 grip, Mtx staffOut, Mtx
     mDoMtx_copy(mDoMtx_stack_c::now, lanternOut);
 }
 
+// --- the bowman's bow -------------------------------------------------------------------------
+#include "bow_fit.inc"
+constexpr int kBowmanType = 8;
+constexpr int kHandL = 7;
+constexpr int kArrowRes = 0x1c;          // Link's own arrow model in his archive (as daArrow_c loads it)
+constexpr f32 kArrowScale = 0.72f;       // his arrows sized to the bowman
+constexpr f32 kArrowLength = 114.0f;     // Link's arrow, nock (its origin) to tip, along +z
+constexpr f32 kStringRest = 30.0f;       // the string's middle off the grip, at rest and fully drawn
+constexpr f32 kStringFull = 80.0f;
+constexpr f32 kFingerReach = 7.0f;       // the string sits this far along the drawing hand
+
+// Poses the bow's joints (bow_loc, center, bow_1, bow_2, line) from the pose its model carries.
+int bowJointCB(J3DJoint* joint, int param) {
+    if (param != 0) return 1;
+    J3DModel* m = j3dSys.getModel();
+    const auto* p = m != nullptr ? reinterpret_cast<const Gear::BowPose*>(m->getUserArea()) : nullptr;
+    if (p == nullptr) return 1;
+    const int j = joint->getJntNo();
+    if (j > 4) return 1;
+    mDoMtx_copy(m->getBaseTRMtx(), mDoMtx_stack_c::now);
+    if (j >= 1) mDoMtx_stack_c::concat(p->center);
+    if (j == 2) {
+        mDoMtx_stack_c::transM(-5.0f, 0.0f, 0.0f);
+        mDoMtx_stack_c::ZrotM(cM_deg2s(p->a));
+        mDoMtx_stack_c::XrotM(-0x8000);
+    } else if (j == 3) {
+        mDoMtx_stack_c::transM(5.0f, 0.0f, 0.0f);
+        mDoMtx_stack_c::ZrotM(cM_deg2s(p->b));
+    } else if (j == 4) {
+        mDoMtx_stack_c::transM(p->line.x, p->line.y, p->line.z);
+    }
+    m->setAnmMtx(j, mDoMtx_stack_c::now);
+    cMtx_copy(mDoMtx_stack_c::now, J3DSys::mCurrentMtx);
+    return 1;
+}
+
+// A model along +z with its origin at `from`, pointing at `to`, scaled.
+void pointMtx(const cXyz& from, const cXyz& to, f32 scale, Mtx out) {
+    cXyz z = to - from;
+    const f32 l = z.abs();
+    if (l < 0.001f) z.set(0.0f, 0.0f, 1.0f); else z /= l;
+    cXyz up(0.0f, 1.0f, 0.0f);
+    if (std::fabs(z.y) > 0.98f) up.set(1.0f, 0.0f, 0.0f);
+    cXyz x = up.outprod(z);
+    x.normalize();
+    const cXyz y = z.outprod(x);
+    const f32 k = scale;
+    out[0][0] = x.x * k; out[0][1] = y.x * k; out[0][2] = z.x * k; out[0][3] = from.x;
+    out[1][0] = x.y * k; out[1][1] = y.y * k; out[1][2] = z.y * k; out[1][3] = from.y;
+    out[2][0] = x.z * k; out[2][1] = y.z * k; out[2][2] = z.z * k; out[2][3] = from.z;
+}
+
+// The arrows he has shot (e_arrow actors: the Bulblins' own flight, sticking and pick-up), each with
+// one of his arrow models to be drawn with instead of the Bulblin's.
+struct Flying {
+    fpc_ProcID id = fpcM_ERROR_PROCESS_ID_e;
+    std::chrono::steady_clock::time_point born{};
+    Gear* gear = nullptr;
+    J3DModel* model = nullptr;    // nullptr: his models are gone (he left): drawn as nothing
+    bool armed = false;           // its attack set up as ours
+};
+std::array<Flying, 16> g_flying{};
+
+Flying* flyingFor(fpc_ProcID id) {
+    if (id == fpcM_ERROR_PROCESS_ID_e) return nullptr;
+    for (Flying& f : g_flying) if (f.id == id) return &f;
+    return nullptr;
+}
+// His models are about to go: arrows still about drop theirs.
+void forgetArrows(Gear* g) {
+    for (Flying& f : g_flying) {
+        if (f.gear == g) {
+            f.gear = nullptr;
+            f.model = nullptr;
+        }
+    }
+}
+
 void cutLight(Gear& g) {
     if (g.lit) dKy_plight_cut(&g.glow);
     g.lit = false;
@@ -290,6 +386,7 @@ HookAction onRemoveResrcPre(ModContext*, void* args, void* retval, void*) {
     dComIfG_resDelete(&npc->mPhase3, specialArc(type));
     if (g != nullptr && g->owner == fopAcM_GetID(npc)) {
         cutLight(*g);
+        forgetArrows(g);
         if (g->extras != nullptr) mDoExt_destroySolidHeap(g->extras);
         if (g->packLoaded) dComIfG_resDelete(&g->packPhase, kPackArc);
         *g = Gear{};
@@ -342,7 +439,12 @@ void onCreateHeapPost(ModContext*, void* args, void* retval, void*) {
     g->torch = travellers::isFighter(passer);
     // The game sizes a townsfolk's heap for its own body; the torch, lantern and staff don't fit in
     // it (they silently failed to be made). They get a heap of their own, freed with the traveller.
-    if (g->extras != nullptr) mDoExt_destroySolidHeap(g->extras);   // (made twice: the game retried)
+    if (g->extras != nullptr) {   // (made twice: the game retried)
+        forgetArrows(g);
+        mDoExt_destroySolidHeap(g->extras);
+    }
+    g->bow = g->quiver = g->nockArrow = nullptr;
+    for (J3DModel*& a : g->flyArrows) a = nullptr;
     g->extras = mDoExt_createSolidHeapFromGame(0x40000, 0x20);
     if (g->extras != nullptr) {
         JKRHeap* before = mDoExt_setCurrentHeap(g->extras);
@@ -359,6 +461,19 @@ void onCreateHeapPost(ModContext*, void* args, void* retval, void*) {
         g->goblet = make("psr_goblet.bmd");
         g->tankard = make("psr_cup_tankard.bmd");
         g->mealItem = nullptr;
+        if (passer->m_type == kBowmanType) {
+            g->bow = make("psr_bow.bmd");
+            g->quiver = make("psr_quiver.bmd");
+            if (g->bow != nullptr) {
+                g->bow->setUserArea(reinterpret_cast<uintptr_t>(&g->bowPose));
+                J3DModelData* bd = g->bow->getModelData();
+                for (u16 i = 0; i < bd->getJointNum() && i < 5; ++i) bd->getJointNodePointer(i)->setCallBack(bowJointCB);
+            }
+            if (auto* data = static_cast<J3DModelData*>(dComIfG_getObjectRes(daAlink_c::getAlinkArcName(), kArrowRes))) {
+                g->nockArrow = mDoExt_J3DModel__create(data, 0x80000, 0x11000084);
+                for (J3DModel*& a : g->flyArrows) a = mDoExt_J3DModel__create(data, 0x80000, 0x11000084);
+            }
+        }
         if (passer->m_type == kBardType) {   // the townsfolk's own object archive, already loaded
             if (auto* data = static_cast<J3DModelData*>(dComIfG_getObjectRes("object", "j_guitar.bmd"))) {
                 g->guitar = mDoExt_J3DModel__create(data, 0x80000, 0x11000084);
@@ -467,6 +582,56 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
         mDoExt_modelUpdateDL(g->guitar);
     }
     drawOn(g->pack, kBackbone, nullptr);
+    drawOn(g->quiver, kBackbone, nullptr);   // fitted in the backbone's own space
+    if (g->bow != nullptr) {
+        // in his left hand while he shoots (the string on his fingers once drawn), else across his back
+        const fighter_anim::BowView v = fighter_anim::bowView(passer);
+        Gear::BowPose& p = g->bowPose;
+        mDoMtx_copy(body->getAnmMtx(v.inHand ? kHandL : kBackbone), mDoMtx_stack_c::now);
+        mDoMtx_stack_c::concat(v.inHand ? kBowGripL : kBowOnBack);
+        Mtx base;
+        mDoMtx_copy(mDoMtx_stack_c::now, base);
+        mDoMtx_copy(v.inHand ? kBowCenterHand : kBowCenterBack, p.center);
+        // where the drawing fingers are (the right hand, a little along it)
+        MtxP hr = body->getAnmMtx(kHandR);
+        cXyz along(hr[0][0], hr[1][0], hr[2][0]);
+        along.normalize();
+        const cXyz fingers(hr[0][3] + along.x * kFingerReach, hr[1][3] + along.y * kFingerReach,
+                           hr[2][3] + along.z * kFingerReach);
+        p.a = 160.0f;
+        p.b = 20.0f;
+        p.line = {0.0f, kStringRest, 0.0f};
+        Mtx grip, gripInv;
+        mDoMtx_concat(base, p.center, grip);
+        if (v.nocked && MTXInverse(grip, gripInv) != 0) {
+            cXyz local;
+            mDoMtx_multVec(gripInv, &fingers, &local);
+            p.line = local;
+            const f32 pull = std::clamp((local.abs() - kStringRest) / (kStringFull - kStringRest), 0.0f, 1.0f);
+            p.a = 160.0f - 25.0f * pull;
+            p.b = 20.0f + 25.0f * pull;
+        }
+        g->gripAt.set(grip[0][3], grip[1][3], grip[2][3]);
+        g->gripSeen = v.inHand;
+        g->bow->setBaseTRMtx(base);
+        g_env_light.setLightTevColorType_MAJI(g->bow, &passer->tevStr);
+        mDoExt_modelUpdateDL(g->bow);
+        if (v.arrow && g->nockArrow != nullptr) {
+            // its nock on the string (or in his fingers), pointing out past the grip
+            const cXyz gripAt(grip[0][3], grip[1][3], grip[2][3]);
+            cXyz nock = fingers;
+            if (v.nocked) {
+                Vec w;
+                mDoMtx_multVec(grip, &p.line, &w);
+                nock.set(w.x, w.y, w.z);
+            }
+            Mtx at;
+            pointMtx(nock, gripAt, kArrowScale, at);
+            g->nockArrow->setBaseTRMtx(at);
+            g_env_light.setLightTevColorType_MAJI(g->nockArrow, &passer->tevStr);
+            mDoExt_modelUpdateDL(g->nockArrow);
+        }
+    }
     drawOn(g->belt, kWaist, nullptr);
     Mtx inHand;
     if (g->weapon != nullptr && fighter_anim::weaponMtx(passer, inHand)) {
@@ -479,9 +644,96 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
     }
 }
 
+// His arrows are the Bulblins' own arrow actor (e_arrow: its flight, drop, sticking in the ground and
+// Link picking them up), with two changes: they hurt monsters only (an arrow's attack, Link's arrow
+// power, aimed at the enemies' group alone: never Link, travellers or the wagon), and they look like
+// Link's arrows (his model, sized to the bowman), drawn here instead of the Bulblin's.
+DEFINE_HOOK_SYMBOL("daE_ARROW_Execute", int(void*), ArrowExecute);
+DEFINE_HOOK_SYMBOL("daE_ARROW_Draw", int(void*), ArrowDraw);
+constexpr f32 kArrowTipAhead = 35.0f;   // its tip is this far past the actor (it sticks 35 short of the wall)
+
+HookAction onArrowExecutePre(ModContext*, void* args, void*, void*) {
+    auto* a = mods::arg<e_arrow_class*>(args, 0);
+    Flying* f = a != nullptr ? flyingFor(fopAcM_GetID(a)) : nullptr;
+    if (f == nullptr || f->armed) return HOOK_CONTINUE;
+    f->armed = true;
+    a->mCcAtSph.SetAtType(AT_TYPE_ARROW);
+    a->mCcAtSph.SetAtAtp(2);
+    a->mCcAtSph.SetAtSPrm(0x3);   // set, against the enemies' group only
+    return HOOK_CONTINUE;
+}
+
+HookAction onArrowDrawPre(ModContext*, void* args, void* retval, void*) {
+    auto* a = mods::arg<e_arrow_class*>(args, 0);
+    Flying* f = a != nullptr ? flyingFor(fopAcM_GetID(a)) : nullptr;
+    if (f == nullptr) return HOOK_CONTINUE;
+    if (retval != nullptr) *static_cast<int*>(retval) = 1;
+    if (a->field_0xa14 != 0 || f->model == nullptr) return HOOK_SKIP_ORIGINAL;
+    g_env_light.settingTevStruct(0, &a->current.pos, &a->tevStr);
+    mDoMtx_stack_c::transS(a->current.pos.x, a->current.pos.y, a->current.pos.z);
+    mDoMtx_stack_c::YrotM(a->shape_angle.y);
+    mDoMtx_stack_c::XrotM(a->shape_angle.x);
+    mDoMtx_stack_c::ZrotM(a->shape_angle.z);
+    mDoMtx_stack_c::transM(0.0f, 0.0f, kArrowTipAhead - kArrowLength * kArrowScale);
+    mDoMtx_stack_c::scaleM(kArrowScale, kArrowScale, kArrowScale);
+    f->model->setBaseTRMtx(mDoMtx_stack_c::now);
+    g_env_light.setLightTevColorType_MAJI(f->model, &a->tevStr);
+    mDoExt_modelUpdateDL(f->model);
+    return HOOK_SKIP_ORIGINAL;
+}
+
 }  // namespace
 
 namespace traveller_gear {
+
+bool shootArrow(daNpcPasser_c* passer, fopAc_ac_c* target) {
+    Gear* g = travellerLook(passer) != nullptr ? gearFor(passer) : nullptr;
+    if (g == nullptr || g->owner != fopAcM_GetID(passer) || g->bow == nullptr || target == nullptr) return false;
+    // a place to keep track of it (arrows long gone, or never made, free theirs)
+    const auto now = std::chrono::steady_clock::now();
+    Flying* slot = nullptr;
+    for (Flying& f : g_flying) {
+        if (f.id != fpcM_ERROR_PROCESS_ID_e && fopAcM_SearchByID(f.id) == nullptr &&
+            (f.armed || now - f.born > std::chrono::seconds(2))) {
+            f = Flying{};
+        }
+        if (slot == nullptr && f.id == fpcM_ERROR_PROCESS_ID_e) slot = &f;
+    }
+    if (slot == nullptr) return false;
+    J3DModel* model = nullptr;
+    for (J3DModel* m : g->flyArrows) {
+        bool used = false;
+        for (const Flying& f : g_flying) used = used || (f.id != fpcM_ERROR_PROCESS_ID_e && f.model == m);
+        if (m != nullptr && !used) { model = m; break; }
+    }
+    if (model == nullptr) return false;
+    // from the bow, at the middle of it, leading it as the Bulblins do; aimed a little high for the
+    // drop (the arrow tips down 65 a frame: aim up by half of what it will have dropped by then)
+    const cXyz from = g->gripSeen ? g->gripAt : passer->eyePos;
+    cXyz aim(target->current.pos.x, std::max(target->eyePos.y - 30.0f, target->current.pos.y + 30.0f),
+             target->current.pos.z);
+    const f32 frames = std::clamp(from.abs(aim) / 100.0f, 1.0f, 60.0f);
+    aim += (target->current.pos - target->old.pos) * frames;
+    const cXyz d = aim - from;
+    csXyz ang;
+    ang.y = static_cast<s16>(cM_atan2s(d.x, d.z) + cM_rndFX(150.0f));
+    ang.x = static_cast<s16>(-cM_atan2s(d.y, std::sqrt(d.x * d.x + d.z * d.z)) - 65.0f * frames * 0.5f +
+                             cM_rndFX(150.0f));
+    ang.z = 0;
+    const fpc_ProcID id = fopAcM_createChild(fpcNm_E_ARROW_e, fopAcM_GetID(passer), 0, &from,
+                                             fopAcM_GetRoomNo(passer), &ang, nullptr, -1, nullptr);
+    if (id == fpcM_ERROR_PROCESS_ID_e) return false;
+    slot->id = id;
+    slot->born = now;
+    slot->gear = g;
+    slot->model = model;
+    slot->armed = false;
+    return true;
+}
+
+bool isOurArrow(const fopAc_ac_c* actor) {
+    return actor != nullptr && flyingFor(fopAcM_GetID(actor)) != nullptr;
+}
 
 void clearMeal(daNpcPasser_c* passer) {
     Gear* g = travellerLook(passer) != nullptr ? gearFor(passer) : nullptr;
@@ -649,7 +901,9 @@ bool install() {
            mods::hook::add_pre<Cd2GetModel>(onGetModelPre) == MOD_OK &&
            mods::hook::add_pre<Cd2GetEyeAnim>(onGetEyeAnimPre) == MOD_OK &&
            mods::hook::add_post<PasserCreateHeap>(onCreateHeapPost) == MOD_OK &&
-           mods::hook::add_post<PasserDraw>(onDrawPost) == MOD_OK;
+           mods::hook::add_post<PasserDraw>(onDrawPost) == MOD_OK &&
+           mods::hook::add_pre<ArrowExecute>(onArrowExecutePre) == MOD_OK &&
+           mods::hook::add_pre<ArrowDraw>(onArrowDrawPre) == MOD_OK;
 }
 
 }  // namespace traveller_gear

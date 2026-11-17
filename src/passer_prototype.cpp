@@ -204,6 +204,9 @@ struct PasserState {
     fpc_ProcID shooter = fpcM_ERROR_PROCESS_ID_e;   // a healthy fighter shot from afar: the archer it goes after
     int shooterFrames = 0;                          // ... for this long since the last arrow
     bool swingReq = false;  // a fighter in reach and due a swing (the blow lands on the swing's frames)
+    bool shooting = false;  // this frame: the bowman shooting at its enemy (bow in hand)
+    bool bowMode = false;   // the bowman keeps to the bow until the enemy comes close (and back past further)
+    fpc_ProcID bowTarget = fpcM_ERROR_PROCESS_ID_e;   // what he is aiming at
     bool onGuard = false;   // this frame: a fighter with an enemy to face (draws and squares up)
     bool turning = false;   // this frame: still turning to face it (shuffles round instead of spinning)
     int stuck = 0;          // fleeing: frames pinned against something (a tent, a rock)
@@ -1830,6 +1833,10 @@ constexpr f32 kLimpSpeed = 0.6f;
 constexpr f32 kHurtFleeSpeed = 0.65f;       // fleeing on the last heart: this much of a full run
 constexpr s16 kGuardTurn = 0x300;           // turning on guard: about 4 degrees a frame, shuffling
 constexpr s16 kTurnShuffle = 0x800;         // more than ~11 degrees off: shuffle round to face it            // limping on the last heart, part of a walk
+constexpr f32 kBowRange = 2500.0f;          // the bowman shoots at monsters this far off (birds overhead too)
+constexpr f32 kBowNear = 400.0f;            // ... closer than this: bow on his back, sword out
+constexpr f32 kBowFar = 550.0f;             // ... and back to the bow once it's this far off again
+constexpr s16 kBowFacing = 0x600;           // looses once facing it this nearly
 constexpr int kStrikeEvery = 40;            // frames between swings (each swing is two blows)
 constexpr u8 kStrikePower = 2;              // a sword hit (10 damage to an enemy: a Bokoblin takes 4)
 constexpr u8 kAnmIdle = 0, kAnmWalk = 2, kAnmRun = 4, kAnmCower = 0x26;
@@ -2012,6 +2019,17 @@ bool swingOrStrike(daNpcPasser_c* passer, PasserState& state) {
     return true;
 }
 
+// The bowman's arrow leaves the string: at what he was aiming at, with the Bulblins' shot sound.
+void loose(daNpcPasser_c* passer, PasserState& state) {
+    fopAc_ac_c* target = fopAcM_SearchByID(state.bowTarget);
+    if (target == nullptr || !traveller_gear::shootArrow(passer, target)) return;
+    mDoAud_seStart(Z2SE_OBJ_ARROW_SHOT_NORMAL, &passer->eyePos, 0, dComIfGp_getReverb(fopAcM_GetRoomNo(passer)));
+    char line[96];
+    std::snprintf(line, sizeof(line), "arrow at %u (%s), %.0f off", static_cast<unsigned>(state.bowTarget),
+                  fopAcM_getProcNameString(target), passer->current.pos.absXZ(target->current.pos));
+    travellers::noteBlow(passer, line);
+}
+
 // Once per frame after the traveller's own action code: what its weapon and body should be doing.
 void fighterAnim(daNpcPasser_c* passer, PasserState& state) {
     using fighter_anim::Want;
@@ -2023,7 +2041,7 @@ void fighterAnim(daNpcPasser_c* passer, PasserState& state) {
     if (state.talking) {
         want = Want::Calm;
     } else if (state.onGuard) {
-        want = state.chasing ? Want::Chase : Want::Ready;
+        want = state.shooting ? Want::Shoot : state.chasing ? Want::Chase : Want::Ready;
     } else if (!holdsGround(passer)) {
         // down to its last heart
         if (passer->mActionIdx == daNpcPasser_c::MODE_1) {
@@ -2036,7 +2054,8 @@ void fighterAnim(daNpcPasser_c* passer, PasserState& state) {
         }
     }
     if (fighter_anim::update(passer, want, state.swingReq, state.turning) > 0) {
-        strike(passer, state);
+        if (want == Want::Shoot) loose(passer, state);
+        else strike(passer, state);
     }
     state.swingReq = false;
     if (want == Want::HurtWalk) {
@@ -2360,6 +2379,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
     bool campHandled = false;
     state->onGuard = false;
     state->turning = false;
+    state->shooting = false;
     if (!state->talking && !state->cowering) {
         campHandled = bedTick(passer, *state) || campGuard(passer, *state);
     }
@@ -2384,7 +2404,20 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
                 enemy = archer;
             }
         }
+        // the bowman: monsters out to bow range (birds circling overhead too)
+        const bool bowman = fighter_anim::bowman(passer) && holdsGround(passer);
+        if (bowman && enemy == nullptr) enemy = nearestEnemyAt(passer->current.pos, kBowRange);
         state->vsWolf = enemy != nullptr && enemy == dComIfGp_getPlayer(0);
+        bool shoot = false;
+        if (bowman && enemy != nullptr && !state->vsWolf) {
+            // at range, or out of a sword's reach above: the bow; close up: the sword
+            const f32 flat = passer->current.pos.absXZ(enemy->current.pos);
+            const bool high = enemy->current.pos.y - passer->current.pos.y > kReachAbove;
+            shoot = high || flat > (state->bowMode ? kBowNear : kBowFar);
+            if (shoot && !state->bowMode) travellers::noteAct(passer, "takes aim");
+            if (!shoot && state->bowMode) travellers::noteAct(passer, "too close: bow away, sword out");
+            state->bowMode = shoot;
+        }
         if (enemy == nullptr && state->chasing) {
             state->chasing = false;
             state->anim = 0xFF;
@@ -2394,12 +2427,16 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         } else if (state->standing && holdsGround(passer) && ++state->foeLost < kFoeLostFrames) {
             // lost sight of it for a moment (it circled out, went behind something): stay on guard
             state->onGuard = true;
+            state->shooting = state->bowMode;   // (the bowman keeps his arrow drawn)
             passer->speedF = 0.0f;
+        } else {
+            state->bowMode = false;
         }
         if (enemy != nullptr) {
             state->onGuard = true;
             // out of reach: charge at it (not at wolf Link: him it only squares up to)
-            const bool charge = !state->vsWolf && !fighter_anim::busy(passer) &&
+            state->shooting = shoot;
+            const bool charge = !shoot && !state->vsWolf && !fighter_anim::busy(passer) &&
                                 passer->current.pos.absXZ(enemy->current.pos) > kStrikeReach;
             if (charge && !state->chasing) {
                 say(passer, *state, psr_bubble::kAttack);
@@ -2434,7 +2471,13 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
             // in reach: swing at it (the blow lands on the swing's own frames)
             const f32 dx = enemy->current.pos.x - passer->current.pos.x;
             const f32 dz = enemy->current.pos.z - passer->current.pos.z;
-            if (dx * dx + dz * dz <= kStrikeReach * kStrikeReach) {
+            if (shoot) {
+                // the bowman: drawn and facing it, he looses (the arrow leaves on the shot's own frame)
+                state->bowTarget = fopAcM_GetID(enemy);
+                const s16 off = static_cast<s16>(cLib_targetAngleY(&passer->current.pos, &enemy->current.pos) -
+                                                 passer->shape_angle.y);
+                if (fighter_anim::aimed(passer) && std::abs(off) < kBowFacing) state->swingReq = true;
+            } else if (dx * dx + dz * dz <= kStrikeReach * kStrikeReach) {
                 if (--state->strikeTimer <= 0 && swingOrStrike(passer, *state)) {
                     state->strikeTimer = kStrikeEvery;
                 }
@@ -2463,6 +2506,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         // other player-owned actors all report a non-enemy attacker and are ignored.
         auto* attacker = passer->mCyl.GetTgHitAc();
         passer->mCyl.ResetTgHit();
+        if (traveller_gear::isOurArrow(attacker)) return HOOK_CONTINUE;   // the bowman's: never at travellers
         const bool byWolf = attacker != nullptr && attacker == dComIfGp_getPlayer(0) &&
                             daPy_py_c::checkNowWolf() && travellers::isFighter(passer);
         if (!byWolf && (attacker == nullptr || !fopAcM_IsActor(attacker) ||

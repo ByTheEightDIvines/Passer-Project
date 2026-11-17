@@ -23,6 +23,8 @@
 #include "f_op/f_op_actor_mng.h"
 #include "m_Do/m_Do_mtx.h"
 #include "SSystem/SComponent/c_math.h"
+#include "m_Do/m_Do_audio.h"
+#include "Z2AudioLib/Z2SeMgr.h"
 
 #include "fighter_anim.hpp"
 #include "travellers.hpp"
@@ -88,7 +90,21 @@ constexpr f32 kSurprisedRoot[] = {
 };
 constexpr int kSurprisedFrames = sizeof(kSurprisedRoot) / sizeof(kSurprisedRoot[0]);
 
-enum class Phase : u8 { Sheathed, Surprised, Drawing, Ready, Swinging, Sheathing };
+enum class Phase : u8 { Sheathed, Surprised, Drawing, Ready, Swinging, Sheathing, BowDraw, BowAim, BowShoot };
+
+// The bowman's (passer 8) bow: the Bulblin's shoot_ready / shoot_wait / shoot, refitted to the men's
+// body. Draw: the right hand takes an arrow on frame 10, the string from 22 (the bow's creak on 20).
+// Shot: the arrow leaves the string on frame 2, the string is back by 3.
+constexpr int kBowmanType = 8;
+constexpr const char* kBowDraw = "psr_m_bow_draw.bck";
+constexpr const char* kBowAim = "psr_m_bow_aim.bck";
+constexpr const char* kBowShoot = "psr_m_bow_shoot.bck";
+constexpr f32 kBowArrowIn = 10.0f;
+constexpr f32 kBowCreak = 20.0f;
+constexpr f32 kBowNock = 22.0f;
+constexpr f32 kBowLoose = 2.0f;
+constexpr int kBowHold = 12;          // frames aimed before it may loose
+bool bowPhase(Phase p) { return p == Phase::BowDraw || p == Phase::BowAim || p == Phase::BowShoot; }
 
 struct Slot {
     fpc_ProcID owner = fpcM_ERROR_PROCESS_ID_e;
@@ -98,6 +114,7 @@ struct Slot {
     J3DAnmTransform* underlying = nullptr;   // what the game had on before we took over
     f32 prevFrame = 0.0f;
     f32 hopDone = 0.0f;                      // how much of the startled hop has moved the actor
+    int aimFrames = 0;                       // the bowman: frames held at full draw
 };
 std::array<Slot, travellers::kSlots> g_slots{};
 
@@ -133,7 +150,8 @@ bool ours(const Body* b, J3DAnmTransform* a) {
     if (a == nullptr) return false;
     static const char* const kNames[] = {"psr_surprised.bck", "psr_squareup.bck", "psr_squareup_step.bck",
                                          "psr_s_fight_a.bck", "psr_run.bck", "psr_injury_wait.bck",
-                                         "psr_injury_walk.bck", "psr_injury_run.bck"};
+                                         "psr_injury_walk.bck", "psr_injury_run.bck", kBowDraw, kBowAim,
+                                         kBowShoot};
     for (const char* n : kNames) {
         if (a == anm(n)) return true;
         char own[48];
@@ -266,6 +284,13 @@ void startDraw(daNpcPasser_c* passer, Slot& s, const Body* b) { startPhase(passe
 
 void startSheathe(daNpcPasser_c* passer, Slot& s, const Body* b) {
     startPhase(passer, s, Phase::Sheathing, anm(b->sheathe), 6.0f);
+}
+
+// The bow off his back and an arrow drawn (there is no take-it-off-the-back move: it is in his hand
+// from the start of the draw, as the Bulblin's).
+void startBow(daNpcPasser_c* passer, Slot& s) {
+    s.aimFrames = 0;
+    startPhase(passer, s, Phase::BowDraw, anm(kBowDraw), 5.0f);
 }
 
 
@@ -510,7 +535,35 @@ bool busy(const daNpcPasser_c* passer) {
 
 bool weaponOut(const daNpcPasser_c* passer) {
     const Slot* s = slotFor(passer, false);
-    return s != nullptr && s->phase != Phase::Sheathed && s->phase != Phase::Surprised;
+    return s != nullptr && s->phase != Phase::Sheathed && s->phase != Phase::Surprised;   // (the bow too)
+}
+
+bool bowman(const daNpcPasser_c* passer) {
+    return passer != nullptr && passer->m_type == kBowmanType && anm(kBowDraw) != nullptr &&
+           anm(kBowAim) != nullptr && anm(kBowShoot) != nullptr;
+}
+
+BowView bowView(const daNpcPasser_c* passer) {
+    BowView v;
+    const Slot* s = slotFor(passer, false);
+    if (s == nullptr || !bowPhase(s->phase) || passer->mpMorf == nullptr) return v;
+    J3DAnmTransform* a = passer->mpMorf->getAnm();
+    const f32 f = passer->mpMorf->getFrame();
+    v.inHand = true;
+    if (s->phase == Phase::BowDraw && a == anm(kBowDraw)) {
+        v.arrow = f >= kBowArrowIn;
+        v.nocked = f >= kBowNock;
+    } else if (s->phase == Phase::BowAim) {
+        v.arrow = v.nocked = true;
+    } else if (s->phase == Phase::BowShoot && a == anm(kBowShoot)) {
+        v.arrow = v.nocked = f < kBowLoose;
+    }
+    return v;
+}
+
+bool aimed(const daNpcPasser_c* passer) {
+    const Slot* s = slotFor(passer, false);
+    return s != nullptr && s->phase == Phase::BowAim && s->aimFrames >= kBowHold;
 }
 
 int update(daNpcPasser_c* passer, Want want, bool swing, bool turning) {
@@ -535,7 +588,7 @@ int update(daNpcPasser_c* passer, Want want, bool swing, bool turning) {
             restart(passer, s.oneShot, false, 2.0f);
             s.prevFrame = 0.0f;
         } else if (s.phaseFrames >= kOneShotMax) {
-            if (s.phase == Phase::Sheathing) {
+            if (s.phase == Phase::Sheathing || bowPhase(s.phase)) {
                 giveBack(passer, s);
             } else {
                 s.phase = Phase::Ready;
@@ -547,10 +600,16 @@ int update(daNpcPasser_c* passer, Want want, bool swing, bool turning) {
     int hits = 0;
     const f32 now = frame(passer);
     const bool armed = want == Want::Ready || want == Want::Chase;
+    const bool shoot = want == Want::Shoot && bowman(passer);
+    // the bow back over his shoulder: then the sword if it's wanted, else what the game had on
+    auto bowAway = [&]() {
+        if (armed) startDraw(passer, s, b);
+        else giveBack(passer, s);
+    };
 
     switch (s.phase) {
         case Phase::Sheathed:
-            if (armed) {
+            if (armed || shoot) {
                 s.hopDone = 0.0f;
                 startPhase(passer, s, Phase::Surprised, fa(passer, "psr_surprised.bck"), 3.0f);
             } else if (want == Want::Flee) {
@@ -566,10 +625,11 @@ int update(daNpcPasser_c* passer, Want want, bool swing, bool turning) {
 
         case Phase::Surprised:
             hop(passer, s);
-            if (!armed) {
+            if (!armed && !shoot) {
                 giveBack(passer, s);   // the enemy went away (or it has to run) before it drew
             } else if (finished(passer)) {
-                startDraw(passer, s, b);
+                if (shoot) startBow(passer, s);
+                else startDraw(passer, s, b);
             }
             break;
 
@@ -578,7 +638,8 @@ int update(daNpcPasser_c* passer, Want want, bool swing, bool turning) {
                 s.phase = Phase::Ready;
                 s.oneShot = nullptr;
             } else if (!armed && now < kGrabFrame) {
-                giveBack(passer, s);   // hadn't touched it yet
+                if (shoot) startBow(passer, s);   // hadn't touched the sword yet: the bow instead
+                else giveBack(passer, s);         // hadn't touched it yet
             }
             break;
 
@@ -619,11 +680,50 @@ int update(daNpcPasser_c* passer, Want want, bool swing, bool turning) {
                 s.oneShot = nullptr;
             } else if (armed) {
                 startDraw(passer, s, b);
+            } else if (finished(passer) && shoot) {
+                startBow(passer, s);   // sword away: the bow
             } else if (finished(passer)) {
                 s.phase = Phase::Sheathed;
                 if (want == Want::HurtWalk) play(passer, fa(passer, "psr_injury_walk.bck"), true, 8.0f);
                 else if (want == Want::HurtWait) play(passer, fa(passer, "psr_injury_wait.bck"), true, 8.0f);
                 else giveBack(passer, s);
+            }
+            break;
+
+        case Phase::BowDraw:
+            if (!shoot) {
+                bowAway();
+            } else {
+                if (s.prevFrame < kBowCreak && now >= kBowCreak) {
+                    mDoAud_seStart(Z2SE_OBJ_ARROW_DRAW_NORMAL, &passer->eyePos, 0,
+                                   dComIfGp_getReverb(fopAcM_GetRoomNo(passer)));
+                }
+                if (finished(passer)) {
+                    s.phase = Phase::BowAim;
+                    s.oneShot = nullptr;
+                    s.aimFrames = 0;
+                    play(passer, anm(kBowAim), true, 3.0f);
+                }
+            }
+            break;
+
+        case Phase::BowAim:
+            if (!shoot) {
+                bowAway();
+            } else {
+                play(passer, anm(kBowAim), true, 3.0f);
+                ++s.aimFrames;
+                if (swing && s.aimFrames >= kBowHold) startPhase(passer, s, Phase::BowShoot, anm(kBowShoot), 1.0f);
+            }
+            break;
+
+        case Phase::BowShoot:
+            if (s.prevFrame < kBowLoose && now >= kBowLoose) ++hits;   // the arrow is away
+            if (finished(passer)) {
+                if (shoot) startBow(passer, s);   // the next one
+                else bowAway();
+            } else if (!shoot && now > kBowLoose) {
+                bowAway();
             }
             break;
     }
@@ -662,6 +762,9 @@ bool weaponMtx(const daNpcPasser_c* passer, Mtx out) {
     switch (s->phase) {
         case Phase::Sheathed:
         case Phase::Surprised:
+        case Phase::BowDraw:
+        case Phase::BowAim:
+        case Phase::BowShoot:
             return false;
         case Phase::Drawing:
             if (f < kGrabFrame) return false;

@@ -16,6 +16,7 @@ enum class Want : unsigned char {
     Flee,       // last heart, running away: the injured limp-run (slower than a run)
     HurtWait,   // last heart, got away: catch breath, weapon still out
     HurtWalk,   // last heart, walking on: weapon away, limp
+    Shoot,      // the bowman, enemy at range: bow in hand, draw and aim; loose when asked (swing)
 };
 
 // This traveller has its own fight animations (the men fighters; their PsrPack anims are loaded).
@@ -37,6 +38,21 @@ bool ownSpeed(const daNpcPasser_c* passer);
 bool heldMtx(const daNpcPasser_c* passer, Mtx out);
 // Where the weapon model goes while in hand (false: it's in its sheath).
 bool weaponMtx(const daNpcPasser_c* passer, Mtx out);
+
+// --- the bowman (passer 8): the Bulblin's draw / aim / shot, refitted to his body ---
+// He has the bow animations (and is passer 8).
+bool bowman(const daNpcPasser_c* passer);
+// What the bow is doing for drawing it: in his left hand (else on his back), an arrow in his right
+// hand, and whether the string is on his fingers (drawn back).
+struct BowView {
+    bool inHand = false;
+    bool arrow = false;
+    bool nocked = false;
+};
+BowView bowView(const daNpcPasser_c* passer);
+// Drawn and held long enough to loose (update() with Want::Shoot and swing then shoots: it returns 1
+// on the frame the arrow leaves the string).
+bool aimed(const daNpcPasser_c* passer);
 
 // The game adds each body's own posture tweaks (the old men's hunch, bent knees, turned arms...)
 // on top of every animation. Ours are finished poses, so while one plays that tweak is faded out
