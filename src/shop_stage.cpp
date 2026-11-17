@@ -11,18 +11,18 @@
 #include "mods/service.hpp"
 #include "mods/svc/stage.h"
 #include "travellers.hpp"
-#include "mod_sounds.hpp"
 #include "mods/svc/audio_res.h"
-#include "Z2AudioLib/Z2AudioMgr.h"
+#include "Z2AudioLib/Z2SeqMgr.h"
 
 
 namespace {
 constexpr const char* kShop = "R_PSR00";
 constexpr s16 kReturnPoint = 0x1F4;          // our own spawn number in the field (the game's are 0..255)
 constexpr f32 kShopDoorZ = 500.0f;            // the shop room's doorway, in the shop's own frame
-// The shop is room 8 of a copy of the field (F_SP122's settings), standing where Beedle's tent stands
-// (tools/stage/build_shop_field.py): its own frame is the tent's, at this spot and facing.
-constexpr int kShopRoom = 8;
+// The shop is room 0 of its stage (tools/stage/build_shop_kak.py: the Kakariko interior base, with the
+// field's sky, time-of-day lighting and terrain), standing where Beedle's tent stands: its own frame is
+// the tent's, at this spot and facing.
+constexpr int kShopRoom = 0;
 constexpr f32 kShopX = -72921.4f, kShopZ = 5115.4f;
 constexpr s16 kShopYaw = 9935;
 constexpr f32 kShopDoorHalfW = 85.0f;
@@ -32,15 +32,15 @@ char g_field[9] = {};                         // the field stage the tent stands
 int g_cool = 0;                               // frames before another trip (a stage change takes a moment)
 int g_settle = 0;                             // frames since the shop loaded (no leaving straight away)
 
-// Beedle's shop music: our own added sound (mod_sounds program 0xF5), looping the whole track while
-// Link is inside, following him so it never pans; faded out on the way out.
-constexpr u8 kMusicProgram = 0xF5;
-constexpr u32 kMusicSamples = 1547928;        // res/music/beedle_shop.wav, 22.05 kHz mono (under 2^21 samples, like the campfire songs)
-constexpr f32 kMusicVolume = 0.8f;
-u32 g_musicId = 0;
-
-JAISoundHandle g_music;
-JGeometry::TVec3<f32> g_musicPos;
+// Beedle's shop music: a game music stream of our own (res: overlay/Audiores/Stream/psr_beedle.ast, made by
+// tools/music/make_ast.py), added to the sound table with the audio service's add_sound_table_stream (a
+// new ID, nothing of the game's replaced) and played as the game plays its own streamed music
+// (Z2SeqMgr bgmStreamPrepare / bgmStreamPlay). It loops the whole track and stops on a stage change.
+constexpr const char* kMusicPath = "AudioRes/Stream/psr_beedle.ast";   // as the game's sound table spells them
+u16 g_streamId = 0;
+bool g_streamOk = false;
+bool g_musicOn = false;
+u32 musicSoundId() { return 0x02000000u | g_streamId; }    // section 2 (streams), the allocated ID
 
 bool stageIs(const char* name) {
     const char* s = dComIfGp_getStartStageName();
@@ -56,45 +56,26 @@ bool inShop() { return stageIs(kShop); }
 
 bool installMusic() {
     if (svc_audio_res == nullptr) return false;
-    if (!mod_sounds::loadWave(kMusicProgram, "res/music/beedle_shop.wav", true, kMusicSamples)) return false;
-    AudioSoundTableEffectInfo info = *svc_audio_res->default_effect_info;
-    info.always_max_priority = true;
-    info.ignore_distance_volume = true;
-    info.ignore_dolby = true;
-    info.doppler_power = 0;
-    info.random_pitch = 0;
-    info.random_volume = 0;
+    AudioSoundTableStreamInfo info = *svc_audio_res->default_stream_info;   // stereo: left, right
     info.volume = 1.0f;
-    info.pitch = 1.0f;
-    g_musicId = mod_sounds::addSound(SE_CATEGORY_OBJECT_SE, kMusicProgram, &info);
-    return g_musicId != 0;
+    info.stop_on_scene_change = true;
+    AudioSoundTableHandle handle = 0;
+    g_streamOk = svc_audio_res->add_sound_table_stream(mod_ctx, kMusicPath, &info, &handle, &g_streamId) == MOD_OK;
+    return g_streamOk;
 }
 
-int g_musicLog = 0;
 void musicTick(bool inside, bool settled) {
-    if (g_musicId == 0) return;
+    if (!g_streamOk) return;
     if (!inside) {
-        if (g_music) g_music->stop(30);
+        if (g_musicOn && Z2GetSeqMgr()->getStreamBgmID() == musicSoundId()) Z2GetSeqMgr()->bgmStreamStop(30);
+        g_musicOn = false;
         return;
     }
-    if (!settled) return;   // wait until the shop has settled (the game brings its sound back up after a stage change)
-    if (++g_musicLog >= 150) {   // every 5 seconds: is it still going, and how loud
-        g_musicLog = 0;
-        // the three steps of playing one of our sounds, counted since start-up: its note sequence,
-        // its instrument, its wave. Whichever stops rising while the music "plays" is where it breaks.
-        travellers::diagLine("shop    music %s volume %.2f | sequences %d instruments %d waves %d",
-                             g_music ? "still playing" : "stopped",
-                             g_music ? g_music->getAuxiliary().params_.mVolume : 0.0f, mod_sounds::seqAnswered(),
-                             mod_sounds::instAnswered(), mod_sounds::lookupsAnswered());
-    }
-    if (auto* link = dComIfGp_getPlayer(0)) {
-        g_musicPos.set(link->current.pos.x, link->current.pos.y + 100.0f, link->current.pos.z);
-    }
-    if (!g_music) {
-        Z2GetAudioMgr()->startSound(JAISoundID(g_musicId), &g_music, &g_musicPos);
-        if (g_music) g_music->getAuxiliary().moveVolume(kMusicVolume, 0);
-        travellers::diagLine("shop    music %s", g_music ? "playing" : "did not start");
-    }
+    if (g_musicOn || !settled) return;   // once the shop has settled (the game brings its sound back up after a stage change)
+    g_musicOn = true;
+    Z2GetSeqMgr()->bgmStreamPrepare(musicSoundId());
+    Z2GetSeqMgr()->bgmStreamPlay();
+    travellers::diagLine("shop    music stream %04x started", g_streamId);
 }
 
 void enter(const cXyz& doorOut, s16 yawOut, int fieldRoom) {

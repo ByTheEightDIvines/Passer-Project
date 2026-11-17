@@ -5,7 +5,7 @@
 #include "SSystem/SComponent/c_xyz.h"
 namespace shop_stage {
 bool install();
-bool installMusic();   // after mod_sounds::install: Beedle's shop music, loaded once
+bool installMusic();   // Beedle's shop music: our stream, added to the sound table once
 // The tent's curtain was reached: in we go. doorOut: on the grass in front of the tent; yawOut: facing
 // away from it; fieldRoom: the field room the tent stands in.
 void enter(const cXyz& doorOut, s16 yawOut, int fieldRoom);
