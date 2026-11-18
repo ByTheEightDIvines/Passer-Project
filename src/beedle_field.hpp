@@ -8,6 +8,8 @@ class daNpcPasser_c;
 namespace beedle_field {
 bool installSounds();   // his two voice clips (res/voices/beedle_*.wav)
 // his shop's talk (one offer per ware, the check, the purchase, his answers), into the talk graph
+// Beedle's shop talk is off (its graph failed to register).
+void markUnready();
 ModResult registerFlows(mods::flow::GraphBuilder& graph, const MessageLanguage* langs, int nLangs, u16 group);
 u16 talkNode();                     // where today's talk starts (0xFFFF: not ready)
 void talkStarted(daNpcPasser_c* p); // Link has started talking to him

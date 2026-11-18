@@ -186,6 +186,7 @@ bool installSounds() {
     return g_goodbye != 0 && g_thanks != 0;
 }
 
+ModResult g_lastErr = MOD_OK;
 ModResult registerFlows(mods::flow::GraphBuilder& graph, const MessageLanguage* langs, int nLangs, u16 group) {
     g_ready = false;
     if (svc_flow == nullptr) return MOD_ERROR;
@@ -198,7 +199,7 @@ ModResult registerFlows(mods::flow::GraphBuilder& graph, const MessageLanguage* 
         std::vector<mods::flow::MessageVariant> v;
         for (int k = 0; k < nLangs; ++k) v.push_back(b.build(langs[k]));
         auto msg = mods::flow::register_message(group, v);
-        if (!msg) return -1;
+        if (!msg) { g_lastErr = msg.result(); return -1; }
         auto n = graph.add_message(msg.id());
         n.next(next);
         return n.id();
@@ -208,7 +209,7 @@ ModResult registerFlows(mods::flow::GraphBuilder& graph, const MessageLanguage* 
     const int full = node([](auto& b) { b.text("Looks like you can't carry any more\nof that! Next time, then!"); }, mods::flow::kEnd);
     const int thanks = node([](auto& b) { b.text("THANK YOU!"); }, mods::flow::kEnd);
     const int nothing = node([](auto& b) { b.text("Ah, I've got nothing you can use today.\nCome back tomorrow!"); }, mods::flow::kEnd);
-    if (bye < 0 || poor < 0 || full < 0 || thanks < 0 || nothing < 0) return MOD_ERROR;
+    if (bye < 0 || poor < 0 || full < 0 || thanks < 0 || nothing < 0) return g_lastErr != MOD_OK ? g_lastErr : MOD_ERROR;
     g_nothingNode = static_cast<u16>(nothing);
     for (int i = 0; i < kWareCount; ++i) {
         const Ware& w = kWares[i];
@@ -229,12 +230,14 @@ ModResult registerFlows(mods::flow::GraphBuilder& graph, const MessageLanguage* 
             b.text(". Want it?");
             b.options("I'll take it!", "No thanks");
         }, choose.id());
-        if (offer < 0) return MOD_ERROR;
+        if (offer < 0) return g_lastErr != MOD_OK ? g_lastErr : MOD_ERROR;
         g_offerNode[i] = static_cast<u16>(offer);
     }
     g_ready = true;
     return MOD_OK;
 }
+
+void markUnready() { g_ready = false; }
 
 u16 talkNode() {
     if (!g_ready) return 0xFFFF;

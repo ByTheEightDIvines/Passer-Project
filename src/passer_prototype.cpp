@@ -328,6 +328,8 @@ bool wolfShy(const daNpcPasser_c* passer) {
 }
 mods::flow::RegisteredMessage g_greeting;
 mods::flow::Graph g_talkGraph;
+mods::flow::Graph g_spotGraph;
+mods::flow::Graph g_beedleGraph;
 uint16_t g_talkNode = 0xFFFF;
 constexpr int kCookLineCount = 4;
 std::array<mods::flow::RegisteredMessage, kCookLineCount> g_cookLines;
@@ -3000,6 +3002,11 @@ uint16_t cookFlowNode_(int line) {
 }
 
 ModResult registerGreetingFlow() {
+    auto report = [](const char* what, ModResult r) {
+        char buf[160];
+        std::snprintf(buf, sizeof(buf), "talk: %s could not be registered (result %d)", what, static_cast<int>(r));
+        svc_log->warn(mod_ctx, buf);
+    };
     mods::flow::MessageBuilder builder;
     builder.box_kind(MESSAGE_BOX_TALK)
         .text("Road's quiet for now. I'm heading west before nightfall.");
@@ -3010,9 +3017,8 @@ ModResult registerGreetingFlow() {
         variants.push_back(builder.build(language));
     }
     g_greeting = mods::flow::register_message(kTalkFlowGroup, variants);
-    if (!g_greeting) {
-        return g_greeting.result();
-    }
+    bool basicOk = static_cast<bool>(g_greeting);
+    ModResult basicErr = g_greeting.result();
 
     // The camp cook's lines: each greedy try gets the next one; the last comes with the spoon.
     static const char* const kCookLines[kCookLineCount][2] = {
@@ -3029,30 +3035,58 @@ ModResult registerGreetingFlow() {
             variants.push_back(line.build(language));
         }
         g_cookLines[i] = mods::flow::register_message(kTalkFlowGroup, variants);
-        if (!g_cookLines[i]) {
-            return g_cookLines[i].result();
+        if (basicOk && !g_cookLines[i]) {
+            basicOk = false;
+            basicErr = g_cookLines[i].result();
         }
     }
 
-    mods::flow::GraphBuilder graph{kTalkFlowGroup};
-    auto line = graph.add_message(g_greeting.id());
-    g_talkNode = line.id();
-    line.next(mods::flow::kEnd);
-    for (int i = 0; i < kCookLineCount; ++i) {
-        auto yell = graph.add_message(g_cookLines[i].id());
-        g_cookNodes[i] = yell.id();
-        yell.next(mods::flow::kEnd);
+    // Three separate graphs, so that one part failing doesn't silence the rest: the greeting and the
+    // cook's lines; the convoy people's and guards' lines; Beedle's shop. Each failure is logged with
+    // the game's result code.
+    if (!basicOk) {
+        report("the greeting and the cook's lines (a message)", basicErr);
+    } else {
+        mods::flow::GraphBuilder graph{kTalkFlowGroup};
+        auto line = graph.add_message(g_greeting.id());
+        g_talkNode = line.id();
+        line.next(mods::flow::kEnd);
+        for (int i = 0; i < kCookLineCount; ++i) {
+            auto yell = graph.add_message(g_cookLines[i].id());
+            g_cookNodes[i] = yell.id();
+            yell.next(mods::flow::kEnd);
+        }
+        g_talkGraph = graph.commit();
+        if (!g_talkGraph) report("the greeting and the cook's lines", g_talkGraph.result());
     }
-    if (const ModResult lines = registerSpotLines(graph); lines != MOD_OK) {
-        return lines;
+    {
+        mods::flow::GraphBuilder graph{kTalkFlowGroup};
+        if (const ModResult lines = registerSpotLines(graph); lines != MOD_OK) {
+            report("the convoy and guard lines (a message)", lines);
+        } else {
+            g_spotGraph = graph.commit();
+            g_spotNodesReady = static_cast<bool>(g_spotGraph);
+            if (!g_spotGraph) report("the convoy and guard lines (the graph)", g_spotGraph.result());
+        }
     }
-    if (beedle_field::registerFlows(graph, kLanguages.data(), static_cast<int>(kLanguages.size()), kTalkFlowGroup) != MOD_OK) {
-        svc_log->info(mod_ctx, "Beedle's shop talk could not be registered; he has nothing to sell");
+    {
+        mods::flow::GraphBuilder graph{kTalkFlowGroup};
+        if (const ModResult r = beedle_field::registerFlows(graph, kLanguages.data(), static_cast<int>(kLanguages.size()), kTalkFlowGroup);
+            r != MOD_OK) {
+            report("Beedle's shop (a message, query or event)", r);
+            beedle_field::markUnready();
+        } else {
+            g_beedleGraph = graph.commit();
+            if (!g_beedleGraph) {
+                report("Beedle's shop (the graph)", g_beedleGraph.result());
+                beedle_field::markUnready();
+            }
+        }
     }
-    g_talkGraph = graph.commit();
-    g_spotNodesReady = static_cast<bool>(g_talkGraph);
-    return g_talkGraph ? MOD_OK : g_talkGraph.result();
+    const bool any = static_cast<bool>(g_talkGraph) || g_spotNodesReady || static_cast<bool>(g_beedleGraph);
+    return any ? MOD_OK : MOD_ERROR;
 }
+
 
 stage_actor_data_class makeRecord(const char* name, u32 params, const std::array<f32, 3>& pos,
                                   s16 angleX, s16 angleY, s16 angleZ) {
@@ -3225,8 +3259,11 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
         return mods::set_error(error, MOD_ERROR, "failed to register or place the traveller spawners");
     }
     // the lines (the cook's and the convoy people's and guards') and the talk marker that says them
-    if (registerGreetingFlow() != MOD_OK) {
-        svc_log->info(mod_ctx, "talk lines could not be registered; nobody has anything to say");
+    if (const ModResult talk = registerGreetingFlow(); talk != MOD_OK) {
+        char buf[120];
+        std::snprintf(buf, sizeof(buf), "talk lines could not be registered (result %d); nobody has anything to say",
+                      static_cast<int>(talk));
+        svc_log->warn(mod_ctx, buf);
     } else if (mods::hook::add_pre<TalkTagExecute>(onTalkTagExecutePre) != MOD_OK ||
                mods::hook::add_post<TalkTagExecute>(onTalkTagExecutePost) != MOD_OK) {
         g_spotNodesReady = false;
@@ -3251,6 +3288,8 @@ MOD_EXPORT ModResult mod_update(ModError*) {
 
 MOD_EXPORT ModResult mod_shutdown(ModError*) {
     g_talkGraph.reset();
+    g_spotGraph.reset();
+    g_beedleGraph.reset();
     g_spotNodesReady = false;
     g_greeting = {};
     g_talkNode = 0xFFFF;

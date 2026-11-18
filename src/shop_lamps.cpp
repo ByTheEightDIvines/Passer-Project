@@ -57,6 +57,12 @@ cPhs_Step psrShopLamps_c::create() {
         g_pending = false;
         return cPhs_ERROR_e;
     }
+    // The game culls an actor by its box placed with the actor's own matrix; without one set it never
+    // draws (the first build of this left it out, and the lanterns didn't show).
+    mDoMtx_stack_c::transS(current.pos.x, current.pos.y, current.pos.z);
+    mDoMtx_stack_c::YrotM(shape_angle.y);
+    cMtx_copy(mDoMtx_stack_c::get(), mMtx);
+    fopAcM_SetMtx(this, mMtx);
     fopAcM_setCullSizeBox(this, -120.0f, kBaseY - 40.0f, -460.0f, 120.0f, kBaseY + 120.0f, 460.0f);
     attention_info.flags = 0;
     g_live = this;

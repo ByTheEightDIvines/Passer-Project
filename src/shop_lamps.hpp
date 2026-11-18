@@ -18,6 +18,7 @@ public:
     static constexpr int kNum = 3;
     request_of_phase_process_class mPhase;
     J3DModel* mpLamp[kNum];
+    Mtx mMtx;   // the shop's frame: what the game culls the lanterns' box against
     u32 mFlame[kNum];
     LIGHT_INFLUENCE mGlow[kNum];
     bool mLit;
