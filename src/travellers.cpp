@@ -92,6 +92,9 @@ constexpr int kCookPathId = 0x3F;   // the camp cook's body (camp_cook.cpp)
 constexpr std::array<u8, 10> kFighters{3, 6, 8, 9, 11, 13, 14, 29, 0, 1};   // (0, 1: the guards)
 // The passer types from the cast (stock passer type ids).
 // Everyone on the road but the bards: each fire has a bard of its own (homeCamp), so no others.
+// Beedle (the last traveller slot): the men's skeleton (type 0, MAN_a's frames) with his own look.
+constexpr int kBeedleSlot = kPopulation - 1;
+constexpr u8 kBeedleType = 0;
 constexpr std::array<u8, 13> kWalkCast{3, 6, 7, 8, 9, 11, 13, 14, 15, 20, 27, 28, 29};
 
 // --- network ----------------------------------------------------------------------------------
@@ -125,6 +128,13 @@ constexpr f32 kBlockerReach = 350.0f;   // a road passing this close goes throug
 constexpr int kFieldSaveTable = 6;      // F_SP121's and F_SP122's save memory (their STAG)
 constexpr u8 kGorgeRocksSwitch = 0x00;
 std::vector<u32> g_edgeRooms;   // per edge: the rooms its points pass (roomBit)
+std::vector<u8> g_edgeTentRoom; // per edge: passes F_SP122 room 8 (Beedle's tent: he never goes there)
+bool g_planBeedle = false;      // the route being planned is Beedle's
+struct PlanAs {                 // plans made inside it are for this traveller
+    bool was;
+    explicit PlanAs(bool beedle) : was(g_planBeedle) { g_planBeedle = beedle; }
+    ~PlanAs() { g_planBeedle = was; }
+};
 std::vector<u8> g_edgeBlock;    // per edge: EdgeBlock bits
 u32 g_openRooms = 0;
 u8 g_openBlocks = 0;            // EdgeBlock bits that are open (gone)
@@ -169,11 +179,13 @@ void buildNetwork() {
     }
     g_edgeRooms.assign(kEdgeCount, 0u);
     g_edgeBlock.assign(kEdgeCount, 0u);
+    g_edgeTentRoom.assign(kEdgeCount, 0u);
     for (int e = 0; e < kEdgeCount; ++e) {
         const Edge& ed = kEdges[e];
         for (int i = 0; i < ed.count; ++i) {
             const Point& p = kPoints[ed.first + i];
             g_edgeRooms[e] |= roomBit(p.stage, p.room);
+            if (p.stage == 1 && p.room == 8) g_edgeTentRoom[e] = 1;
             if (i + 1 < ed.count && p.stage == 0 && kPoints[ed.first + i + 1].stage == 0) {
                 for (const Blocker& b : kBlockers) {
                     if (segDistXZ(p, kPoints[ed.first + i + 1], b.x, b.z) < kBlockerReach) g_edgeBlock[e] |= b.bit;
@@ -198,6 +210,7 @@ bool edgeAllowed(int e, bool escort) {
     if (!escort && ((g_edgeRooms[e] & ~g_openRooms) != 0 || (g_edgeBlock[e] & ~g_openBlocks) != 0)) {
         return false;   // through a part of the field the story hasn't opened yet
     }
+    if (g_planBeedle && g_edgeTentRoom[e]) return false;   // Beedle keeps away from his tent's part of the field
     return true;
 }
 
@@ -304,6 +317,7 @@ enum PathEnd : u8 { PE_CONTINUE, PE_ARRIVE, PE_VANISH };
 
 struct Traveller {
     bool used = false;
+    bool beedle = false;   // Beedle: wanders the field day and night, never camps, never near his tent
     u8 type = 8;
     State state = ST_WALK;
     std::vector<Leg> route;
@@ -597,8 +611,21 @@ int nearestGate(int from) {
     return best;
 }
 
+bool beedleNodeOk(int n) { return !(kNodes[n].stage == 1 && kNodes[n].room == 8); }
+
 int randomDestination(const Traveller& t, int from) {
+    PlanAs as(t.beedle);
     std::vector<int> dests;
+    if (t.beedle) {   // anywhere along the roads (he walks past the camps; never into town, never his tent)
+        for (int n = 0; n < kNodeCount; ++n) {
+            if (n != from && (kNodes[n].kind == NK_ROAD || kNodes[n].kind == NK_CAMP) && beedleNodeOk(n)) dests.push_back(n);
+        }
+        for (int tries = 0; tries < 12 && !dests.empty(); ++tries) {
+            const int n = dests[rnd() % dests.size()];
+            if (!plan(from, n, false).empty()) return n;
+        }
+        return -1;
+    }
     for (int n = 0; n < kNodeCount; ++n) {
         if (n == from) continue;
         const u8 k = kNodes[n].kind;
@@ -620,6 +647,7 @@ int randomDestination(const Traveller& t, int from) {
 // Where to spend the night from here: in the Castle Town field area always the amphitheater (into
 // town if it's full); everyone else the nearest camp with a free seat (into town if every camp is full).
 int nightDestination(Traveller& t, int from) {
+    if (t.beedle) return randomDestination(t, from);   // no camping: he keeps on wandering
     if (t.homeCamp >= 0 && canSit(t, t.homeCamp) && (t.homeCamp == from || !plan(from, t.homeCamp, false).empty())) {
         return t.homeCamp;   // a bard goes back to his own fire
     }
@@ -640,6 +668,7 @@ int nightDestination(Traveller& t, int from) {
 void arrive(Traveller& t, int node);
 
 void newRoute(Traveller& t, int from) {
+    PlanAs as(t.beedle);
     const int to = isEvening() ? nightDestination(t, from) : randomDestination(t, from);
     if (to >= 0 && to == from) {   // already where it wants to be (a camp at dusk)
         arrive(t, from);
@@ -673,6 +702,12 @@ void arrive(Traveller& t, int node) {
     t.leg = 0;
     t.dist = 0.0f;
     t.idleSet = false;
+    if (t.beedle) {   // a short look round, then on his way again
+        t.state = ST_REST;
+        t.restUntilMorning = false;
+        t.timer = rndRange(150, 500);
+        return;
+    }
     switch (kNodes[node].kind) {
     case NK_GATE:
         releaseSeat(t);
@@ -1017,13 +1052,15 @@ void stepRestOrTown(Traveller& t) {
         }
         // out of Castle Town through one of its gates
         std::vector<int> gates;
-        for (int n = 0; n < kNodeCount; ++n) if (kNodes[n].kind == NK_GATE) gates.push_back(n);
+        for (int n = 0; n < kNodeCount; ++n) {
+            if (kNodes[n].kind == NK_GATE && (!t.beedle || beedleNodeOk(n))) gates.push_back(n);
+        }
         const int g = gates.empty() ? t.node : gates[rnd() % gates.size()];
         newRoute(t, g);
     } else if (t.state == ST_GONE) {
         if (--t.timer <= 0) {
             // a new traveller arrives on the road out of Castle Town
-            if (t.homeCamp < 0) t.type = kWalkCast[rnd() % kWalkCast.size()];   // a bard stays his fire's bard
+            if (t.homeCamp < 0 && !t.beedle) t.type = kWalkCast[rnd() % kWalkCast.size()];   // a bard stays his fire's bard
             t.dead = false;
             t.life = -1;
             t.state = ST_TOWN;
@@ -1572,11 +1609,12 @@ void refreshStory() {
 }
 
 // Somewhere open to be: a road spot or a camp in an open room with an open road out of it.
-int randomOpenNode() {
+int randomOpenNode(bool beedle = false) {
+    PlanAs as(beedle);
     for (int tries = 0; tries < 40; ++tries) {
         const int n = static_cast<int>(rnd() % kNodeCount);
         if (kNodes[n].kind != NK_ROAD && kNodes[n].kind != NK_CAMP) continue;
-        if (!nodeOpen(n)) continue;
+        if (!nodeOpen(n) || (beedle && !beedleNodeOk(n))) continue;
         for (const Adj& a : g_adj[n]) {
             if (edgeAllowed(a.edge, false)) return n;
         }
@@ -1590,12 +1628,13 @@ void rehomeStranded() {
     for (int s = 0; s < kPopulation && s < kSlots; ++s) {
         Traveller& t = g_t[s];
         if (!t.used || t.spawned || t.guard || t.crew || t.dead || t.homeCamp >= 0) continue;
-        bool stuck = !nodeOpen(t.node);
+        PlanAs as(t.beedle);
+        bool stuck = !nodeOpen(t.node) || (t.beedle && !beedleNodeOk(t.node));
         if (!stuck && t.state == ST_WALK && t.leg < static_cast<int>(t.route.size())) {
             stuck = !edgeAllowed(t.route[t.leg].edge, false);
         }
         if (!stuck) continue;
-        const int n = randomOpenNode();
+        const int n = randomOpenNode(t.beedle);
         if (n < 0) return;   // nothing open yet (the start of the game): they wait
         releaseSeat(t);
         t.route.clear();
@@ -1612,13 +1651,16 @@ void populate() {
         Traveller& t = g_t[s];
         t = Traveller{};
         t.used = true;
-        if (s < static_cast<int>(fires.size())) {
+        if (s == kBeedleSlot) {
+            t.type = kBeedleType;
+            t.beedle = true;
+        } else if (s < static_cast<int>(fires.size())) {
             t.type = kBardType;
             t.homeCamp = fires[s];
         } else {
             t.type = kWalkCast[s % kWalkCast.size()];
         }
-        int start = randomOpenNode();   // where the story has opened the field
+        int start = randomOpenNode(t.beedle);   // where the story has opened the field
         for (int tries = 0; start < 0 && tries < 20; ++tries) {
             const int n = static_cast<int>(rnd() % kNodeCount);
             if (kNodes[n].kind == NK_ROAD || kNodes[n].kind == NK_CAMP) start = n;
@@ -1627,7 +1669,7 @@ void populate() {
         // keep everyone out of the escort-only valley
         const int camp0 = nearestCamp(t, start, false);
         bool reachable = camp0 >= 0 && !plan(start, camp0, false).empty();
-        if (!reachable) start = kCamps[0].node;
+        if (!reachable && !t.beedle) start = kCamps[0].node;
         newRoute(t, start);
         if (t.state == ST_WALK && !t.route.empty()) {
             t.dist = static_cast<f32>(rnd() % 1000) / 1000.0f * edgeLength(t.route[0].edge);
@@ -1674,6 +1716,10 @@ bool isGuard(const fopAc_ac_c* actor) {
     return s >= 0 && g_t[s].guard;
 }
 int slotIndex(const fopAc_ac_c* actor) { return slotOf(actor); }
+bool isBeedle(const fopAc_ac_c* actor) {
+    const int s = slotOf(actor);
+    return s >= 0 && g_t[s].beedle;
+}
 
 PathStore g_cookPath;
 

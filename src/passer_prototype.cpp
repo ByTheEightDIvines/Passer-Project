@@ -1,5 +1,6 @@
 #include "global.h"
 
+#include "d/d_particle_copoly.h"
 #include "d/actor/d_a_npc_passer.h"
 #include "d/actor/d_a_e_rd.h"
 #include "d/actor/d_a_player.h"
@@ -1173,6 +1174,48 @@ HookAction onInitEscapePre(ModContext*, void* args, void*, void*) {
     return travellers::startFlee(passer, threat) ? HOOK_SKIP_ORIGINAL : HOOK_CONTINUE;
 }
 
+// --- Beedle: never scared, he just runs, very fast, kicking up dust like the postman ------------
+// (the game's footstep dust, d_particle_copoly: the same call the postman makes while he runs,
+// daNpcT_c::setFootPrtcl, from each foot that is down)
+constexpr f32 kBeedleRunScale = 2.2f;   // his flight: this much of a townsfolk's full run
+constexpr f32 kBeedleDustSpeed = 3.0f;  // faster than this: dust
+constexpr int kFootL = 15, kFootR = 18; // the men's skeleton
+dPaPoT_c g_beedleDust{};
+fpc_ProcID g_beedleDustOwner = fpcM_ERROR_PROCESS_ID_e;
+
+void beedleDust(daNpcPasser_c* passer) {
+    if (passer->mpMorf == nullptr) return;
+    if (g_beedleDustOwner != fopAcM_GetID(passer)) {   // a new Beedle actor: a fresh helper on his ground check
+        // the old one's dust (if any) stops trailing first
+        for (auto* set : {&g_beedleDust.field_0x8, &g_beedleDust.mLeftEmitter, &g_beedleDust.mRightEmitter}) {
+            for (auto& row : *set) {
+                for (u32& id : row) {
+                    if (id != 0) dComIfGp_particle_setStopContinue(id);
+                }
+            }
+        }
+        g_beedleDust = dPaPoT_c{};
+        g_beedleDust.clearTwoAllID();
+        g_beedleDust.init(&passer->mAcch, 0.0f, 0.0f);
+        g_beedleDustOwner = fopAcM_GetID(passer);
+    }
+    J3DModel* m = passer->mpMorf->getModel();
+    cXyz footL, footR;
+    mDoMtx_multVecZero(m->getAnmMtx(kFootL), &footL);
+    mDoMtx_multVecZero(m->getAnmMtx(kFootR), &footR);
+    const bool running = passer->speedF > kBeedleDustSpeed && passer->mAcch.ChkGroundHit();
+    const f32 ground = passer->current.pos.y;
+    const bool downL = running && footL.y - ground < 14.0f;
+    const bool downR = running && footR.y - ground < 14.0f;
+    if (downL) footL.y = ground;
+    if (downR) footR.y = ground;
+    static const cXyz kScale(1.0f, 1.0f, 1.0f);
+    csXyz angle = passer->shape_angle;
+    g_beedleDust.setEffectTwo(&passer->tevStr, &passer->current.pos, 0, 0, nullptr, downL ? &footL : nullptr,
+                              downR ? &footR : nullptr, &angle, &kScale, fopAcM_GetRoomNo(passer), 0.0f,
+                              passer->speedF);
+}
+
 // Vanilla deletes a fleeing passer when it reaches the end of its escape path or leaves the
 // camera's view. Instead it keeps running out of view, and at the end of the path it stops,
 // turns away from the danger and cowers until it is safe to walk on.
@@ -1211,6 +1254,10 @@ HookAction onExecuteEscapePre(ModContext*, void* args, void*, void*) {
     if (dx * dx + dz * dz > reach * reach && !budgetSpent) {
         return HOOK_CONTINUE;
     }
+    if (travellers::isBeedle(passer)) {   // never scared: out of reach, he just goes on his way
+        resumeRoute(passer, *state);
+        return HOOK_SKIP_ORIGINAL;
+    }
     state->cowering = true;
     state->safeFrames = 0;
     passer->setAction(daNpcPasser_c::MODE_2);  // vanilla cower: stops and turns away from Link
@@ -1236,6 +1283,12 @@ void onExecuteEscapePost(ModContext*, void* args, void*, void*) {
         } else if (state->stuck > 0) {
             --state->stuck;
         }
+    }
+    if (travellers::isBeedle(passer)) {   // Beedle runs really, really fast
+        const f32 fast = Cd2_HIO_maxSpeed(passer->m_type) * 1.5f * kBeedleRunScale;
+        passer->field_0xb14 = std::max(passer->field_0xb14, fast);
+        passer->speedF = std::min(fast, std::max(passer->speedF, passer->speedF + fast * 0.15f));
+        return;
     }
     if (!isOldWoman(passer)) {
         return;
@@ -1660,7 +1713,7 @@ void onProfileExecutePost(ModContext*, void* args, void*, void*) {
         {
             const bool scared = state->cowering ||
                                 (passer->mActionIdx == daNpcPasser_c::MODE_1 && passer->field_0xb1c == 1);
-            if (scared && !state->wasScared) {
+            if (scared && !state->wasScared && !travellers::isBeedle(passer)) {   // Beedle isn't scared
                 callOut(passer, *state, kVoiceFear, 45);
                 say(passer, *state, state->cowering ? psr_bubble::kScared : psr_bubble::kFlee);
             }
@@ -1694,6 +1747,7 @@ void onProfileExecutePost(ModContext*, void* args, void*, void*) {
         const bool hold = traveller_gear::lightTick(passer, night, state->bedStep != 0 ||
                                                     travellers::campInfo(passer, nullptr, nullptr, nullptr));
         fighter_anim::layerTick(passer, hold);
+        if (travellers::isBeedle(passer)) beedleDust(passer);
         return;
     }
     if (passer->mpMorf == nullptr) {

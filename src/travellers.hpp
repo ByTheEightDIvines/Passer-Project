@@ -37,6 +37,7 @@ void crewHold(int slot, bool held);       // placed by hand (true) or left to th
 bool crewDead(int slot);
 bool crewHeld(const fopAc_ac_c* passer);
 bool isGuard(const fopAc_ac_c* actor);   // one of the three camp guards
+bool isBeedle(const fopAc_ac_c* actor);  // Beedle, wandering the field (his own look, never scared, runs fast)
 bool isCrew(const fopAc_ac_c* passer);
 // A guard's arms: 0 none (not a guard), 1 spear and tall shield, 2 sword and small shield, 3 sword,
 // small shield and the royal bow.

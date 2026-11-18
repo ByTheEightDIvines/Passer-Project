@@ -113,10 +113,16 @@ const Look* lookFor(int type) {
 // The camp cook (camp_cook.cpp): #9's own model and clothes, straight from the game.
 const Look kCookLook = {"MAD_a2", "mad_a2.bmd", "mad_a2.btp", nullptr};
 
+// Beedle (tools/beedle): his own model on the men's skeleton, his Wind Waker talking (psr_bs_*_up.bck)
+// in the same archive. No pack (his bag is part of him); his lantern hangs from the bag's right side.
+const Look kBeedleLook = {"P_Beedl", "beedle.bmd", nullptr, nullptr};
+const Vec kBeedleHook = {68.6f, 54.0f, 51.9f};   // the lantern's handle on his bag, backbone joint space
+
 // A traveller in the light world wearing one of our looks (or the cook), or nullptr.
 const Look* travellerLook(daNpcCd2_c* npc) {
     if (npc != nullptr && !npc->mIsDarkWorld && cook::isBody(npc)) return &kCookLook;
     if (npc == nullptr || npc->mIsDarkWorld || !travellers::isTraveller(npc)) return nullptr;
+    if (travellers::isBeedle(npc)) return &kBeedleLook;
     return lookFor(npc->m_type);
 }
 
@@ -591,6 +597,13 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
         mDoMtx_stack_c::YrotM(g->groundYaw);
         mDoMtx_stack_c::transM(-10.0f, 0.0f, 0.0f);
         drawModel(g->light);
+    } else if (g->light != nullptr && g->carrying && travellers::isBeedle(passer)) {
+        cXyz hook;
+        mDoMtx_copy(body->getAnmMtx(kBackbone), mDoMtx_stack_c::now);
+        mDoMtx_stack_c::multVec(&kBeedleHook, &hook);
+        mDoMtx_stack_c::transS(hook.x, hook.y - kLanternDrop, hook.z);   // hanging upright from its hook
+        mDoMtx_stack_c::YrotM(passer->shape_angle.y);
+        drawModel(g->light);
     } else if (g->light != nullptr && g->carrying && fighter_anim::leftHandMtx(passer, hand)) {
         if (g->torch) {
             mDoMtx_copy(hand, mDoMtx_stack_c::now);
@@ -859,6 +872,33 @@ bool lightTick(daNpcPasser_c* passer, bool night, bool atCamp) {
     Mtx hand;
     const bool haveHand = fighter_anim::leftHandMtx(passer, hand);
     if (!night) g->onGround = false;   // morning: put away
+    if (travellers::isBeedle(passer)) {
+        // Beedle: the lantern on his bag, lit all night wherever he is; his hands stay free
+        g->onGround = false;
+        g->carrying = night && g->light != nullptr && passer->mpMorf != nullptr;
+        if (!g->carrying) {
+            cutLight(*g);
+            return false;
+        }
+        cXyz hook;
+        mDoMtx_copy(passer->mpMorf->getModel()->getAnmMtx(kBackbone), mDoMtx_stack_c::now);
+        mDoMtx_stack_c::multVec(&kBeedleHook, &hook);
+        const cXyz flame(hook.x, hook.y - kLanternDrop + kLanternFlame, hook.z);
+        const cXyz scale(1.0f, 1.0f, 1.0f);
+        g->flame = dComIfGp_particle_set(g->flame, ID_ZI_J_KANTERA_FIRE, &flame, &passer->tevStr, nullptr, &scale,
+                                         0xFF, nullptr, -1, nullptr, nullptr, nullptr);
+        g->glow.mPosition = flame;
+        g->glow.mColor.r = 188;
+        g->glow.mColor.g = 110;
+        g->glow.mColor.b = 60;
+        g->glow.mPow = 220.0f;
+        g->glow.mFluctuation = 0.5f;
+        if (!g->lit) {
+            dKy_plight_set(&g->glow);
+            g->lit = true;
+        }
+        return false;
+    }
     g->carrying = night && !atCamp && !g->onGround && g->light != nullptr && haveHand;
     const bool staffOut = g->staff != nullptr && (!atCamp || fighter_anim::castFrame(passer) >= 0.0f) && haveHand;
     if (staffOut && fighter_anim::castReach(passer) <= 0.0f && fighter_anim::castFrame(passer) < 0.0f) {
