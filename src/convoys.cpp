@@ -635,12 +635,16 @@ void placeHeld(daNpcPasser_c* p) {
             p->current.pos.y = g;
         }
         p->old.pos = p->current.pos;
-        const bool moving = dist > 20.0f;
-        const s16 face = moving && dist > 120.0f ? cM_atan2s(d.x, d.z) : static_cast<s16>(w->coachYaw() + m->face);
+        // walking is how far he really goes each frame: keeping up with a rolling wagon the gap stays a
+        // few units, so "far from his spot" never said walk and he slid along in his standing pose
+        const f32 moved = dist > 1.0f ? step : 0.0f;
+        const bool moving = moved > (m->anim == 2 || m->anim == 4 ? 0.6f : 1.2f);   // (a little hysteresis)
+        const s16 face = moving && dist > 120.0f ? cM_atan2s(d.x, d.z)
+                         : moving ? static_cast<s16>(w->coachYaw()) : static_cast<s16>(w->coachYaw() + m->face);
         cLib_addCalcAngleS2(&p->shape_angle.y, face, 4, 0x800);
         p->current.angle.y = p->shape_angle.y;
         if (moving && running) setAnim(p, *m, 4, 1.0f);
-        else if (moving) setAnim(p, *m, 2, Cd2_HIO_walkAnmPlaySpeed(p->m_type) * std::clamp(step / kSpeed, 0.6f, 1.6f));
+        else if (moving) setAnim(p, *m, 2, Cd2_HIO_walkAnmPlaySpeed(p->m_type) * std::clamp(moved / kSpeed, 0.6f, 1.6f));
         else setAnim(p, *m, 0, 1.0f);
     }
     p->setBaseMtx();
