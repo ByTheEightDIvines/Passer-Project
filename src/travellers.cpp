@@ -102,6 +102,45 @@ struct Adj {
 std::vector<std::vector<Adj>> g_adj;
 std::vector<std::vector<f32>> g_cum;   // per edge: distance from its first point to each point
 
+// --- the story: which parts of the field are open ------------------------------------------------
+// Hyrule Field opens province by province (the game's own table, d_kankyo.cpp dKy_F_SP121Check):
+// Faron Field (F_SP121 rooms 1, 6, 15) once Faron's twilight is lifted; Kakariko Gorge and Eldin
+// Field (0, 2-5, 7) with Eldin's; Lanayru Field and the Great Bridge paths (9-14) and Castle Town's
+// gates (F_SP122) with Lanayru's. The twilight walls stand on those borders. On top of that, two
+// blockers on the roads (found in the field's stage files, every layer):
+//  - the bomb rocks on the Kakariko Gorge - Eldin Field path (room 4, set BG object @bg004d, gone
+//    once its switch 0x00 is on; the field's switches are save table 6),
+//  - the rider gate at Faron Field's west exit (room 15, R_Gate: locked until the escort is done,
+//    d_a_obj_rgate.cpp Create).
+// Travellers only walk roads whose every room is open and whose blockers are gone.
+enum EdgeBlock : u8 { EB_GORGE_ROCKS = 1, EB_RIDER_GATE = 2 };
+struct Blocker { f32 x, z; u8 bit; };
+constexpr Blocker kBlockers[] = {
+    {-17410.0f, 34955.0f, EB_GORGE_ROCKS},
+    {-66221.0f, 69766.0f, EB_RIDER_GATE},
+};
+constexpr f32 kBlockerReach = 350.0f;   // a road passing this close goes through it
+constexpr int kFieldSaveTable = 6;      // F_SP121's and F_SP122's save memory (their STAG)
+constexpr u8 kGorgeRocksSwitch = 0x00;
+std::vector<u32> g_edgeRooms;   // per edge: the rooms its points pass (roomBit)
+std::vector<u8> g_edgeBlock;    // per edge: EdgeBlock bits
+u32 g_openRooms = 0;
+u8 g_openBlocks = 0;            // EdgeBlock bits that are open (gone)
+
+u32 roomBit(int stage, int room) {
+    if (stage == 1) return 1u << 16;
+    return room >= 0 && room < 16 ? 1u << room : 0u;
+}
+
+f32 segDistXZ(const Point& a, const Point& b, f32 x, f32 z) {
+    const f32 dx = b.x - a.x, dz = b.z - a.z;
+    const f32 l2 = dx * dx + dz * dz;
+    f32 t = l2 > 1e-6f ? ((x - a.x) * dx + (z - a.z) * dz) / l2 : 0.0f;
+    t = std::clamp(t, 0.0f, 1.0f);
+    const f32 px = a.x + dx * t - x, pz = a.z + dz * t - z;
+    return std::sqrt(px * px + pz * pz);
+}
+
 f32 edgeLength(int e) { return g_cum[e].back(); }
 
 void buildNetwork() {
@@ -126,7 +165,23 @@ void buildNetwork() {
             cum[i] = d;
         }
     }
+    g_edgeRooms.assign(kEdgeCount, 0u);
+    g_edgeBlock.assign(kEdgeCount, 0u);
+    for (int e = 0; e < kEdgeCount; ++e) {
+        const Edge& ed = kEdges[e];
+        for (int i = 0; i < ed.count; ++i) {
+            const Point& p = kPoints[ed.first + i];
+            g_edgeRooms[e] |= roomBit(p.stage, p.room);
+            if (i + 1 < ed.count && p.stage == 0 && kPoints[ed.first + i + 1].stage == 0) {
+                for (const Blocker& b : kBlockers) {
+                    if (segDistXZ(p, kPoints[ed.first + i + 1], b.x, b.z) < kBlockerReach) g_edgeBlock[e] |= b.bit;
+                }
+            }
+        }
+    }
 }
+
+bool nodeOpen(int n) { return (roomBit(kNodes[n].stage, kNodes[n].room) & ~g_openRooms) == 0; }
 
 bool g_bridgeRepaired = false;
 
@@ -137,6 +192,9 @@ bool edgeAllowed(int e, bool escort) {
     }
     if ((f & EF_NEEDS_BRIDGE) && !g_bridgeRepaired) {
         return false;
+    }
+    if (!escort && ((g_edgeRooms[e] & ~g_openRooms) != 0 || (g_edgeBlock[e] & ~g_openBlocks) != 0)) {
+        return false;   // through a part of the field the story hasn't opened yet
     }
     return true;
 }
@@ -1480,6 +1538,69 @@ void refreshBridge() {
     }
 }
 
+// The field's own switches: live while Link is in it, from its save memory while he isn't.
+bool fieldSwitch(int no) {
+    const char* st = dComIfGp_getStartStageName();
+    if (st != nullptr && (std::strcmp(st, "F_SP121") == 0 || std::strcmp(st, "F_SP122") == 0)) {
+        return dComIfGs_isSwitch(no, -1);
+    }
+    return dComIfGs_isSaveSwitch(kFieldSaveTable, no);
+}
+
+// Which rooms and blockers the story has opened (read from the save, so right wherever Link is).
+void refreshStory() {
+    u32 rooms = 0;
+    if (dComIfGs_isDarkClearLV(0) == TRUE) rooms |= roomBit(0, 1) | roomBit(0, 6) | roomBit(0, 15);
+    if (eldinCleared()) {
+        for (int r : {0, 2, 3, 4, 5, 7}) rooms |= roomBit(0, r);
+    }
+    if (lanayruCleared()) {
+        for (int r = 9; r <= 14; ++r) rooms |= roomBit(0, r);
+        rooms |= roomBit(1, 0);
+    }
+    u8 blocks = 0;
+    if (fieldSwitch(kGorgeRocksSwitch)) blocks |= EB_GORGE_ROCKS;
+    /* dSv_event_flag_c::M_035 - Cutscene - after carriage guarding event (the rider gates unlock) */
+    if (dComIfGs_isEventBit(dSv_event_flag_c::saveBitLabels[68])) blocks |= EB_RIDER_GATE;
+    if (rooms != g_openRooms || blocks != g_openBlocks) {
+        diag("story   open rooms %05x (was %05x) blockers gone %x (was %x)", rooms, g_openRooms, blocks, g_openBlocks);
+        g_openRooms = rooms;
+        g_openBlocks = blocks;
+    }
+}
+
+// Somewhere open to be: a road spot or a camp in an open room with an open road out of it.
+int randomOpenNode() {
+    for (int tries = 0; tries < 40; ++tries) {
+        const int n = static_cast<int>(rnd() % kNodeCount);
+        if (kNodes[n].kind != NK_ROAD && kNodes[n].kind != NK_CAMP) continue;
+        if (!nodeOpen(n)) continue;
+        for (const Adj& a : g_adj[n]) {
+            if (edgeAllowed(a.edge, false)) return n;
+        }
+    }
+    return -1;
+}
+
+// A traveller out of sight in a part of the field that isn't open (from before the save was read,
+// or the bridge went): it moves to somewhere open, as if it had come from elsewhere.
+void rehomeStranded() {
+    for (int s = 0; s < kPopulation && s < kSlots; ++s) {
+        Traveller& t = g_t[s];
+        if (!t.used || t.spawned || t.guard || t.crew || t.dead || t.homeCamp >= 0) continue;
+        bool stuck = !nodeOpen(t.node);
+        if (!stuck && t.state == ST_WALK && t.leg < static_cast<int>(t.route.size())) {
+            stuck = !edgeAllowed(t.route[t.leg].edge, false);
+        }
+        if (!stuck) continue;
+        const int n = randomOpenNode();
+        if (n < 0) return;   // nothing open yet (the start of the game): they wait
+        releaseSeat(t);
+        t.route.clear();
+        newRoute(t, n);
+    }
+}
+
 void populate() {
     // start them spread over the network: some on the roads, some at camps
     // the first few are the bards, one to each fire; everyone else from the rest of the cast
@@ -1495,11 +1616,12 @@ void populate() {
         } else {
             t.type = kWalkCast[s % kWalkCast.size()];
         }
-        int start = 0;
-        for (int tries = 0; tries < 20; ++tries) {
-            start = static_cast<int>(rnd() % kNodeCount);
-            if (kNodes[start].kind == NK_ROAD || kNodes[start].kind == NK_CAMP) break;
+        int start = randomOpenNode();   // where the story has opened the field
+        for (int tries = 0; start < 0 && tries < 20; ++tries) {
+            const int n = static_cast<int>(rnd() % kNodeCount);
+            if (kNodes[n].kind == NK_ROAD || kNodes[n].kind == NK_CAMP) start = n;
         }
+        if (start < 0) start = 0;
         // keep everyone out of the escort-only valley
         const int camp0 = nearestCamp(t, start, false);
         bool reachable = camp0 >= 0 && !plan(start, camp0, false).empty();
@@ -1843,6 +1965,12 @@ void update() {
     }
     if (!g_started) {
         g_rng ^= static_cast<u32>(dKy_getdaytime_minute() * 7919 + hour() * 104729);
+        refreshBridge();
+    if ((g_frame % 60) == 0) {   // the story moves on (or a save is loaded): open up the field
+        refreshStory();
+        rehomeStranded();
+    }
+        refreshStory();
         populate();
         g_started = true;
     }
