@@ -172,3 +172,19 @@ if __name__ == '__main__':
     open(sys.argv[2], 'wb').write(out)
     print(info)
 ```
+
+---
+
+## Also check: the INF1 hierarchy order (the Beedle tent crash, 2026-11-18)
+
+`J3DJointTree::makeHierarchy` hangs a material on the joint whose child list it sits in, but opens the
+material's own child list under the **last joint met at that level**; a shape there is added to that
+joint's newest material. An exporter that writes a joint's materials **after** its child joints makes every
+shape land on a joint with no material: null pointer, crash while the archive loads (fault address 0x10,
+recursive frames in the loader). The game's own models put materials (each with its shape) first.
+
+- `python inf1fix.py model.bmd` reports any shape that would land on a joint with no material (must be empty).
+- `inf1fix.fix(data)` moves materials (with their lists) to the front of each level. Same nodes, same size.
+- `bmdcheck.py`: other structural checks (indices in range, hierarchy balanced, every joint once).
+- `matnames.py <mod.dusk>`: materials that Live Reflections would patch (it picks by name: `al_kt`,
+  `al_SH`, ... in `live_reflections_prefixes.txt`); rename our copies with `matrename.py`.
