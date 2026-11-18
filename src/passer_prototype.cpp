@@ -50,6 +50,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <deque>
 #include <cstring>
 #include <vector>
 
@@ -328,6 +329,7 @@ bool wolfShy(const daNpcPasser_c* passer) {
 }
 mods::flow::RegisteredMessage g_greeting;
 mods::flow::Graph g_talkGraph;
+std::deque<mods::flow::RegisteredMessage> g_spotMessages;   // the convoy and guard lines, alive as long as the mod
 mods::flow::Graph g_spotGraph;
 mods::flow::Graph g_beedleGraph;
 uint16_t g_talkNode = 0xFFFF;
@@ -2791,6 +2793,12 @@ bool holdsGround(const daNpcPasser_c* passer) {
 
 void onFearCheckPost(ModContext*, void* args, void* retval, void*) {
     auto* passer = static_cast<daNpcPasser_c*>(mods::arg<daNpcCd2_c*>(args, 0));
+    // the convoy people placed by hand (the drivers always, the escorts while marching) are never
+    // scared: the wagon keeps rolling whatever comes at it
+    if (retval != nullptr && passer != nullptr && travellers::crewHeld(passer)) {
+        *static_cast<bool*>(retval) = false;
+        return;
+    }
     // wolf Link is a monster to anyone who won't fight him (everyone but a fighter, and a fighter
     // he has bitten): they run from him like from any monster
     if (retval != nullptr && isPrototypePasser(passer) && (!travellers::isFighter(passer) || wolfShy(passer)) &&
@@ -2958,7 +2966,8 @@ ModResult registerSpotLines(mods::flow::GraphBuilder& graph) {
             builder.box_kind(MESSAGE_BOX_TALK).text(text);
             std::vector<mods::flow::MessageVariant> variants;
             for (const auto language : kLanguages) variants.push_back(builder.build(language));
-            auto msg = mods::flow::register_message(kTalkFlowGroup, variants);
+            // kept for good: the SDK's message object takes its message away again when it goes
+            auto& msg = g_spotMessages.emplace_back(mods::flow::register_message(kTalkFlowGroup, variants));
             if (!msg) return msg.result();
             auto node = graph.add_message(msg.id());
             node.next(mods::flow::kEnd);
@@ -3289,6 +3298,7 @@ MOD_EXPORT ModResult mod_update(ModError*) {
 MOD_EXPORT ModResult mod_shutdown(ModError*) {
     g_talkGraph.reset();
     g_spotGraph.reset();
+    g_spotMessages.clear();
     g_beedleGraph.reset();
     g_spotNodesReady = false;
     g_greeting = {};

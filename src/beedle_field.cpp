@@ -9,6 +9,8 @@
 // "GOODBYE!" (his voice) as the talk ends. While he talks: his Wind Waker talking (upper body).
 #include "global.h"
 #include "beedle_field.hpp"
+
+#include <deque>
 #include "d/actor/d_a_npc_passer.h"
 #include "d/d_com_inf_game.h"
 #include "d/d_item.h"
@@ -187,6 +189,7 @@ bool installSounds() {
 }
 
 ModResult g_lastErr = MOD_OK;
+std::deque<mods::flow::RegisteredMessage> g_messages;   // his lines, alive as long as the mod
 ModResult registerFlows(mods::flow::GraphBuilder& graph, const MessageLanguage* langs, int nLangs, u16 group) {
     g_ready = false;
     if (svc_flow == nullptr) return MOD_ERROR;
@@ -198,7 +201,8 @@ ModResult registerFlows(mods::flow::GraphBuilder& graph, const MessageLanguage* 
         fill(b);
         std::vector<mods::flow::MessageVariant> v;
         for (int k = 0; k < nLangs; ++k) v.push_back(b.build(langs[k]));
-        auto msg = mods::flow::register_message(group, v);
+        // kept for good: the SDK's message object takes its message away again when it goes
+        auto& msg = g_messages.emplace_back(mods::flow::register_message(group, v));
         if (!msg) { g_lastErr = msg.result(); return -1; }
         auto n = graph.add_message(msg.id());
         n.next(next);

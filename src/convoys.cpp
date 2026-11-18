@@ -57,6 +57,7 @@ constexpr f32 kNoPopRadius = 3200.0f;   // never appears this close to Link
 constexpr f32 kFightRadius = 1800.0f;   // a monster this near the wagon stops it
 constexpr f32 kCalmRadius = 2600.0f;    // ...and none this near for a while lets it go on
 constexpr int kCalmFrames = 150;
+constexpr f32 kLeash = 1400.0f;        // an escort this far from its place stops fighting and runs back
 constexpr int kGorgeEvery = 12 * 60, kWestEvery = 12 * 60, kRoyalEvery = 24 * 60;   // game minutes
 constexpr f32 kSideOut = 230.0f;        // the escorts walk this far out from the wagon's middle
 constexpr f32 kSitDrop = 37.0f;         // the bench sit puts the seat this far under the feet
@@ -449,11 +450,13 @@ void tickConvoy(Convoy& c) {
     }
     if (c.real && w != nullptr) {
         bringOut(c.crew, w, room);
-        // monsters: stop, and the escorts go for them; quiet for a while: fall back in and go on
+        // Monsters: the wagon never stops (its drivers aren't scared, they keep driving); the escorts
+        // go for them, and once it's quiet, or they've fallen too far behind, they run back to their
+        // places at the wagon's side.
         if ((g_frame % 10) == 0) {
             const cXyz mid = wagonFrame(w, 0.0f, 0.0f, -150.0f);
             if (foeNear(mid, kFightRadius)) {
-                c.halted = true;
+                c.halted = true;   // (now: "under attack")
                 c.calm = 0;
             } else if (c.halted && !foeNear(mid, kCalmRadius)) {
                 c.calm += 10;
@@ -461,24 +464,19 @@ void tickConvoy(Convoy& c) {
             if (c.halted && c.calm >= kCalmFrames) c.halted = false;
             if (c.halted && foeNear(w->middle(), 450.0f)) w->addDamage(2);   // monsters at the wagon itself
             for (Member& m : c.crew) {
-                if (m.role != R_ESCORT || m.fighting == c.halted) continue;
-                m.fighting = c.halted;
-                travellers::crewHold(m.slot, !c.halted);
+                if (m.role != R_ESCORT) continue;
+                auto* a = travellers::crewActor(m.slot);
+                const f32 behind = a != nullptr ? a->current.pos.absXZ(wagonFrame(w, m.x, 0.0f, m.z)) : 0.0f;
+                const bool fight = c.halted && behind < kLeash;
+                if (m.fighting == fight) continue;
+                m.fighting = fight;
+                travellers::crewHold(m.slot, !fight);
                 // let go: its own fighting takes over from where it stands (not from where it came out)
-                if (c.halted) {
-                    if (auto* a = travellers::crewActor(m.slot)) travellers::resumeWalk(a);
-                }
+                if (fight && a != nullptr) travellers::resumeWalk(a);
                 m.anim = 0xFF;
             }
         }
-        // the march waits for its escorts to fall back in
-        bool together = true;
-        for (const Member& m : c.crew) {
-            if (m.role != R_ESCORT) continue;
-            auto* a = travellers::crewActor(m.slot);
-            if (a != nullptr && a->current.pos.absXZ(wagonFrame(w, m.x, 0.0f, m.z)) > 400.0f) together = false;
-        }
-        const f32 v = c.halted || !together ? 0.0f : kSpeed;
+        const f32 v = kSpeed;
         c.s += v;
         roadAt(c.road, c.reverse, c.s, &pos, &yaw, &room);
         w->driveTo(pos, yaw, v);
@@ -613,7 +611,8 @@ void placeHeld(daNpcPasser_c* p) {
         cXyz d = to - p->current.pos;
         d.y = 0.0f;
         const f32 dist = d.absXZ();
-        const f32 step = std::min(dist, kSpeed * 1.6f);
+        const bool running = dist > 300.0f;   // fallen behind (after a fight): run to catch up
+        const f32 step = std::min(dist, kSpeed * (running ? 3.2f : 1.6f));
         if (dist > 1.0f) {
             p->current.pos.x += d.x / dist * step;
             p->current.pos.z += d.z / dist * step;
@@ -626,7 +625,8 @@ void placeHeld(daNpcPasser_c* p) {
         const s16 face = moving && dist > 120.0f ? cM_atan2s(d.x, d.z) : static_cast<s16>(w->coachYaw() + m->face);
         cLib_addCalcAngleS2(&p->shape_angle.y, face, 4, 0x800);
         p->current.angle.y = p->shape_angle.y;
-        if (moving) setAnim(p, *m, 2, Cd2_HIO_walkAnmPlaySpeed(p->m_type) * std::clamp(step / kSpeed, 0.6f, 1.6f));
+        if (moving && running) setAnim(p, *m, 4, 1.0f);
+        else if (moving) setAnim(p, *m, 2, Cd2_HIO_walkAnmPlaySpeed(p->m_type) * std::clamp(step / kSpeed, 0.6f, 1.6f));
         else setAnim(p, *m, 0, 1.0f);
     }
     p->setBaseMtx();
