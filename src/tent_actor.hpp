@@ -17,7 +17,7 @@ enum PsrTentKind : u8 { PSR_TENT_A = 0, PSR_TENT_WALL = 1, PSR_TENT_BEEDLE = 2, 
 class psrTent_c : public fopAc_ac_c {
 public:
     request_of_phase_process_class mPhase;
-    request_of_phase_process_class mPhaseLamp;    // Obj_kntr.arc (the passers' lantern)
+    request_of_phase_process_class mPhaseLamp;    // PsrPack.arc (the entry lantern, psr_shop_kntr.bmd)
     request_of_phase_process_class mPhaseRoom;    // PsrBdRm.arc: the shop seen through Beedle's tent (his tent only)
     J3DModel* mpModel;
     static constexpr int kStageMax = 4;

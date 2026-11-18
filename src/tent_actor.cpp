@@ -66,7 +66,7 @@ struct StageProp {
     f32 x, y, z, scale;
 };
 constexpr StageProp kStage[] = {
-    {"Obj_kntr", "ob_kantera.bmd", 0.0f, 205.0f, 282.5f, 1.6f},    // the entry lantern
+    {"PsrPack", "psr_shop_kntr.bmd", 0.0f, 205.0f, 282.5f, 1.6f},    // the entry lantern (our renamed copy)
 };
 static_assert(sizeof(kStage) / sizeof(kStage[0]) <= psrTent_c::kStageMax);
 
@@ -83,7 +83,7 @@ psrTent_c::~psrTent_c() {
     dComIfG_resDelete(&mPhase, kArcName);
     if (mHasFlame) svc_actor->delete_actor(mod_ctx, mFlame);
     if ((fopAcM_GetParam(this) & 0xFF) == PSR_TENT_BEEDLE) {
-        dComIfG_resDelete(&mPhaseLamp, "Obj_kntr");
+        dComIfG_resDelete(&mPhaseLamp, "PsrPack");
         dComIfG_resDelete(&mPhaseRoom, kRoomArc);
     }
 }
@@ -95,8 +95,8 @@ cPhs_Step psrTent_c::create() {
         return step;
     }
     if ((fopAcM_GetParam(this) & 0xFF) == PSR_TENT_BEEDLE) {
-        // The stage props come straight from the disc archives, so they match the player's mods/HD packs.
-        const cPhs_Step l = dComIfG_resLoad(&mPhaseLamp, "Obj_kntr");
+        // The entry lantern: our renamed copy of the game's (PsrPack psr_shop_kntr.bmd), see shop_lamps.cpp.
+        const cPhs_Step l = dComIfG_resLoad(&mPhaseLamp, "PsrPack");
         if (l != cPhs_COMPLEATE_e) {
             return l;
         }

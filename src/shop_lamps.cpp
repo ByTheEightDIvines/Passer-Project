@@ -16,8 +16,8 @@
 #include "mods/service.hpp"
 
 namespace {
-constexpr const char* kArc = "Obj_kntr";            // the game's lantern, straight from the disc archive
-constexpr const char* kModel = "ob_kantera.bmd";
+constexpr const char* kArc = "PsrPack";             // the game's lantern (Obj_kntr ob_kantera), our own copy: its
+constexpr const char* kModel = "psr_shop_kntr.bmd";  // materials renamed al_kt_* -> ps_kt_*, so Live Reflections leaves it be
 // In the shop's own frame (tools/stage + tools/tents/interior2.py): hung on the ridge rope over the
 // middle of the floor, the lantern's base 330 up, at these points front to back, 1.6 times its size.
 constexpr f32 kBaseY = 330.0f;
