@@ -7,6 +7,7 @@ namespace dialogue {
 
 Spot spotFor(const fopAc_ac_c* actor) {
     if (actor == nullptr) return SPOT_NONE;
+    if (travellers::isBeedle(actor)) return SPOT_BEEDLE;
     if (travellers::isGuard(actor)) {
         return travellers::eldinBridgeWarpedBack() ? SPOT_GUARD_BRIDGE_BACK : SPOT_GUARD_BRIDGE_OUT;
     }
@@ -29,6 +30,7 @@ const char* placeholder(Spot spot) {
         "[LINE: gorge convoy]",
         "[LINE: west-gate convoy]",
         "[LINE: royal convoy]",
+        "[Beedle: his shop]",
     };
     return spot > SPOT_NONE && spot < SPOT_COUNT ? kText[spot] : nullptr;
 }
@@ -63,6 +65,8 @@ const char* const kLines[SPOT_COUNT][kMaxLines] = {
     {"Royal business! Please step aside. No,\nyou can't peek in the crates. Yes,\neveryone asks.",
      "This wagon belongs to the Crown. So\ndoes this horse. And this road,\ntechnically. Mind your step.",
      "Keep moving, citizen. Nothing to see\nhere except a very important wagon\nfull of very important... things."},
+    // Beedle: his shop's own talk (beedle_field.cpp)
+    {},
 };
 }  // namespace
 

@@ -41,6 +41,7 @@
 #include "wagon_actor.hpp"
 #include "convoys.hpp"
 #include "dialogue_marks.hpp"
+#include "beedle_field.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1145,6 +1146,11 @@ HookAction onExecutePathPre(ModContext*, void* args, void*, void*) {
         return HOOK_SKIP_ORIGINAL;
     }
     if (const auto* state = findState(passer, false); state != nullptr && (state->standing || state->fetching)) {
+        return HOOK_SKIP_ORIGINAL;
+    }
+    if (const auto* state = findState(passer, false);
+        state != nullptr && state->talking && travellers::isBeedle(passer)) {
+        beedle_field::talkTick(passer);   // Link is talking to Beedle: he stands, faces him, talks
         return HOOK_SKIP_ORIGINAL;
     }
     if (!isPrototypePasser(passer) || passer->mPathMode != 2 || !passer->m_path.isPath()) {
@@ -2845,7 +2851,12 @@ daNpcPasser_c* nearestTalker(const cXyz& link) {
 void endTalk() {
     if (auto* p = passerByID(g_talkWith)) {
         fopAcM_OffStatus(p, fopAcStts_NOPAUSE_e);
-        if (auto* state = findState(p, false)) state->talking = false;
+        auto* state = findState(p, false);
+        if (state != nullptr) state->talking = false;
+        if (travellers::isBeedle(p)) {   // "GOODBYE!", and on his way again
+            beedle_field::talkEnded(p);
+            if (state != nullptr) resumeRoute(p, *state);
+        }
     }
     g_talkWith = fpcM_ERROR_PROCESS_ID_e;
 }
@@ -2901,7 +2912,16 @@ HookAction onTalkTagExecutePre(ModContext*, void* args, void*, void*) {
         // Link has started talking to him: one of his spot's lines, at random
         const dialogue::Spot spot = dialogue::spotFor(who);
         const int n = dialogue::lineCount(spot);
-        if (n > 0) {
+        if (spot == dialogue::SPOT_BEEDLE) {
+            // Beedle: today's ware, through his shop's talk
+            if (const u16 node = beedle_field::talkNode(); node != 0xFFFF) {
+                tag->mFlowNodeNo = node;
+                g_talkWith = fopAcM_GetID(who);
+                fopAcM_OnStatus(who, fopAcStts_NOPAUSE_e);
+                if (auto* state = findState(who, false)) state->talking = true;
+                beedle_field::talkStarted(who);
+            }
+        } else if (n > 0) {
             const int pick = std::min(n - 1, static_cast<int>(cM_rndF(static_cast<f32>(n))));
             tag->mFlowNodeNo = g_spotNodes[spot][pick];
             g_talkWith = fopAcM_GetID(who);
@@ -3024,6 +3044,9 @@ ModResult registerGreetingFlow() {
     }
     if (const ModResult lines = registerSpotLines(graph); lines != MOD_OK) {
         return lines;
+    }
+    if (beedle_field::registerFlows(graph, kLanguages.data(), static_cast<int>(kLanguages.size()), kTalkFlowGroup) != MOD_OK) {
+        svc_log->info(mod_ctx, "Beedle's shop talk could not be registered; he has nothing to sell");
     }
     g_talkGraph = graph.commit();
     g_spotNodesReady = static_cast<bool>(g_talkGraph);
@@ -3157,6 +3180,9 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     }
     if (!voice_banks::install()) {
         svc_log->info(mod_ctx, "voice clips could not be registered; travellers stay quiet");
+    }
+    if (!beedle_field::installSounds()) {
+        svc_log->info(mod_ctx, "Beedle's THANK YOU / GOODBYE could not be registered; he sells quietly");
     }
     if (!psr_freeze::install()) {
         svc_log->info(mod_ctx, "actor update hook unavailable; the old women can't freeze monsters");

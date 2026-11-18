@@ -18,6 +18,8 @@ enum Spot : int {
     SPOT_CONVOY_GORGE,       // the gorge travellers' convoy
     SPOT_CONVOY_WEST,        // the west-gate travellers' convoy
     SPOT_CONVOY_ROYAL,       // the royal convoy on the long rough road
+    // Beedle on his wanderings: his shop's talk (beedle_field.cpp), not lines of these
+    SPOT_BEEDLE,
     SPOT_COUNT
 };
 
