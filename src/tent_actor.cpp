@@ -23,8 +23,10 @@ IMPORT_SERVICE(ActorService, svc_actor);
 
 namespace {
 const char* kArcName = "PsrTent";
-const char* kModel[PSR_TENT_KIND_NUM] = {"a_tent.bmd", "wall_tent.bmd", "beedle_tent.bmd"};
-const char* kCollision[PSR_TENT_KIND_NUM] = {"a_tent.dzb", "wall_tent.dzb", "beedle_tent.dzb"};
+// The guards' tent is the wall tent dyed the royal wagon's red, with its door flaps tied back in the
+// model (nobody sleeps in it, so they never close): its collision is the wall tent's.
+const char* kModel[PSR_TENT_KIND_NUM] = {"a_tent.bmd", "wall_tent.bmd", "beedle_tent.bmd", "guard_tent.bmd"};
+const char* kCollision[PSR_TENT_KIND_NUM] = {"a_tent.dzb", "wall_tent.dzb", "beedle_tent.dzb", "wall_tent.dzb"};
 // Beedle's shop, seen through his tent's doorway and windows: an archive of its own, loaded by his tent
 // alone (every camp tent loads PsrTent; putting the shop in there ran the game out of memory)
 const char* kRoomArc = "PsrBdRm";

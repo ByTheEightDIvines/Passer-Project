@@ -12,7 +12,7 @@
 // nothing on the disc is replaced).
 #define PSR_TENT_NAME "PsrTent"
 
-enum PsrTentKind : u8 { PSR_TENT_A = 0, PSR_TENT_WALL = 1, PSR_TENT_BEEDLE = 2, PSR_TENT_KIND_NUM };
+enum PsrTentKind : u8 { PSR_TENT_A = 0, PSR_TENT_WALL = 1, PSR_TENT_BEEDLE = 2, PSR_TENT_GUARD = 3, PSR_TENT_KIND_NUM };
 
 class psrTent_c : public fopAc_ac_c {
 public:
@@ -54,11 +54,12 @@ public:
 };
 
 namespace psr_tent {
-// How much bigger than the modelled size each tent stands in the world (A-tent, wall tent, Beedle's).
-constexpr f32 kScale[PSR_TENT_KIND_NUM] = {1.3f, 1.3f, 1.6f};
+// How much bigger than the modelled size each tent stands in the world (A-tent, wall tent, Beedle's,
+// the guards' wall tent).
+constexpr f32 kScale[PSR_TENT_KIND_NUM] = {1.3f, 1.3f, 1.6f, 1.3f};
 // Half the size of each tent's footprint on the ground at that scale (x across, z front to back).
-constexpr f32 kFootX[PSR_TENT_KIND_NUM] = {150.0f * 1.3f, 310.0f * 1.3f, 380.0f * 1.6f};
-constexpr f32 kFootZ[PSR_TENT_KIND_NUM] = {245.0f * 1.3f, 445.0f * 1.3f, 548.0f * 1.6f};
+constexpr f32 kFootX[PSR_TENT_KIND_NUM] = {150.0f * 1.3f, 310.0f * 1.3f, 380.0f * 1.6f, 310.0f * 1.3f};
+constexpr f32 kFootZ[PSR_TENT_KIND_NUM] = {245.0f * 1.3f, 445.0f * 1.3f, 548.0f * 1.6f, 445.0f * 1.3f};
 
 // Someone (a traveller, the cook) ended up standing on a tent's canvas: the sloped roof counts as
 // ground, so anyone who bumped into a tent walked up onto it. Puts them back down on the grass just

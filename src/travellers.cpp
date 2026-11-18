@@ -13,6 +13,8 @@
 #include "camp_cook.hpp"
 #include "d/d_com_inf_game.h"
 #include "d/d_kankyo.h"
+#include "d/actor/d_a_obj_flag2.h"
+#include "m_Do/m_Do_mtx.h"
 #include "d/d_path.h"
 #include "f_op/f_op_actor_mng.h"
 #include "f_pc/f_pc_manager.h"
@@ -41,11 +43,17 @@ constexpr int kNodeCount = sizeof(kNodes) / sizeof(kNodes[0]);
 constexpr int kEdgeCount = sizeof(kEdges) / sizeof(kEdges[0]);
 constexpr int kCampCount = sizeof(kCamps) / sizeof(kCamps[0]);
 
-enum NodeKind : u8 { NK_ROAD = 0, NK_CAMP = 1, NK_BEEDLE = 2, NK_GATE = 3, NK_BRIDGE_END = 4, NK_BRIDGE_EAST = 5 };
+// NK_GUARD_CAMP: the guards' own fire, joined to no road. Travellers never go there (every camp
+// choice looks for NK_CAMP); the guards live there and never leave.
+enum NodeKind : u8 { NK_ROAD = 0, NK_CAMP = 1, NK_BEEDLE = 2, NK_GATE = 3, NK_BRIDGE_END = 4, NK_BRIDGE_EAST = 5,
+                     NK_GUARD_CAMP = 6 };
 enum EdgeFlag : u8 { EF_ESCORT = 1, EF_NEEDS_BRIDGE = 2, EF_NO_BEEDLE = 4, EF_HANDOFF = 8, EF_SPUR = 16 };
 
 // --- tuning -----------------------------------------------------------------------------------
-constexpr int kPopulation = 30;              // travellers on the network
+constexpr int kPopulation = 29;              // travellers on the network
+// The guards at their camp by the Bridge of Eldin, in the slots after the travellers: Castle Town's
+// own guard bodies (Cd2 type 1 MAD_a, type 0 MAN_a), there once Castle Town's twilight is lifted.
+constexpr std::array<u8, 3> kGuardCast{1, 0, 0};
 constexpr f32 kVirtualSpeed = 4.0f;          // units per frame while not spawned (about a walk)
 // A traveller only ever appears from its room's spawner: everyone in a room when it loads, and
 // after that whoever walks in from somewhere that isn't loaded. Those late arrivals wait (walking on
@@ -269,6 +277,7 @@ struct Traveller {
     bool stayUp = false;   // tonight it stays up by the fire
     int sleepFrames = 0;
     int homeCamp = -1;     // a bard's own fire: he travels by day and is back to play there every night
+    bool guard = false;    // one of the guards: lives at the guards' camp, never takes to the road
 };
 
 std::array<Traveller, kSlots> g_t{};
@@ -427,6 +436,11 @@ int amphitheaterNode() {
         const int n = kCamps[c].node;
         if (kNodes[n].kind == NK_CAMP && kNodes[n].stage == 1) return n;
     }
+    return -1;
+}
+
+int guardCampNode() {
+    for (int n = 0; n < kNodeCount; ++n) if (kNodes[n].kind == NK_GUARD_CAMP) return n;
     return -1;
 }
 
@@ -906,6 +920,18 @@ void stepVirtual(Traveller& t) {
 }
 
 void stepRestOrTown(Traveller& t) {
+    if (t.guard) {
+        // A guard never takes to the road. One knocked out comes back to the fire after a while.
+        if (t.state == ST_GONE && --t.timer <= 0) {
+            t.dead = false;
+            t.life = -1;
+            t.node = guardCampNode();
+            t.state = ST_REST;
+            t.restUntilMorning = true;
+            takeSeat(t, t.node);
+        }
+        return;
+    }
     if (t.state == ST_REST) {
         if (t.restUntilMorning) {
             const int h = hour();
@@ -986,6 +1012,9 @@ struct CampTents {
     s16 tentYaw[4] = {};
     int tents = 0;
     bool rolled = false;   // tonight's stay-ups picked
+    // the guards' camp: the game's own Castle Town pennant on their tent's ridge, shrunk once made
+    fpc_ProcID flag = fpcM_ERROR_PROCESS_ID_e;
+    bool flagShrunk = false;
 };
 std::array<CampTents, kCampCount> g_camps{};
 
@@ -1290,6 +1319,46 @@ void bedTick(Traveller& t) {
     }
 }
 
+// --- the guards' camp: their red wall tent behind the fire, the pennant on its ridge -------------
+constexpr f32 kGuardTentBack = 930.0f;    // fire to tent middle (the tent's half depth is 580)
+constexpr f32 kPennantScale = 0.3f;
+constexpr u32 kPennantPole = 0x000C;      // @bg000c: Castle Town's pennant pole (its spec height is 500)
+constexpr s16 kPennantCloth = 1;          // FlagObj01: the orange crest
+// Where the pennant stands on the tent: the front end of the ridge (tent space, before its 1.3 scale
+// and with the pole's foot a little into the ridge).
+constexpr f32 kRidgeY = 370.0f, kRidgeFrontZ = 313.0f;
+
+void spawnPennant(CampTents& c, const cXyz& tent, s16 yaw, s8 room) {
+    const f32 fx = cM_ssin(yaw), fz = cM_scos(yaw);
+    cXyz at(tent.x + fx * kRidgeFrontZ, tent.y + kRidgeY, tent.z + fz * kRidgeFrontZ);
+    const csXyz angle(kPennantCloth, 0, 0);   // shape_angle.x: which cloth
+    c.flag = fopAcM_create(fpcNm_Obj_Flag2_e, kPennantPole, &at, room, &angle, nullptr, -1);
+    c.flagShrunk = false;
+}
+
+// The pennant actor has no scale of its own: once it's made, shrink its pole and its cloth (both are
+// placed once, when it's created) about the pole's foot.
+void shrinkPennant(CampTents& c) {
+    if (c.flagShrunk || c.flag == fpcM_ERROR_PROCESS_ID_e) return;
+    auto* f = static_cast<daObjFlag2_c*>(fopAcM_SearchByID(c.flag));
+    if (f == nullptr || f->mModel == nullptr) return;
+    const cXyz k(kPennantScale, kPennantScale, kPennantScale);
+    f->mModel->setBaseScale(k);
+    mDoMtx_stack_c::transS(f->current.pos.x, f->current.pos.y + 500.0f * kPennantScale, f->current.pos.z);
+    mDoMtx_stack_c::scaleM(kPennantScale, kPennantScale, kPennantScale);
+    cMtx_copy(mDoMtx_stack_c::get(), f->mFlagCloth.mModelMtx);
+    f->mCyl.SetH(200.0f * kPennantScale);
+    c.flagShrunk = true;
+}
+
+void dropPennant(CampTents& c, bool deleteIt) {
+    if (deleteIt && c.flag != fpcM_ERROR_PROCESS_ID_e) {
+        if (auto* f = fopAcM_SearchByID(c.flag)) fopAcM_delete(f);
+    }
+    c.flag = fpcM_ERROR_PROCESS_ID_e;
+    c.flagShrunk = false;
+}
+
 void updateCamps(int stage, const cXyz& link) {
     for (int i = 0; i < kCampCount; ++i) {
         const Camp& cp = kCamps[i];
@@ -1298,11 +1367,22 @@ void updateCamps(int stage, const cXyz& link) {
         const bool here = stage == n.stage && dComIfGp_roomControl_checkRoomDisp(n.room);
         const f32 dx = cp.x - link.x, dz = cp.z - link.z;
         const bool near = here && dx * dx + dz * dz < 12000.0f * 12000.0f;
+        const bool guards = n.kind == NK_GUARD_CAMP;
+        if (guards && c.up) shrinkPennant(c);
+        if (guards && !lanayruCleared()) continue;   // the guards' camp is there once Castle Town is lit
         if (kTentsEnabled && near && !c.up && g_spawnCooldown <= 0) {
             c.up = true;
             const s16 face = static_cast<s16>(cp.facing);   // the way you faced when you logged it
             const cXyz mid(cp.x, cp.y, cp.z);
-            if (n.kind == NK_BEEDLE) {
+            if (guards) {
+                // the fire, and behind it (away from the road) the guards' tent, its door to the fire
+                spawnFire(c, cp.node | (soupLevel(n.stage, n.room) << 8), mid, face, n.room);
+                cXyz at(mid.x - cM_ssin(face) * kGuardTentBack, mid.y, mid.z - cM_scos(face) * kGuardTentBack);
+                const f32 y = probeGround(at.x, at.y, at.z);
+                if (y != -G_CM3D_F_INF && std::fabs(y - at.y) < 150.0f) at.y = y;
+                spawnTent(c, PSR_TENT_GUARD, at, face, n.room);
+                spawnPennant(c, at, face, n.room);
+            } else if (n.kind == NK_BEEDLE) {
                 TentSpot b{mid, face, 0.0f, 0.0f};
                 findBeedleSpot(mid, face, &b);
                 spawnTent(c, PSR_TENT_BEEDLE, b.pos, b.yaw, n.room);
@@ -1330,11 +1410,13 @@ void updateCamps(int stage, const cXyz& link) {
             }
         } else if (!here && c.up) {
             c.ids.clear();          // the room unloaded and took the tents with it
+            dropPennant(c, false);
             c.up = false;
             c.tents = 0;
         } else if (here && c.up && dx * dx + dz * dz > 16000.0f * 16000.0f) {
             for (ActorId id : c.ids) svc_actor->delete_actor(mod_ctx, id);
             c.ids.clear();
+            dropPennant(c, true);
             c.up = false;
             c.tents = 0;
         }
@@ -1407,6 +1489,19 @@ void populate() {
         if (t.state == ST_WALK && !t.route.empty()) {
             t.dist = static_cast<f32>(rnd() % 1000) / 1000.0f * edgeLength(t.route[0].edge);
         }
+    }
+    // the guards, at their own fire for good
+    const int guards = guardCampNode();
+    for (int k = 0; guards >= 0 && k < static_cast<int>(kGuardCast.size()) && kPopulation + k < kSlots; ++k) {
+        Traveller& t = g_t[kPopulation + k];
+        t = Traveller{};
+        t.used = true;
+        t.guard = true;
+        t.type = kGuardCast[k];
+        t.node = guards;
+        t.state = ST_REST;
+        t.restUntilMorning = true;
+        takeSeat(t, guards);
     }
 }
 
@@ -1730,7 +1825,10 @@ void update() {
         g_lastWorldLogged = worldNow;
         // a stage change took every tent and fire with it (e.g. into Beedle's shop and back out):
         // put them up again when Link is back
-        for (CampTents& c : g_camps) { c.ids.clear(); c.up = false; c.tents = 0; }
+        for (CampTents& c : g_camps) {
+            c.ids.clear(); c.up = false; c.tents = 0;
+            c.flag = fpcM_ERROR_PROCESS_ID_e; c.flagShrunk = false;
+        }
         const char* sn = dComIfGp_getStartStageName();
         diag("world   %s stage %s (net %d) room %d darkworld %d", inWorld ? "IN" : "OUT", sn ? sn : "?", stage,
              dComIfGp_roomControl_getStayNo(), static_cast<int>(dKy_darkworld_check()));
@@ -1921,6 +2019,7 @@ bool spawnerTick(fopAc_ac_c* spawner, bool firstTick) {
         Traveller& t = g_t[s];
         if (!t.used || t.spawned || t.dead || t.cooldown > 0) continue;
         if (t.sleep == 1 || t.sleep == 2) continue;   // in its tent
+        if (t.guard && !lanayruCleared()) continue;   // the guards come out once Castle Town is lit
         Where w{};
         if (t.state == ST_WALK && !t.route.empty()) {
             if (isDeepNight()) continue;   // roads are empty at night: only campers appear
