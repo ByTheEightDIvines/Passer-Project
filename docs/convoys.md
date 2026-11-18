@@ -102,3 +102,13 @@ so nothing below has been played yet.
   `src/guard_quiver.inc` (`royal_archer/fit2.py`) puts the bow against his back (or the shield) and the
   quiver over it, Triforce out, per body (MAN_a / MAD_a) and per shield place. Render: `royal_archer/view2.py`.
 - The archer's shield now goes on his back while his bow is in his hand (it was left in the bow hand).
+
+## Talking (2026-11-18)
+- Lines agreed with the user: `src/dialogue_marks.cpp` (`kLines`, wrapped at 38 characters, 4 lines a page).
+- `passer_prototype.cpp`: the talk flow is registered again at start (it had been off since the traveller
+  system: the camp cook's lines were never registered, so he couldn't talk). One KMsg talk marker
+  (`talkTick`, `onTalkTagExecutePre/Post`) sits on the nearest person with a spot (`dialogue::spotFor`,
+  within 450 of Link, not fighting, fleeing or dead); talking picks a random line of that spot.
+- While the conversation runs (`dialogue::talking()`), `convoys::update` returns early (other events put
+  the convoys away, which would make one vanish in front of Link); a walking/standing crew member being
+  talked to stands and turns to Link (`placeHeld`). Nothing during Telma's escort.

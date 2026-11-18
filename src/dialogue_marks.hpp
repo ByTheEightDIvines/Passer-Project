@@ -3,8 +3,8 @@
 class fopAc_ac_c;
 
 // Where the convoy people's lines go. The dialogue is written last: each spot below has a
-// placeholder, and spotFor() says which spot a character is at right now, so the lines drop in
-// without touching anything else. (Not shown in game yet: the talk hookup comes with the lines.)
+// placeholder, and spotFor() says which spot a character is at right now. Talking to one of them
+// (passer_prototype.cpp: one talk marker parked on the nearest of them) says a line of its spot.
 namespace dialogue {
 enum Spot : int {
     SPOT_NONE = -1,
@@ -23,4 +23,13 @@ enum Spot : int {
 
 Spot spotFor(const fopAc_ac_c* actor);
 const char* placeholder(Spot spot);   // the marker text until the real line is written
+
+constexpr int kMaxLines = 3;
+int lineCount(Spot spot);              // how many lines the spot has
+const char* line(Spot spot, int i);    // its i-th line
+
+// A conversation with one of them is running (passer_prototype.cpp's talk marker): the convoys and
+// the parked wagons hold still for it instead of being put away like at other events.
+bool talking();
+const fopAc_ac_c* talker();           // who Link is talking to (nullptr when nobody)
 }  // namespace dialogue

@@ -39,6 +39,7 @@
 #include "freeze.hpp"
 #include "wagon_actor.hpp"
 #include "convoys.hpp"
+#include "dialogue_marks.hpp"
 
 #include <algorithm>
 #include <array>
@@ -2732,34 +2733,115 @@ void onFearCheckPost(ModContext*, void* args, void* retval, void*) {
     }
 }
 
+// --- talking to the convoy people and the guards ---------------------------------------------
+// One talk marker (the game's KMsg, type 0: "Speak" when Link is close) is parked on whoever with a
+// line (dialogue::spotFor) is nearest Link. When he talks, it picks one of that spot's lines at random.
+// While the conversation runs, the convoys and the parked wagons hold still (dialogue::talking()).
+constexpr f32 kTalkReach = 450.0f;   // Link this close (flat distance) to someone with a line: the marker goes on him
+fpc_ProcID g_talkTag = fpcM_ERROR_PROCESS_ID_e;
+int g_talkTagRoom = -1;
+fpc_ProcID g_talkTarget = fpcM_ERROR_PROCESS_ID_e;
+fpc_ProcID g_talkWith = fpcM_ERROR_PROCESS_ID_e;   // the one being talked to (the conversation is running)
+std::array<std::array<uint16_t, dialogue::kMaxLines>, dialogue::SPOT_COUNT> g_spotNodes{};
+bool g_spotNodesReady = false;
+
+daNpcPasser_c* passerByID(fpc_ProcID id) {
+    if (id == fpcM_ERROR_PROCESS_ID_e || fpcM_IsCreating(id)) return nullptr;
+    auto* a = fopAcM_SearchByID(id);
+    if (a == nullptr || fopAcM_GetName(a) != fpcNm_NPC_PASSER_e) return nullptr;
+    return static_cast<daNpcPasser_c*>(a);
+}
+
+bool canTalk(daNpcPasser_c* passer, const PasserState& state) {
+    if (state.dead || state.cowering || state.standing) return false;
+    if (fighter_anim::weaponOut(passer)) return false;
+    return dialogue::spotFor(passer) != dialogue::SPOT_NONE;
+}
+
+daNpcPasser_c* nearestTalker(const cXyz& link) {
+    pruneStates();
+    daNpcPasser_c* best = nullptr;
+    f32 bestSq = kTalkReach * kTalkReach;
+    for (auto& state : g_states) {
+        daNpcPasser_c* p = state.dead ? nullptr : liveActor(state);
+        if (p == nullptr || !isPrototypePasser(p) || !canTalk(p, state)) continue;
+        const f32 dx = p->current.pos.x - link.x, dz = p->current.pos.z - link.z;
+        if (std::fabs(p->current.pos.y - link.y) > 400.0f) continue;
+        const f32 d2 = dx * dx + dz * dz;
+        if (d2 < bestSq) {
+            bestSq = d2;
+            best = p;
+        }
+    }
+    return best;
+}
+
+void endTalk() {
+    if (auto* p = passerByID(g_talkWith)) {
+        fopAcM_OffStatus(p, fopAcStts_NOPAUSE_e);
+        if (auto* state = findState(p, false)) state->talking = false;
+    }
+    g_talkWith = fpcM_ERROR_PROCESS_ID_e;
+}
+
+// Every frame (mod_update): put the marker where it's wanted, make it, or let it be.
+void talkTick() {
+    if (!g_spotNodesReady) return;
+    auto* link = dComIfGp_getPlayer(0);
+    if (g_talkWith != fpcM_ERROR_PROCESS_ID_e) {
+        // a conversation is running: it ends with its event (or if anyone vanished)
+        if (!dComIfGp_event_runCheck() || passerByID(g_talkWith) == nullptr ||
+            (!fpcM_IsCreating(g_talkTag) && fopAcM_SearchByID(g_talkTag) == nullptr)) {
+            endTalk();
+        }
+        return;
+    }
+    if (link == nullptr || travellers::escortRunning()) {
+        g_talkTarget = fpcM_ERROR_PROCESS_ID_e;
+        return;
+    }
+    daNpcPasser_c* who = dComIfGp_event_runCheck() ? nullptr : nearestTalker(link->current.pos);
+    g_talkTarget = who != nullptr ? fopAcM_GetID(who) : fpcM_ERROR_PROCESS_ID_e;
+    const int stay = dComIfGp_roomControl_getStayNo();
+    const bool tagGone = g_talkTag == fpcM_ERROR_PROCESS_ID_e ||
+                         (!fpcM_IsCreating(g_talkTag) && fopAcM_SearchByID(g_talkTag) == nullptr);
+    if (!tagGone && g_talkTagRoom != stay && who != nullptr && !fpcM_IsCreating(g_talkTag)) {
+        // Link has gone into another room: a new marker there (the old one goes with its room)
+        if (auto* old = fopAcM_SearchByID(g_talkTag)) fopAcM_delete(old);
+        g_talkTag = fpcM_ERROR_PROCESS_ID_e;
+        return;
+    }
+    if (tagGone && who != nullptr) {
+        // KMsg type 0: attention offset 0x80 (his head), eye offset 0xA0, talk distance 3 and any side
+        constexpr u32 kParams = 0x0080A000u | (6u << 5) | 3u;
+        const csXyz angle(0xFF, 0, static_cast<s16>(0xFFFF));   // no switch; the line is set when he talks
+        cXyz at = who->current.pos;
+        g_talkTag = fopAcM_create(fpcNm_TAG_KMSG_e, kParams, &at, stay, &angle, nullptr, -1);
+        g_talkTagRoom = stay;
+    }
+}
+
 HookAction onTalkTagExecutePre(ModContext*, void* args, void*, void*) {
     auto* tag = mods::arg<daTag_KMsg_c*>(args, 0);
-    if (!inFieldRoom(tag) || tag->getType() != daTag_KMsg_c::KMSG_TYPE_0 ||
-        g_talkNode == 0xFFFF) {
-        return HOOK_CONTINUE;
+    if (g_talkTag == fpcM_ERROR_PROCESS_ID_e || fopAcM_GetID(tag) != g_talkTag) return HOOK_CONTINUE;
+    tag->home.roomNo = static_cast<s8>(dComIfGp_roomControl_getStayNo());   // it only works in Link's room
+    daNpcPasser_c* who = passerByID(g_talkWith != fpcM_ERROR_PROCESS_ID_e ? g_talkWith : g_talkTarget);
+    if (g_talkWith == fpcM_ERROR_PROCESS_ID_e) tag->mFlowNodeNo = g_talkNode;   // never an empty line
+    if (who != nullptr) {
+        tag->current.pos = who->current.pos;
+        tag->home.pos = who->current.pos;
     }
-    // The talk marker is spawned once at the start of the road; keep it on the walking passer.
-    if (auto* walker = livePasser()) {
-        tag->current.pos = walker->current.pos;
-        tag->home.pos = walker->current.pos;
-    }
-    // The marker only offers a talk while Link is in its home room. Follow Link between the
-    // rooms the passer walks through (room 5, the bridge and the field in room 0).
-    const int stay = dComIfGp_roomControl_getStayNo();
-    if (stay == 0 || stay == 4 || stay == kFieldRoom) {
-        tag->home.roomNo = static_cast<s8>(stay);
-    }
-    auto* passer = nearestPasser(tag);
-    if (passer != nullptr) {
-        tag->mFlowNodeNo = g_talkNode;
-        if (tag->eventInfo.checkCommandTalk()) {
-            if (auto* state = findState(passer, false); state != nullptr && !state->talking) {
-                state->talking = true;
-                // A talk event only lets its two participants (Link and this marker) move, so the
-                // passer froze for the whole conversation. Let him keep animating while it runs.
-                fopAcM_OnStatus(passer, fopAcStts_NOPAUSE_e);
-                setTalkAnimation(passer);
-            }
+    if (who != nullptr && g_talkWith == fpcM_ERROR_PROCESS_ID_e && tag->eventInfo.checkCommandTalk()) {
+        // Link has started talking to him: one of his spot's lines, at random
+        const dialogue::Spot spot = dialogue::spotFor(who);
+        const int n = dialogue::lineCount(spot);
+        if (n > 0) {
+            const int pick = std::min(n - 1, static_cast<int>(cM_rndF(static_cast<f32>(n))));
+            tag->mFlowNodeNo = g_spotNodes[spot][pick];
+            g_talkWith = fopAcM_GetID(who);
+            // he keeps moving (and turns to Link, when he isn't sitting) while the rest of the world waits
+            fopAcM_OnStatus(who, fopAcStts_NOPAUSE_e);
+            if (auto* state = findState(who, false)) state->talking = true;
         }
     }
     return HOOK_CONTINUE;
@@ -2767,36 +2849,36 @@ HookAction onTalkTagExecutePre(ModContext*, void* args, void*, void*) {
 
 void onTalkTagExecutePost(ModContext*, void* args, void*, void*) {
     auto* tag = mods::arg<daTag_KMsg_c*>(args, 0);
-    if (!inFieldRoom(tag) || tag->getType() != daTag_KMsg_c::KMSG_TYPE_0) {
-        return;
-    }
-    auto* passer = nearestPasser(tag);
-    if (passer == nullptr) {
-        // No passer to talk to (not spawned yet, dead or gone): no talk prompt.
+    if (g_talkTag == fpcM_ERROR_PROCESS_ID_e || fopAcM_GetID(tag) != g_talkTag) return;
+    // nobody to talk to (or Link is a wolf): no "Speak" prompt
+    if ((g_talkTarget == fpcM_ERROR_PROCESS_ID_e && g_talkWith == fpcM_ERROR_PROCESS_ID_e) ||
+        daPy_py_c::checkNowWolf()) {
         tag->attention_info.flags = 0;
-        return;
-    }
-    // Wolf Link can't talk to people; to the passer he is something to run from.
-    if (daPy_py_c::checkNowWolf()) {
-        tag->attention_info.flags = 0;
-    }
-    if (auto* state = findState(passer, false); state != nullptr && state->talking &&
-        !tag->eventInfo.checkCommandTalk()) {
-        // Conversation over: put the walk (or wait) animation back instead of looping the talk.
-        state->talking = false;
-        fopAcM_OffStatus(passer, fopAcStts_NOPAUSE_e);
-        if (state->arrived) {
-            auto* idle = static_cast<J3DAnmTransformKey*>(passer->getAnmP(0, passer->getObjNum()));
-            if (idle != nullptr) {
-                passer->setAnm(idle, 1.0f, 8.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
-            }
-        } else if (state->cowering) {
-            passer->setAction(daNpcPasser_c::MODE_2);
-        } else {
-            resumeRoute(passer, *state);
-        }
     }
 }
+
+// The lines as messages, one flow node each (registered with the greeting and the cook's lines).
+ModResult registerSpotLines(mods::flow::GraphBuilder& graph) {
+    for (int sp = 0; sp < dialogue::SPOT_COUNT; ++sp) {
+        const auto spot = static_cast<dialogue::Spot>(sp);
+        for (int i = 0; i < dialogue::kMaxLines; ++i) {
+            g_spotNodes[sp][i] = 0xFFFF;
+            const char* text = dialogue::line(spot, i);
+            if (text == nullptr) continue;
+            mods::flow::MessageBuilder builder;
+            builder.box_kind(MESSAGE_BOX_TALK).text(text);
+            std::vector<mods::flow::MessageVariant> variants;
+            for (const auto language : kLanguages) variants.push_back(builder.build(language));
+            auto msg = mods::flow::register_message(kTalkFlowGroup, variants);
+            if (!msg) return msg.result();
+            auto node = graph.add_message(msg.id());
+            node.next(mods::flow::kEnd);
+            g_spotNodes[sp][i] = node.id();
+        }
+    }
+    return MOD_OK;
+}
+
 
 void onEnemyTargetAngleYPost(ModContext*, void* args, void* retval, void*) {
     redirectEnemyAngleY(args, retval);
@@ -2874,7 +2956,11 @@ ModResult registerGreetingFlow() {
         g_cookNodes[i] = yell.id();
         yell.next(mods::flow::kEnd);
     }
+    if (const ModResult lines = registerSpotLines(graph); lines != MOD_OK) {
+        return lines;
+    }
     g_talkGraph = graph.commit();
+    g_spotNodesReady = static_cast<bool>(g_talkGraph);
     return g_talkGraph ? MOD_OK : g_talkGraph.result();
 }
 
@@ -2932,6 +3018,11 @@ ModResult addRoomActors() {
 }  // namespace
 
 uint16_t cookFlowNode(int line) { return cookFlowNode_(line); }
+
+namespace dialogue {
+bool talking() { return g_talkWith != fpcM_ERROR_PROCESS_ID_e; }
+const fopAc_ac_c* talker() { return talking() ? passerByID(g_talkWith) : nullptr; }
+}  // namespace dialogue
 
 // The nearest monster to a spot (for the cook, who runs from them).
 fopAc_ac_c* nearestMonster(const cXyz& at, f32 maxDistance) { return nearestEnemyAt(at, maxDistance); }
@@ -3037,6 +3128,14 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     if (psr_spawner::registerAndPlace() != MOD_OK) {
         return mods::set_error(error, MOD_ERROR, "failed to register or place the traveller spawners");
     }
+    // the lines (the cook's and the convoy people's and guards') and the talk marker that says them
+    if (registerGreetingFlow() != MOD_OK) {
+        svc_log->info(mod_ctx, "talk lines could not be registered; nobody has anything to say");
+    } else if (mods::hook::add_pre<TalkTagExecute>(onTalkTagExecutePre) != MOD_OK ||
+               mods::hook::add_post<TalkTagExecute>(onTalkTagExecutePost) != MOD_OK) {
+        g_spotNodesReady = false;
+        svc_log->info(mod_ctx, "talk marker hook unavailable; the convoy people and guards keep quiet");
+    }
     spot_picker::initialize();
     svc_log->info(mod_ctx, "Dynamic Travelers ready: travellers walk the Hyrule Field road network");
     return MOD_OK;
@@ -3046,6 +3145,7 @@ MOD_EXPORT ModResult mod_update(ModError*) {
     spot_picker::update();
     updateHunts();
     travellers::update();
+    talkTick();
     convoys::update();
     clearRockPile();
     camp_music::tick();
@@ -3055,6 +3155,7 @@ MOD_EXPORT ModResult mod_update(ModError*) {
 
 MOD_EXPORT ModResult mod_shutdown(ModError*) {
     g_talkGraph.reset();
+    g_spotNodesReady = false;
     g_greeting = {};
     g_talkNode = 0xFFFF;
     return MOD_OK;

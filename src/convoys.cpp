@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "convoys.hpp"
+#include "dialogue_marks.hpp"
 #include "travellers.hpp"
 #include "wagon_actor.hpp"
 
@@ -570,6 +571,8 @@ void update() {
         g_rng ^= static_cast<u32>(gameMinutes() * 2654435761u);
         g_ready = true;
     }
+    // Link is talking to one of them: everything holds still (other events put the convoys away)
+    if (dialogue::talking()) return;
     ++g_frame;
     for (int k = 0; k < K_NUM; ++k) {
         g_convoys[k].kind = static_cast<Kind>(k);
@@ -584,6 +587,18 @@ void placeHeld(daNpcPasser_c* p) {
     if (m == nullptr || w == nullptr) return;
     p->speedF = 0.0f;
     p->speed.y = 0.0f;
+    if (m->role != R_RIDER && dialogue::talker() == p) {
+        // talking with Link: standing, turned to him
+        if (auto* link = dComIfGp_getPlayer(0)) {
+            cLib_addCalcAngleS2(&p->shape_angle.y, cLib_targetAngleY(&p->current.pos, &link->current.pos), 4, 0x800);
+            p->current.angle.y = p->shape_angle.y;
+        }
+        p->old.pos = p->current.pos;
+        setAnim(p, *m, 0, 1.0f);
+        p->setBaseMtx();
+        if (p->mpMorf != nullptr) p->mpMorf->modelCalc();
+        return;
+    }
     if (m->role == R_RIDER) {
         // on the driver's bench, facing the way the wagon goes
         cXyz seat = w->benchSeat(m->x < 0.0f ? 0 : 1);
