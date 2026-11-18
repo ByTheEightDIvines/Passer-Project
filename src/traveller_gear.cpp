@@ -78,6 +78,7 @@ const Kit* kitFor(const Look* look) {
     return nullptr;
 }
 #include "guard_gear.inc"
+#include "guard_quiver.inc"
 
 const Look* lookFor(int type) {
     static const Look kLooks[30] = {
@@ -610,14 +611,29 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
         mDoExt_modelUpdateDL(g->guitar);
     }
     drawOn(g->pack, kBackbone, nullptr);
-    drawOn(g->quiver, kBackbone, &kUnderPack);   // fitted in the backbone's own space, pushed under the pack
+    // a guard's shield goes on his back when he sits (by the fire, on the wagon's bench), and the royal
+    // archer's while his bow is in his hand
+    const u8 gStyle = travellers::guardStyle(passer);
+    const int gBody = passer->m_type == 1 ? 1 : 0;
+    const bool gOnBench = passer->mpMorf != nullptr && passer->mpMorf->getAnm() == passer->getAnmP(14, 0);
+    const bool bowInHand = g->bow != nullptr && fighter_anim::bowView(passer).inHand;
+    const bool shieldOnBack =
+        gStyle != 0 && (g->sitting || gOnBench || (gStyle == travellers::kStyleArcher && bowInHand));
+    const bool royalArcher = gStyle == travellers::kStyleArcher;
+    // fitted in the backbone's own space: the bowman's pushed under his pack; the royal archer's (no pack)
+    // in layers on his back: quiver against it (Triforce out), the bow over it, the shield over the bow
+    drawOn(g->quiver, kBackbone, royalArcher ? &kGuardQuiver[gBody] : &kUnderPack);
     if (g->bow != nullptr) {
         // in his left hand while he shoots (the string on his fingers once drawn), else across his back
         const fighter_anim::BowView v = fighter_anim::bowView(passer);
         Gear::BowPose& p = g->bowPose;
         mDoMtx_copy(body->getAnmMtx(v.inHand ? kHandL : kBackbone), mDoMtx_stack_c::now);
-        if (!v.inHand) mDoMtx_stack_c::concat(kUnderPack);
-        mDoMtx_stack_c::concat(v.inHand ? kBowGripL : kBowOnBack);
+        if (v.inHand) mDoMtx_stack_c::concat(kBowGripL);
+        else if (royalArcher) mDoMtx_stack_c::concat(kGuardBowOnBack[gBody]);
+        else {
+            mDoMtx_stack_c::concat(kUnderPack);
+            mDoMtx_stack_c::concat(kBowOnBack);
+        }
         Mtx base;
         mDoMtx_copy(mDoMtx_stack_c::now, base);
         mDoMtx_copy(v.inHand ? kBowCenterHand : kBowCenterBack, p.center);
@@ -669,10 +685,11 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
         drawOn(g->gSpear, kHandR, fighting ? (big ? &kHold_fspear_mad_a : &kHold_fspear_man_a)
                                             : (big ? &kHold_spear_mad_a : &kHold_spear_man_a));
         const bool spear = style == travellers::kStyleSpear;
-        const bool onBench = passer->mpMorf != nullptr && passer->mpMorf->getAnm() == passer->getAnmP(14, 0);
-        if (g->sitting || onBench) {   // sitting down (by the fire, on the wagon's bench): the shield on his back
-            drawOn(g->gShield, kBackbone, spear ? (big ? &kHold_back_tall_mad_a : &kHold_back_tall_man_a)
-                                                : (big ? &kHold_back_small_mad_a : &kHold_back_small_man_a));
+        if (shieldOnBack) {   // sitting down (by the fire, on the wagon's bench), or shooting: the shield on his back
+            drawOn(g->gShield, kBackbone,
+                   spear ? (big ? &kHold_back_tall_mad_a : &kHold_back_tall_man_a)
+                         : royalArcher ? &kGuardShieldBack[gBody]   // over his quiver and bow
+                                       : (big ? &kHold_back_small_mad_a : &kHold_back_small_man_a));
         } else drawOn(g->gShield, kHandL, fighting ? (spear ? (big ? &kHold_ftall_mad_a : &kHold_ftall_man_a)
                                                      : (big ? &kHold_fsmall_mad_a : &kHold_fsmall_man_a))
                                             : (spear ? &kHold_tall : &kHold_small));

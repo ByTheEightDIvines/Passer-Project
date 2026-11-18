@@ -90,3 +90,15 @@ so nothing below has been played yet.
 2. **Riders' cutscene sit poses** (A/C/D/E/F), if wanted; riders use the bench sit for now.
 3. **In-game test** (the user's final test): Telma's escort untouched, the long road's data hole,
    the F_SP122 stretches, guard gear fits, rocks 2 gone, the pennant size.
+
+## Royal archer's gear (2026-11-18)
+- `psr_bow_royal.bmd`: the bowman's bow file (same joints and skinning, posed by `bowJointCB` as before),
+  arms slimmed, new texture: plum lacquer arms with a gold inlay line, silver/gold bands, red leather grip
+  laced in gold, linen string. `tools/convoy/royal_archer/royal_bow.py`.
+- `psr_quiver_royal.bmd`: new low-poly quiver (74 triangles) in the guards' scabbard textures (plum leather,
+  banded metal rim and foot), a gold Triforce on each broad face, five card arrows.
+  `royal_archer/royal_quiver.py`.
+- On a guard (no pack) the quiver and bow no longer use `kUnderPack` (they sank into the body):
+  `src/guard_quiver.inc` (`royal_archer/fit2.py`) puts the bow against his back (or the shield) and the
+  quiver over it, Triforce out, per body (MAN_a / MAD_a) and per shield place. Render: `royal_archer/view2.py`.
+- The archer's shield now goes on his back while his bow is in his hand (it was left in the bow hand).
