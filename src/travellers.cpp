@@ -115,6 +115,8 @@ std::vector<std::vector<f32>> g_cum;   // per edge: distance from its first poin
 // Travellers only walk roads whose every room is open and whose blockers are gone.
 enum EdgeBlock : u8 { EB_GORGE_ROCKS = 1, EB_RIDER_GATE = 2 };
 struct Blocker { f32 x, z; u8 bit; };
+// (The gorge rocks are gone for good now: passer_prototype.cpp never makes the road rock piles. Their
+// blocker is kept, always open, should they ever come back.)
 constexpr Blocker kBlockers[] = {
     {-17410.0f, 34955.0f, EB_GORGE_ROCKS},
     {-66221.0f, 69766.0f, EB_RIDER_GATE},
@@ -1539,7 +1541,7 @@ void refreshBridge() {
 }
 
 // The field's own switches: live while Link is in it, from its save memory while he isn't.
-bool fieldSwitch(int no) {
+[[maybe_unused]] bool fieldSwitch(int no) {
     const char* st = dComIfGp_getStartStageName();
     if (st != nullptr && (std::strcmp(st, "F_SP121") == 0 || std::strcmp(st, "F_SP122") == 0)) {
         return dComIfGs_isSwitch(no, -1);
@@ -1559,7 +1561,7 @@ void refreshStory() {
         rooms |= roomBit(1, 0);
     }
     u8 blocks = 0;
-    if (fieldSwitch(kGorgeRocksSwitch)) blocks |= EB_GORGE_ROCKS;
+    blocks |= EB_GORGE_ROCKS;   // never made now (see kBlockers); was: fieldSwitch(kGorgeRocksSwitch)
     /* dSv_event_flag_c::M_035 - Cutscene - after carriage guarding event (the rider gates unlock) */
     if (dComIfGs_isEventBit(dSv_event_flag_c::saveBitLabels[68])) blocks |= EB_RIDER_GATE;
     if (rooms != g_openRooms || blocks != g_openBlocks) {

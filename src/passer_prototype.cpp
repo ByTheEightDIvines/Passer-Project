@@ -536,33 +536,43 @@ void sidestepTick(daNpcPasser_c* passer, PasserState& state, f32 speed);
 bool swingOrStrike(daNpcPasser_c* passer, PasserState& state);
 void fighterAnim(daNpcPasser_c* passer, PasserState& state);
 
-// Rock pile 2: six bombable boulders (@bg004d, switch 0x0f) across the road where Hyrule Field's
-// northwest road meets the north field (F_SP121 room 10). Nothing in the story clears them, so the
-// convoy road would stay shut for players who never bomb them: they're never made. Their setter
-// (mmvbg) normally spawns the boulder and deletes itself; skipping the spawn leaves just that.
-// Nothing is written to the save, and the other boulders in the room (other switches) are untouched.
+// The bombable rock piles that cut a road between two parts of Hyrule Field (all @bg004d boulders,
+// F_SP121). Nothing in the story clears them (only Link's bombs, which set the pile's switch), so a road
+// would stay shut for players who never bomb them: they're never made. Their setter (mmvbg) normally
+// spawns the boulder and deletes itself; skipping the spawn leaves just that. Nothing is written to the
+// save, and the other boulders in the field (other switches: the single ones over holes and caves) stay.
+//  - rock pile 2: six boulders where the northwest road meets the north field (room 10, switch 0x0f)
+//  - three by the field end of the Bridge of Eldin, on the long road (room 0, switch 0x11)
+//  - two on the Kakariko Gorge - Eldin Field path (room 4, switch 0x00)
 constexpr u16 kRockPileBg = 0x004D;
-constexpr u8 kRockPileSwitch = 0x0F;
-constexpr int kRockPileRoom = 10;
+struct RockPile { int room; u8 sw; };
+constexpr RockPile kRockPiles[] = {{10, 0x0F}, {0, 0x11}, {4, 0x00}};
+bool isRoadRockPile(int room, u32 params, u8 sw) {
+    if ((params & 0xFFFF) != kRockPileBg) return false;
+    for (const RockPile& r : kRockPiles) {
+        if (r.room == room && r.sw == sw) return true;
+    }
+    return false;
+}
 
 HookAction onSetBgObjCreateInitPre(ModContext*, void* args, void* retval, void*) {
     auto* setter = mods::arg<daSetBgObj_c*>(args, 0);
     if (setter == nullptr) return HOOK_CONTINUE;
     const char* stage = dComIfGp_getStartStageName();
     if (stage == nullptr || std::strcmp(stage, "F_SP121") != 0) return HOOK_CONTINUE;
-    if (fopAcM_GetRoomNo(setter) != kRockPileRoom) return HOOK_CONTINUE;
-    if ((fopAcM_GetParam(setter) & 0xFFFF) != kRockPileBg) return HOOK_CONTINUE;
-    if ((static_cast<u16>(setter->current.angle.z) & 0xFF) != kRockPileSwitch) return HOOK_CONTINUE;
+    if (!isRoadRockPile(fopAcM_GetRoomNo(setter), fopAcM_GetParam(setter),
+                        static_cast<u8>(static_cast<u16>(setter->current.angle.z) & 0xFF))) {
+        return HOOK_CONTINUE;
+    }
     if (retval != nullptr) *static_cast<int*>(retval) = 1;
     return HOOK_SKIP_ORIGINAL;
 }
 
 // Fallback, should the setter hook not take (e.g. the call inlined): a boulder of the pile that
-// was made anyway is deleted, a few times a second while room 10 is loaded. Only ever ours.
+// was made anyway is deleted, a few times a second while its room is loaded. Only ever ours.
 bool isRockPileBoulder(fopAc_ac_c* a) {
-    if (fopAcM_GetName(a) != fpcNm_BG_OBJ_e || fopAcM_GetRoomNo(a) != kRockPileRoom) return false;
-    if ((fopAcM_GetParam(a) & 0xFFFF) != kRockPileBg) return false;
-    return daBgObj_prm::getSwBit(static_cast<daBgObj_c*>(a)) == kRockPileSwitch;
+    if (fopAcM_GetName(a) != fpcNm_BG_OBJ_e) return false;
+    return isRoadRockPile(fopAcM_GetRoomNo(a), fopAcM_GetParam(a), daBgObj_prm::getSwBit(static_cast<daBgObj_c*>(a)));
 }
 
 void clearRockPile() {
@@ -570,7 +580,9 @@ void clearRockPile() {
     if ((++s_tick % 20) != 0) return;
     const char* stage = dComIfGp_getStartStageName();
     if (stage == nullptr || std::strcmp(stage, "F_SP121") != 0) return;
-    if (!dComIfGp_roomControl_checkRoomDisp(kRockPileRoom)) return;
+    bool shown = false;
+    for (const RockPile& r : kRockPiles) shown = shown || dComIfGp_roomControl_checkRoomDisp(r.room);
+    if (!shown) return;
     struct Found { std::array<fopAc_ac_c*, 8> a{}; int n = 0; } found;
     fpcM_Search([](void* p, void* data) -> void* {
         if (!fopAcM_IsActor(p)) return nullptr;
@@ -582,7 +594,7 @@ void clearRockPile() {
     for (int i = 0; i < found.n; ++i) fopAcM_delete(found.a[i]);
     if (found.n > 0) {
         char line[96];
-        std::snprintf(line, sizeof(line), "removed %d boulder(s) of the northwest rock pile", found.n);
+        std::snprintf(line, sizeof(line), "removed %d boulder(s) of the road rock piles", found.n);
         svc_log->info(mod_ctx, line);
     }
 }
@@ -3099,7 +3111,7 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
         svc_log->info(mod_ctx, "Bulblin get_pla hook unavailable; Bulblins target whoever is closer");
     }
     if (mods::hook::add_pre<SetBgObjCreateInit>(onSetBgObjCreateInitPre) != MOD_OK) {
-        svc_log->info(mod_ctx, "boulder setter hook unavailable; the northwest rock pile stays");
+        svc_log->info(mod_ctx, "boulder setter hook unavailable; the road rock piles stay");
     }
     if (!traveller_gear::install()) {
         return mods::set_error(error, MOD_UNAVAILABLE, "failed to install the traveller look hooks");
