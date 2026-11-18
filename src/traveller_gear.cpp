@@ -165,7 +165,7 @@ struct Gear {
     cXyz gripAt;                  // where the bow's grip was last drawn (the arrows leave from there)
     bool gripSeen = false;        // ... in his hand
 };
-std::array<Gear, 32> g_gear{};
+std::array<Gear, travellers::kSlots> g_gear{};
 
 Gear g_cookGear;
 

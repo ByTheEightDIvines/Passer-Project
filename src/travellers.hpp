@@ -12,9 +12,9 @@
 
 namespace travellers {
 
-constexpr int kSlots = 32;               // travellers (and real actors at most)
-constexpr int kWalkPathBase = 0x40;       // path IDs 0x40..0x5F: each slot's walking path
-constexpr int kFleePathBase = 0x60;       // path IDs 0x60..0x7F: each slot's flee path
+constexpr int kSlots = 48;               // travellers, guards, convoy people (and real actors at most)
+constexpr int kWalkPathBase = 0x40;       // path IDs 0x40..0x6F: each slot's walking path
+constexpr int kFleePathBase = 0x80;       // path IDs 0x80..0xAF: each slot's flee path
 
 void initialize();
 void update();                            // once per frame (mod_update)
@@ -24,6 +24,19 @@ bool escortRunning();     // Telma's wagon escort is on: nothing of ours appears
 bool eldinCleared();      // Eldin's twilight is gone (the Faron-Eldin twilight wall with it)
 bool lanayruCleared();    // Lanayru's twilight is gone (the Eldin-Lanayru wall, Castle Town lit)
 bool eldinBridgeOpen();   // the Bridge of Eldin is standing: not yet taken, or warped back
+bool eldinBridgeWarpedBack();   // Link has warped it home (from the desert): the long roads open
+bool allTwilightCleared();      // Faron, Eldin and Lanayru are all lit
+
+// Convoy people: roster slots of their own that the convoys fill, place and empty.
+int crewClaim(u8 type);                   // a free slot for someone of this body, or -1
+void crewRelease(int slot);               // gone for good (despawned if out)
+bool crewSpawn(int slot, const cXyz& pos, s16 yaw, s8 room);   // bring them out here
+void crewDespawn(int slot);               // take them out (they stay on the roster)
+daNpcPasser_c* crewActor(int slot);       // their actor while out, else nullptr
+void crewHold(int slot, bool held);       // placed by hand (true) or left to the passer AI (false)
+bool crewDead(int slot);
+bool crewHeld(const fopAc_ac_c* passer);
+bool isCrew(const fopAc_ac_c* passer);
 
 // The passer actor belongs to this mod's travellers.
 bool isTraveller(const fopAc_ac_c* actor);

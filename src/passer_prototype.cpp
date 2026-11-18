@@ -37,6 +37,8 @@
 #include "camp_cook.hpp"
 #include "travellers.hpp"
 #include "freeze.hpp"
+#include "wagon_actor.hpp"
+#include "convoys.hpp"
 
 #include <algorithm>
 #include <array>
@@ -257,7 +259,7 @@ struct PasserState {
     std::array<s16, psr_bubble::kCount> bubbleRest{};
 };
 
-std::array<PasserState, 32> g_states{};
+std::array<PasserState, travellers::kSlots> g_states{};
 
 // --- bubbles and needs --------------------------------------------------------------------
 // One bubble at a time over a traveller: fear and fighting beat everything, a muddle beats a need.
@@ -1079,6 +1081,9 @@ bool gateAction(daNpcPasser_c* passer) {
     if (cook::isBody(passer)) {
         return true;
     }
+    if (travellers::crewHeld(passer)) {
+        return true;   // a convoy rider or escort placed by its convoy (the bench, the march)
+    }
     if (!isPrototypePasser(passer)) {
         return false;
     }
@@ -1593,12 +1598,22 @@ void onProfileExecutePost(ModContext*, void* args, void*, void*) {
         return;
     }
     voice_banks::tick();
+    // a convoy rider or escort its convoy is placing by hand: set it where it belongs this frame
+    const bool held = !state->dead && travellers::crewHeld(passer);
+    if (held) convoys::placeHeld(passer);
     if (state->dead) {
         psr_bubble::remove(state->bubble);
         state->bubble = fpcM_ERROR_PROCESS_ID_e;
     } else {
-        needTick(passer, *state);
+        if (!held) needTick(passer, *state);
         bubbleTick(passer, *state);
+    }
+    if (!state->dead && held) {
+        setDamageable(passer);
+        torchTick(passer, *state);
+        const int hour = dKy_getdaytime_hour();
+        traveller_gear::lightTick(passer, hour >= 19 || hour < 6, false);
+        return;
     }
     if (!state->dead) {
         setDamageable(passer);
@@ -1896,7 +1911,7 @@ constexpr int kStrikeEvery = 40;            // frames between swings (each swing
 constexpr u8 kStrikePower = 2;              // a sword hit (10 damage to an enemy: a Bokoblin takes 4)
 constexpr u8 kAnmIdle = 0, kAnmWalk = 2, kAnmRun = 4, kAnmCower = 0x26;
 
-std::array<dCcD_Sph, 32> g_strike{};
+std::array<dCcD_Sph, travellers::kSlots> g_strike{};
 const dCcD_SrcSph kStrikeLinkSrc = {
     {
         {0x0, {{AT_TYPE_NORMAL_SWORD, kStrikeLinkPower, 0xD}, {0x0, 0x0}, 0x0}},   // aimed like a monster's blow
@@ -2971,6 +2986,9 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     if (psr_tent::registerActor() != MOD_OK) {
         return mods::set_error(error, MOD_ERROR, "failed to register the tent actor");
     }
+    if (psr_wagon::registerActor() != MOD_OK) {
+        return mods::set_error(error, MOD_ERROR, "failed to register the convoy wagon");
+    }
     if (psr_spawner::registerAndPlace() != MOD_OK) {
         return mods::set_error(error, MOD_ERROR, "failed to register or place the traveller spawners");
     }
@@ -2983,6 +3001,7 @@ MOD_EXPORT ModResult mod_update(ModError*) {
     spot_picker::update();
     updateHunts();
     travellers::update();
+    convoys::update();
     clearRockPile();
     camp_music::tick();
     shop_stage::tick();

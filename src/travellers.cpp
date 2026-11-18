@@ -50,7 +50,7 @@ enum NodeKind : u8 { NK_ROAD = 0, NK_CAMP = 1, NK_BEEDLE = 2, NK_GATE = 3, NK_BR
 enum EdgeFlag : u8 { EF_ESCORT = 1, EF_NEEDS_BRIDGE = 2, EF_NO_BEEDLE = 4, EF_HANDOFF = 8, EF_SPUR = 16 };
 
 // --- tuning -----------------------------------------------------------------------------------
-constexpr int kPopulation = 29;              // travellers on the network
+constexpr int kPopulation = 30;              // travellers on the network
 // The guards at their camp by the Bridge of Eldin, in the slots after the travellers: Castle Town's
 // own guard bodies (Cd2 type 1 MAD_a, type 0 MAN_a), there once Castle Town's twilight is lifted.
 constexpr std::array<u8, 3> kGuardCast{1, 0, 0};
@@ -278,6 +278,10 @@ struct Traveller {
     int sleepFrames = 0;
     int homeCamp = -1;     // a bard's own fire: he travels by day and is back to play there every night
     bool guard = false;    // one of the guards: lives at the guards' camp, never takes to the road
+    // Convoy people (riders, escorts, the folk by the parked wagons): the convoys put them in and take
+    // them out, and say where they stand. The roster leaves them alone: no roads, no camps, no spawner.
+    bool crew = false;
+    bool held = false;     // placed by hand (on the bench, walking beside the wagon); off: the passer's own AI
 };
 
 std::array<Traveller, kSlots> g_t{};
@@ -1441,6 +1445,15 @@ bool escortRunning() { return g_escort; }
 bool eldinCleared() { return dComIfGs_isDarkClearLV(1) == TRUE; }
 bool lanayruCleared() { return dComIfGs_isDarkClearLV(2) == TRUE; }
 
+bool eldinBridgeWarpedBack() {
+    /* dSv_event_flag_c::M_092 - Hyrule Field - Warped Eldin Bridge */
+    return dComIfGs_isEventBit(dSv_event_flag_c::saveBitLabels[125]);
+}
+
+bool allTwilightCleared() {
+    return dComIfGs_isDarkClearLV(0) == TRUE && eldinCleared() && lanayruCleared();
+}
+
 bool eldinBridgeOpen() {
     /* dSv_event_flag_c::M_092 - Hyrule Field - Warped Eldin Bridge */
     if (dComIfGs_isEventBit(dSv_event_flag_c::saveBitLabels[125])) return true;
@@ -1620,6 +1633,16 @@ void resumeWalk(daNpcPasser_c* passer) {
     const int slot = slotOf(passer);
     if (slot < 0) return;
     Traveller& t = g_t[slot];
+    if (t.crew) {   // back from running: stand where it is; its convoy calls it back
+        t.fleeMap.clear();
+        t.fleeLegs.clear();
+        t.route.clear();
+        t.state = ST_REST;
+        buildWalkPath(slot, passer->current.pos);
+        setOwnPath(passer, kWalkPathBase + slot);
+        passer->setAction(daNpcPasser_c::MODE_0);
+        return;
+    }
     // After running away it is somewhere else on the roads: plan a fresh trip from there.
     if (!t.fleeMap.empty() && !t.fleeLegs.empty() && passer->m_path.isPath() &&
         passer->m_path.mPath == &g_flee[slot].path) {
@@ -1887,6 +1910,14 @@ void update() {
     for (int s = 0; s < kSlots; ++s) {
         Traveller& t = g_t[s];
         if (!t.used) continue;
+        if (t.crew) {   // the convoys look after their own; just notice when the game took one away
+            if (t.spawned && fopAcM_SearchByID(t.actor) == nullptr && !fpcM_IsCreating(t.actor)) {
+                t.spawned = false;
+                t.registered = false;
+                t.actor = fpcM_ERROR_PROCESS_ID_e;
+            }
+            continue;
+        }
         bedTick(t);
 
         if (t.spawned) {
@@ -2019,6 +2050,7 @@ bool spawnerTick(fopAc_ac_c* spawner, bool firstTick) {
         Traveller& t = g_t[s];
         if (!t.used || t.spawned || t.dead || t.cooldown > 0) continue;
         if (t.sleep == 1 || t.sleep == 2) continue;   // in its tent
+        if (t.crew) continue;                          // convoy people come and go with their convoy
         if (t.guard && !lanayruCleared()) continue;   // the guards come out once Castle Town is lit
         Where w{};
         if (t.state == ST_WALK && !t.route.empty()) {
@@ -2113,6 +2145,76 @@ void diagLine(const char* fmt, ...) {
     va_list ap; va_start(ap, fmt); std::vfprintf(g_diag, fmt, ap); va_end(ap);
     std::fputc('\n', g_diag);
     std::fflush(g_diag);
+}
+
+// --- convoy people ------------------------------------------------------------------------------
+constexpr int kCrewFirst = kPopulation + static_cast<int>(kGuardCast.size());
+
+int crewClaim(u8 type) {
+    for (int s = kCrewFirst; s < kSlots; ++s) {
+        Traveller& t = g_t[s];
+        if (t.used) continue;
+        t = Traveller{};
+        t.used = true;
+        t.crew = true;
+        t.type = type;
+        t.state = ST_REST;
+        return s;
+    }
+    return -1;
+}
+
+void crewRelease(int slot) {
+    if (slot < kCrewFirst || slot >= kSlots || !g_t[slot].crew) return;
+    Traveller& t = g_t[slot];
+    if (t.spawned) despawn(t, fopAcM_SearchByID(t.actor));
+    t = Traveller{};
+}
+
+bool crewSpawn(int slot, const cXyz& pos, s16 yaw, s8 room) {
+    if (slot < kCrewFirst || slot >= kSlots || !g_t[slot].crew) return false;
+    Traveller& t = g_t[slot];
+    if (t.spawned) return true;
+    const int stage = currentStage();
+    if (stage < 0) return false;
+    Where w{};
+    w.stage = static_cast<u8>(stage);
+    w.room = room;
+    w.pos = pos;
+    w.yaw = yaw;
+    w.nextPoint = 0;
+    t.dead = false;
+    t.state = ST_REST;
+    t.route.clear();
+    spawn(slot, w);
+    return true;
+}
+
+void crewDespawn(int slot) {
+    if (slot < kCrewFirst || slot >= kSlots || !g_t[slot].crew) return;
+    Traveller& t = g_t[slot];
+    if (t.spawned) despawn(t, fopAcM_SearchByID(t.actor));
+}
+
+daNpcPasser_c* crewActor(int slot) {
+    if (slot < kCrewFirst || slot >= kSlots || !g_t[slot].crew || !g_t[slot].spawned) return nullptr;
+    return static_cast<daNpcPasser_c*>(fopAcM_SearchByID(g_t[slot].actor));
+}
+
+void crewHold(int slot, bool held) {
+    if (slot >= kCrewFirst && slot < kSlots) g_t[slot].held = held;
+}
+
+bool crewDead(int slot) { return slot >= kCrewFirst && slot < kSlots && g_t[slot].dead; }
+
+bool crewHeld(const fopAc_ac_c* passer) {
+    const int slot = slotOf(passer);
+    return slot >= 0 && g_t[slot].crew && g_t[slot].held;
+}
+
+bool isCrew(const fopAc_ac_c* passer) {
+    const int slot = slotOf(passer);
+    return slot >= 0 && g_t[slot].crew;
 }
 
 }  // namespace travellers
