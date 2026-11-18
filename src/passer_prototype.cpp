@@ -30,6 +30,7 @@
 #include "mod_sounds.hpp"
 #include "shop_stage.hpp"
 #include "shop_lamps.hpp"
+#include "tent_beedle.hpp"
 #include "mod_lights.hpp"
 #include "soul_actor.hpp"
 #include "note_actor.hpp"
@@ -2920,6 +2921,7 @@ void talkTick() {
 
 HookAction onTalkTagExecutePre(ModContext*, void* args, void*, void*) {
     auto* tag = mods::arg<daTag_KMsg_c*>(args, 0);
+    if (psr_tent_beedle::tagPre(tag)) return HOOK_CONTINUE;   // Beedle's in his tent: his own marker
     if (g_talkTag == fpcM_ERROR_PROCESS_ID_e || fopAcM_GetID(tag) != g_talkTag) return HOOK_CONTINUE;
     tag->home.roomNo = static_cast<s8>(dComIfGp_roomControl_getStayNo());   // it only works in Link's room
     daNpcPasser_c* who = passerByID(g_talkWith != fpcM_ERROR_PROCESS_ID_e ? g_talkWith : g_talkTarget);
@@ -2955,6 +2957,7 @@ HookAction onTalkTagExecutePre(ModContext*, void* args, void*, void*) {
 
 void onTalkTagExecutePost(ModContext*, void* args, void*, void*) {
     auto* tag = mods::arg<daTag_KMsg_c*>(args, 0);
+    if (psr_tent_beedle::tagPost(tag)) return;
     if (g_talkTag == fpcM_ERROR_PROCESS_ID_e || fopAcM_GetID(tag) != g_talkTag) return;
     // nobody to talk to (or Link is a wolf): no "Speak" prompt
     if ((g_talkTarget == fpcM_ERROR_PROCESS_ID_e && g_talkWith == fpcM_ERROR_PROCESS_ID_e) ||
@@ -3264,6 +3267,9 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     if (psr_soul::registerActor() != MOD_OK) {
         return mods::set_error(error, MOD_ERROR, "failed to register the soul actor");
     }
+    if (psr_tent_beedle::registerActor() != MOD_OK) {
+        svc_log->info(mod_ctx, "tent Beedle actor unavailable; his tent's shop is empty");
+    }
     if (psr_shop_lamps::registerActor() != MOD_OK) {
         svc_log->info(mod_ctx, "shop lantern actor unavailable; Beedle's shop has no lanterns");
     }
@@ -3297,6 +3303,7 @@ MOD_EXPORT ModResult mod_update(ModError*) {
     updateHunts();
     travellers::update();
     talkTick();
+    psr_tent_beedle::talkTick();
     convoys::update();
     clearRockPile();
     camp_music::tick();

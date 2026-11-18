@@ -1,7 +1,7 @@
 """Beedle's shop model (R_PSR00 model5.bmd), cleaned after build_shop_kak.py: the three lanterns that
 were baked in come out (shop_lamps.cpp draws the game's own lantern there, so its glass shows the
 flame), and so do the herb bunches, the string of peppers and the rope coil hanging from the ridge.
-Also adds an earth apron round the floor's edge (the field slopes below the floor on one side).
+Also adds Beedle's mat on the counter (where he sits) and an earth apron round the floor's edge (the field slopes below the floor on one side).
 Rebuild the shop model (R_PSR00 model5.bmd) from itself, leaving out chosen triangles.
 Usage: python3 -I rebuild_model5.py IN.bmd OUT.bmd [drop]"""
 import sys, math, numpy as np
@@ -54,5 +54,28 @@ if drop:
             apron.append((np.array([P[0], P[2], P[3]]), np.array([U[0], U[2], U[3]])))
     groups.append((np.asarray(tex, np.uint8), False, apron, (1, 1)))
     print('apron', len(apron), 'triangles')
+    # Beedle's mat on the counter, where he sits (tent_beedle.cpp kSeat: x 55, z -370): the cloth from
+    # his old counter (beedle_shop.png's cloth panel) laid on the top (98 up) and hanging over the front.
+    from PIL import Image
+    sheet = np.asarray(Image.open('/home/claude/beedle/shop/beedle_shop.png').convert('RGBA'))
+    cloth = np.ascontiguousarray(np.asarray(Image.fromarray(sheet[512:750, 0:256]).resize((256, 256))))   # (its last rows are wood)
+    X0, X1, ZB_, ZF_, TOPY, HANG = -5.0, 115.0, -374.0, -300.0, 99.5, 58.0
+    mat = []
+    def quad(P, U):
+        P = [place(*p) for p in P]
+        mat.append((np.array([P[0], P[1], P[2]]), np.array([U[0], U[1], U[2]])))
+        mat.append((np.array([P[0], P[2], P[3]]), np.array([U[0], U[2], U[3]])))
+    vfold = 0.62   # the top takes this much of the panel, the front drop the rest
+    for k in range(4):   # in strips (shading follows the vertices)
+        a, b2 = k / 4, (k + 1) / 4
+        xa, xb = X0 + (X1 - X0) * a, X0 + (X1 - X0) * b2
+        quad([(xa, TOPY, ZB_), (xb, TOPY, ZB_), (xb, TOPY, ZF_), (xa, TOPY, ZF_)],
+             [(a, 0.0), (b2, 0.0), (b2, vfold), (a, vfold)])
+        quad([(xa, TOPY, ZF_), (xb, TOPY, ZF_), (xb, TOPY - 6.0, ZF_ + 2.5), (xa, TOPY - 6.0, ZF_ + 2.5)],
+             [(a, vfold), (b2, vfold), (b2, vfold + 0.05), (a, vfold + 0.05)])
+        quad([(xa, TOPY - 6.0, ZF_ + 2.5), (xb, TOPY - 6.0, ZF_ + 2.5), (xb, HANG, ZF_ + 3.5), (xa, HANG, ZF_ + 3.5)],
+             [(a, vfold + 0.05), (b2, vfold + 0.05), (b2, 1.0), (a, 1.0)])
+    groups.append((cloth, bool(cloth[..., 3].min() < 128), mat, (1, 1)))
+    print('mat', len(mat), 'triangles')
 print('dropped', n, 'triangles;', len(groups), 'materials')
 print(write_multi(dst, groups, jointname='shop', cull=0))

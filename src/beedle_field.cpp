@@ -11,6 +11,7 @@
 #include "beedle_field.hpp"
 
 #include <deque>
+#include <algorithm>
 #include "d/actor/d_a_npc_passer.h"
 #include "d/d_com_inf_game.h"
 #include "d/d_item.h"
@@ -57,6 +58,9 @@ constexpr u8 kPrgGoodbye = 0xEC, kPrgThanks = 0xED;
 u32 g_goodbye = 0, g_thanks = 0;
 
 std::array<u16, kWareCount> g_offerNode{};
+std::array<u16, kWareCount> g_tentOfferNode{};   // the same, for a ware on a cushion in his tent
+u16 g_tentHelloNode = 0xFFFF;
+int g_boughtSerial = 0;   // counts purchases (the tent sees one happen)
 u16 g_nothingNode = 0xFFFF;
 bool g_ready = false;
 FlowQueryId g_qCanBuy{};
@@ -165,6 +169,7 @@ void onBuy(ModContext*, const FlowEventContext* e, void*) {
     dComIfGp_setItemRupeeCount(-static_cast<int>(w.price));
     give(w);
     g_lastBought = i;
+    ++g_boughtSerial;
     travellers::diagLine("beedle  sold %s for %d", w.name, w.price);
     auto* at = static_cast<const fopAc_ac_c*>(e->speaker_actor);
     playVoice(g_thanks, at);
@@ -236,12 +241,64 @@ ModResult registerFlows(mods::flow::GraphBuilder& graph, const MessageLanguage* 
         }, choose.id());
         if (offer < 0) return g_lastErr != MOD_OK ? g_lastErr : MOD_ERROR;
         g_offerNode[i] = static_cast<u16>(offer);
+        // in his tent, about the ware on the cushion Link is at (its own choice, the same purchase)
+        auto choose2 = graph.add_branch(FLOW_QUERY_SELECT_2, 0);
+        choose2.results({check.id(), static_cast<u16>(bye)});
+        const int offer2 = node([&](auto& b) {
+            b.text_color(MESSAGE_COLOR_RED).text(w.name).text_color(MESSAGE_COLOR_DEFAULT);
+            b.text("? Good eye!\nJust ");
+            b.text_color(MESSAGE_COLOR_RED).text(price).text_color(MESSAGE_COLOR_DEFAULT);
+            b.text(". Want it?");
+            b.options("I'll take it!", "No thanks");
+        }, choose2.id());
+        if (offer2 < 0) return g_lastErr != MOD_OK ? g_lastErr : MOD_ERROR;
+        g_tentOfferNode[i] = static_cast<u16>(offer2);
     }
+    const int hello = node([](auto& b) {
+        b.text("Welcome to Beedle's tent shop!\nHave a look at the cushions, and if\nanything catches your eye, just ask!");
+    }, mods::flow::kEnd);
+    if (hello < 0) return g_lastErr != MOD_OK ? g_lastErr : MOD_ERROR;
+    g_tentHelloNode = static_cast<u16>(hello);
     g_ready = true;
     return MOD_OK;
 }
 
 void markUnready() { g_ready = false; }
+
+// --- his tent's shop ------------------------------------------------------------------------------
+int tentWares(int* out, int maxOut) {
+    // today's six: those Link can use, in an order the day shuffles (the seeds have no shop model)
+    int can[kWareCount];
+    int n = 0;
+    for (int i = 0; i < kWareCount; ++i) {
+        if (unlocked(kWares[i]) && kWares[i].kind != K_SEEDS) can[n++] = i;
+    }
+    u32 h = static_cast<u32>(dComIfGs_getDate()) * 2246822519u + 0x9E3779B9u;
+    for (int i = n - 1; i > 0; --i) {
+        h ^= h << 13; h ^= h >> 17; h ^= h << 5;
+        const int j = static_cast<int>(h % static_cast<u32>(i + 1));
+        std::swap(can[i], can[j]);
+    }
+    const int k = std::min(n, maxOut);
+    for (int i = 0; i < k; ++i) out[i] = can[i];
+    return k;
+}
+
+u8 wareDisplayItem(int ware) {
+    // what the game's own shop shows for it (daShopItem_c: a bomb, a bottle, the shield...)
+    switch (kWares[ware].item) {
+    case dItemNo_WATER_BOMB_5_e: return dItemNo_WATER_BOMB_e;
+    case dItemNo_BOMB_INSECT_5_e: return dItemNo_POKE_BOMB_e;
+    case dItemNo_WOOD_SHIELD_e: return dItemNo_SHIELD_e;
+    default: return kWares[ware].item;
+    }
+}
+
+u16 tentOfferNode(int ware) { return g_ready && ware >= 0 && ware < kWareCount ? g_tentOfferNode[ware] : 0xFFFF; }
+u16 tentHelloNode() { return g_ready ? g_tentHelloNode : 0xFFFF; }
+int boughtSerial() { return g_boughtSerial; }
+int lastBought() { return g_lastBought; }
+void sayGoodbye(const fopAc_ac_c* at) { playVoice(g_goodbye, at); }
 
 u16 talkNode() {
     if (!g_ready) return 0xFFFF;

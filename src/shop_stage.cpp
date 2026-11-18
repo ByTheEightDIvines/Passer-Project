@@ -12,6 +12,7 @@
 #include "mods/svc/stage.h"
 #include "travellers.hpp"
 #include "shop_lamps.hpp"
+#include "tent_beedle.hpp"
 #include "mods/svc/audio_res.h"
 #include "Z2AudioLib/Z2AudioMgr.h"
 #include "d/d_particle_name.h"
@@ -121,9 +122,10 @@ void enter(const cXyz& doorOut, s16 yawOut, int fieldRoom) {
 void tick() {
     if (g_cool > 0) --g_cool;
     musicTick(inShop(), g_settle >= 30);
-    if (!inShop()) { g_settle = 0; psr_shop_lamps::reset(); return; }
+    if (!inShop()) { g_settle = 0; psr_shop_lamps::reset(); psr_tent_beedle::reset(); return; }
     if (g_settle >= 1 && dComIfGp_getPlayer(0) != nullptr) {
         psr_shop_lamps::spawn(cXyz(kShopX, kShopY, kShopZ), kShopYaw, kShopRoom);
+        psr_tent_beedle::spawn(cXyz(kShopX, kShopY, kShopZ), kShopYaw, kShopRoom);
     }
     auto* link = dComIfGp_getPlayer(0);
     if (link == nullptr || dComIfGp_event_runCheck()) return;
