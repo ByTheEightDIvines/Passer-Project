@@ -1545,6 +1545,10 @@ void noteAct(fopAc_ac_c* passer, const char* what) {
 }
 
 bool isTraveller(const fopAc_ac_c* actor) { return slotOf(actor) >= 0; }
+bool isGuard(const fopAc_ac_c* actor) {
+    const int s = slotOf(actor);
+    return s >= 0 && g_t[s].guard;
+}
 int slotIndex(const fopAc_ac_c* actor) { return slotOf(actor); }
 
 PathStore g_cookPath;

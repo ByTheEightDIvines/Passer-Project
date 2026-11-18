@@ -36,6 +36,7 @@ daNpcPasser_c* crewActor(int slot);       // their actor while out, else nullptr
 void crewHold(int slot, bool held);       // placed by hand (true) or left to the passer AI (false)
 bool crewDead(int slot);
 bool crewHeld(const fopAc_ac_c* passer);
+bool isGuard(const fopAc_ac_c* actor);   // one of the three camp guards
 bool isCrew(const fopAc_ac_c* passer);
 // A guard's arms: 0 none (not a guard), 1 spear and tall shield, 2 sword and small shield, 3 sword,
 // small shield and the royal bow.

@@ -53,18 +53,23 @@ so nothing below has been played yet.
 - Roster: 48 slots (`kSlots`; walk paths 0x40..0x6F, flee 0x80..0xAF). 30 travellers, 3 guards at
   the bridge camp, and the rest are convoy crew (`crewClaim` and friends in travellers.cpp).
 
-## Still to build
-1. **Guards' weapons and fighting:** spear with tall shield, sword with small shield, scabbard,
-   thrust (guards only), block, swing. The assets are in the handover `escort/guard_out` and the
-   approved holds in `escort/holds.pkl`; the refit is `escort/sol_retarget.py`. Guards are types 0
-   (MAN_a) and 1 (MAD_a); they need fighter grips and bodies in fighter_anim, and to be added to
-   kFighters.
-2. **Royal bow** for the walking swordsman (bowman system in traveller_gear, refit to MAN_a).
-3. **Bow-and-sword traveller escorts:** any men fighter body (fits in `escort/fits.json`). Today
-   only passer 8 has the bow.
-4. **Castle Town side:** a convoy shown driving from the loading zone to the town gate in F_SP122
-   (the `entry` points in convoy_route.json). Today convoys simply end at the field's loading zone.
-5. **Riders' cutscene sit poses** (A/C/D/E/F) for the guards.
-6. **Dialogue markers:** wall camps, bridge camp before and after the repair, convoy people.
-7. **Final check:** every hook and flag against Dusklight v2.0.3, then the build and the overlay
-   (PsrWagon.arc, the new PsrTent.arc with guard_tent.bmd).
+- **Guards** (types 0 MAN_a, 1 MAD_a; styles spear / sword / archer): the game's own spear
+  (object.arc `b_spear.bmd`), tall or small shield, sword and scabbard from PsrPack (`psr_g_*`), drawn
+  from the holds in `src/guard_gear.inc` (walking and fighting holds differ). They fight from their
+  own stances (`psr_g_spear/sword_<body>`), spearmen thrust, everyone blocks frontal blows 70% of the
+  time. The shield arm rides the arm layer (`psr_garm_A/D_<body>`) except on the bench and in a fight.
+  Spearmen walk and stand with the men's stick walk/wait (Mspecial). The royal archer has the royal
+  bow and quiver (`psr_bow_royal` / `psr_quiver_royal`). Guard arms live in the gear heap (0x60000).
+- **Castle Town side** (`src/convoy_gates.inc`, `tools/convoy/gen_gates.py`): the gorge and long
+  roads carry on into F_SP122 room 17 over the east bridge to the east gate; the west road starts at
+  the west gate in room 8 and crosses the west bridge into the field. Each point knows its stage; a
+  convoy is only out in the stage Link is in.
+- **Dialogue markers** (`src/dialogue_marks.*`): `dialogue::spotFor(actor)` names the spot (nod
+  wall 1/2, guard camp bridge out/back, gorge/west/royal convoy) with a placeholder line each. Not
+  hooked to talking yet: that comes with the real lines.
+
+## Still to do
+1. **Dialogue:** write the lines, then hook `spotFor` into the talk marker.
+2. **Riders' cutscene sit poses** (A/C/D/E/F), if wanted; riders use the bench sit for now.
+3. **In-game test** (the user's final test): Telma's escort untouched, the long road's data hole,
+   the F_SP122 stretches, guard gear fits, rocks 2 gone, the pennant size.

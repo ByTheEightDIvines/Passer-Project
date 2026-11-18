@@ -605,4 +605,13 @@ void placeHeld(daNpcPasser_c* p) {
     p->setBaseMtx();
     if (p->mpMorf != nullptr) p->mpMorf->modelCalc();
 }
+int crewSpot(int slot) {
+    if (slot < 0) return -1;
+    for (const Convoy& c : g_convoys) {
+        if (!c.active) continue;
+        for (const Member& m : c.crew) if (m.slot == slot) return c.kind;
+    }
+    for (const Member& m : g_nod.crew) if (m.slot == slot) return 10 + std::max(0, g_nod.which);
+    return -1;
+}
 }  // namespace convoys

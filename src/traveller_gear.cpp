@@ -449,18 +449,6 @@ void onCreateHeapPost(ModContext*, void* args, void* retval, void*) {
     g->sitting = false;
     const u8 style = travellers::guardStyle(passer);
     g->gSpear = g->gShield = g->gSword = g->gScab = nullptr;
-    if (style != 0) {
-        if (style == travellers::kStyleSpear) {
-            if (auto* data = static_cast<J3DModelData*>(dComIfG_getObjectRes("object", "b_spear.bmd"))) {
-                g->gSpear = mDoExt_J3DModel__create(data, 0x80000, 0x11000084);
-            }
-            g->gShield = make("psr_g_shield_t.bmd");
-        } else {
-            g->gShield = make("psr_g_shield_s.bmd");
-            g->gSword = make("psr_g_sword.bmd");
-        }
-        g->gScab = make("psr_g_scabbard.bmd");
-    }
     // fighters carry a torch, everyone else a lantern; the old women hang theirs on a hooked staff
     g->torch = travellers::isFighter(passer);
     const bool guard = style != 0;   // a guard's hands are full: no torch, no lantern
@@ -472,10 +460,22 @@ void onCreateHeapPost(ModContext*, void* args, void* retval, void*) {
     }
     g->bow = g->quiver = g->nockArrow = nullptr;
     for (J3DModel*& a : g->flyArrows) a = nullptr;
-    g->extras = mDoExt_createSolidHeapFromGame(0x40000, 0x20);
+    g->extras = mDoExt_createSolidHeapFromGame(guard ? 0x60000 : 0x40000, 0x20);   // (adjusted to fit after)
     if (g->extras != nullptr) {
         JKRHeap* before = mDoExt_setCurrentHeap(g->extras);
         g->light = guard ? nullptr : make(g->torch ? "psr_torch.bmd" : "psr_lantern.bmd");
+        if (guard) {   // a guard's arms: in this heap too (the body's own has no room for them)
+            if (style == travellers::kStyleSpear) {
+                if (auto* data = static_cast<J3DModelData*>(dComIfG_getObjectRes("object", "b_spear.bmd"))) {
+                    g->gSpear = mDoExt_J3DModel__create(data, 0x80000, 0x11000084);
+                }
+                g->gShield = make("psr_g_shield_t.bmd");
+            } else {
+                g->gShield = make("psr_g_shield_s.bmd");
+                g->gSword = make("psr_g_sword.bmd");
+            }
+            g->gScab = make("psr_g_scabbard.bmd");
+        }
         g->staff = isOldWoman(passer->m_type) ? make("psr_staff.bmd") : nullptr;
         static const char* const kEats[6] = {"psr_food_kebab.bmd", "psr_food_veggie.bmd", "psr_food_carrot.bmd",
                                              "psr_food_bread.bmd", "psr_food_meat.bmd", "psr_food_corn.bmd"};
