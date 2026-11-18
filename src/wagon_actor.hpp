@@ -54,6 +54,11 @@ public:
     s16 mHarnessYaw = 0;
     JPABaseEmitter* mFx[10] = {};
     int mSmoke = 0;                 // frames the wreck still smokes
+    int mBlaze = 0;                 // destroyed: frames it still burns at full blaze (whatever wrecked it)
+    bool mCharred = false;          // drawn as the burnt-out wreck (swapped in mid-blaze)
+    // the burnt-out wreck: royal - body, harness, cover, 4 wheels (as mpRoyal), [7] cargo;
+    // travellers' - [0] wagon, [1] harness, [2] cover, [7] cargo. Missing ones: the normal look stays
+    J3DModel* mpBurnt[8] = {};
     bool mHorseGone = false;        // the loose horse ran off out of sight
 
     void addDamage(int amount);

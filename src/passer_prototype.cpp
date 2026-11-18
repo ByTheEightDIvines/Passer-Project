@@ -400,6 +400,22 @@ bool isProjectile(fopAc_ac_c* actor) {
     return name == fpcNm_E_ARROW_e || name == fpcNm_E_TK_BALL_e || name == fpcNm_E_TH_BALL_e;
 }
 
+// The boars (Bullbos) are neutral: they can't be killed, so no one fights or runs from a boar itself,
+// only from the Bulblin riding it. A riderless boar is left alone.
+bool isBoar(const fopAc_ac_c* actor) {
+    return actor != nullptr && fopAcM_GetName(const_cast<fopAc_ac_c*>(actor)) == fpcNm_E_WB_e;
+}
+// A Bulblin up on his boar: within reach however high the saddle puts him.
+bool mountedRider(const fopAc_ac_c* actor) {
+    if (actor == nullptr || fopAcM_GetName(const_cast<fopAc_ac_c*>(actor)) != fpcNm_E_RD_e) return false;
+    return reinterpret_cast<const e_rd_class*>(actor)->ride_mode != 0;
+}
+// Something our people treat as a foe: the game's enemies, less projectiles and the boars.
+bool isFoe(fopAc_ac_c* actor) {
+    return actor != nullptr && fopAcM_IsActor(actor) && fopAcM_GetGroup(actor) == fopAc_ENEMY_e &&
+           !isProjectile(actor) && !isBoar(actor);
+}
+
 // maxAbove: skip enemies flying higher than this above the spot (birds circling overhead).
 fopAc_ac_c* nearestEnemyAt(const cXyz& at, f32 maxDistance, f32 maxAbove = 1.0e9f) {
     struct Search {
@@ -416,10 +432,10 @@ fopAc_ac_c* nearestEnemyAt(const cXyz& at, f32 maxDistance, f32 maxAbove = 1.0e9
             return nullptr;
         }
         auto* enemy = static_cast<fopAc_ac_c*>(candidate);
-        if (fopAcM_GetGroup(enemy) != fopAc_ENEMY_e || !inPasserArea(enemy) || isProjectile(enemy)) {
+        if (!isFoe(enemy) || !inPasserArea(enemy)) {
             return nullptr;
         }
-        if (enemy->current.pos.y - data->at->y > data->maxAbove) {
+        if (enemy->current.pos.y - data->at->y > data->maxAbove && !mountedRider(enemy)) {
             return nullptr;
         }
         const f32 dx = enemy->current.pos.x - data->at->x;
@@ -823,8 +839,8 @@ bool isHunted(const daNpcPasser_c* passer) {
 }
 
 daNpcPasser_c* nearestThreatTarget(const fopAc_ac_c* enemy) {
-    if (enemy == nullptr || fopAcM_GetGroup(enemy) != fopAc_ENEMY_e || !inPasserArea(enemy)) {
-        return nullptr;
+    if (enemy == nullptr || !isFoe(const_cast<fopAc_ac_c*>(enemy)) || !inPasserArea(enemy)) {
+        return nullptr;   // (a boar hunts no one: it's its rider who does)
     }
     auto* self = const_cast<fopAc_ac_c*>(enemy);
     if (Hunt* h = findHunt(fopAcM_GetID(self))) {
@@ -1545,11 +1561,19 @@ void progressCheck(daNpcPasser_c* passer, PasserState& state) {
         state.stuckRuns = 0;
         return;
     }
-    ++state.stuckRuns;
-    if (state.stuckRuns == 2) say(passer, state, psr_bubble::kConfused);   // can't get past: puzzled
     const int pt = passer->m_path.field_0x20;
     const int num = passer->m_path.mPath->m_num;
     const cXyz next = passer->m_path.getPoint(static_cast<u16>(pt));
+    // standing on the very end of its path (a seat at the fire right where it spawned): it's there.
+    // Treated as stuck it only ever skipped to a point there isn't and went back, for good.
+    if (walking && pt >= num - 1 && passer->current.pos.absXZ(next) < 60.0f) {
+        state.stuckRuns = 0;
+        travellers::noteAct(passer, "already at its path's end: arrived");
+        travellers::onPathEnd(passer);
+        return;
+    }
+    ++state.stuckRuns;
+    if (state.stuckRuns == 2) say(passer, state, psr_bubble::kConfused);   // can't get past: puzzled
     fopAc_ac_c* player = dComIfGp_getPlayer(0);
     fopAc_ac_c* avoiding = state.avoidId != fpcM_ERROR_PROCESS_ID_e ? fopAcM_SearchByID(state.avoidId) : nullptr;
     char line[220];
@@ -1973,6 +1997,20 @@ void strike(daNpcPasser_c* passer, PasserState& state) {
     at.x += cM_ssin(passer->shape_angle.y) * 90.0f;
     at.y += 80.0f;
     at.z += cM_scos(passer->shape_angle.y) * 90.0f;
+    // a Bulblin up on his boar: the blow goes up at him (at boar height it only ever hit the boar)
+    if (!state.vsWolf) {
+        if (fopAc_ac_c* foe = nearestEnemyAt(passer->current.pos, 260.0f); mountedRider(foe)) {
+            cXyz d = foe->current.pos - passer->current.pos;
+            d.y = 0.0f;
+            const f32 len = d.absXZ();
+            const f32 reach = std::min(len, 140.0f);
+            if (len > 1.0f) {
+                at.x = passer->current.pos.x + d.x / len * reach;
+                at.z = passer->current.pos.z + d.z / len * reach;
+            }
+            at.y = std::min(foe->current.pos.y + 40.0f, passer->current.pos.y + 260.0f);
+        }
+    }
     sph.SetC(at);
     dComIfG_Ccsp()->Set(&sph);
     state.blowPending = true;
@@ -2468,7 +2506,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
             // shot at: the archer is its enemy (it charges him) however far off, while he keeps it up
             --state->shooterFrames;
             fopAc_ac_c* archer = fopAcM_SearchByID(state->shooter);
-            if (!holdsGround(passer) || archer == nullptr || fopAcM_GetGroup(archer) != fopAc_ENEMY_e ||
+            if (!holdsGround(passer) || !isFoe(archer) ||
                 passer->current.pos.absXZ(archer->current.pos) > kChasedRadius) {
                 state->shooterFrames = 0;
             } else if (enemy == nullptr) {
@@ -2629,7 +2667,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
             // the old women: the second blow in a fight, and she turns and freezes whoever dealt it
             state->quietFrames = 0;
             // shot (an arrow): the one who shot it, if he's within her reach; out of reach she runs
-            fopAc_ac_c* culprit = isProjectile(attacker) ? nearestEnemy(passer, kCastReach) : attacker;
+            fopAc_ac_c* culprit = isProjectile(attacker) || isBoar(attacker) ? nearestEnemy(passer, kCastReach) : attacker;   // (run down by a boar: its rider)
             if (++state->hitsThisFight >= 2 && state->castCooldown == 0 && state->casting == 0 && culprit != nullptr) {
                 state->casting = 1;
                 state->castFired = false;

@@ -668,7 +668,14 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
         const bool fighting = fighter_anim::weaponOut(passer) && !fighter_anim::bowView(passer).inHand;
         drawOn(g->gSpear, kHandR, fighting ? (big ? &kHold_fspear_mad_a : &kHold_fspear_man_a)
                                             : (big ? &kHold_spear_mad_a : &kHold_spear_man_a));
-        drawOn(g->gShield, kHandL, style == travellers::kStyleSpear ? &kHold_tall : &kHold_small);
+        const bool spear = style == travellers::kStyleSpear;
+        const bool onBench = passer->mpMorf != nullptr && passer->mpMorf->getAnm() == passer->getAnmP(14, 0);
+        if (g->sitting || onBench) {   // sitting down (by the fire, on the wagon's bench): the shield on his back
+            drawOn(g->gShield, kBackbone, spear ? (big ? &kHold_back_tall_mad_a : &kHold_back_tall_man_a)
+                                                : (big ? &kHold_back_small_mad_a : &kHold_back_small_man_a));
+        } else drawOn(g->gShield, kHandL, fighting ? (spear ? (big ? &kHold_ftall_mad_a : &kHold_ftall_man_a)
+                                                     : (big ? &kHold_fsmall_mad_a : &kHold_fsmall_man_a))
+                                            : (spear ? &kHold_tall : &kHold_small));
         drawOn(g->gScab, kWaist, &kHold_scab);
         if (fighting) drawOn(g->gSword, kHandR, big ? &kHold_fsword_mad_a : &kHold_fsword_man_a);
     }

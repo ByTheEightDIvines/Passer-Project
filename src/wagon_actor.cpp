@@ -29,8 +29,15 @@ const char* kRoyalModel[8] = {"royal_body.bmd", "royal_harness.bmd", "royal_cove
                               "royal_f_l_wheel.bmd", "royal_f_r_wheel.bmd",
                               "royal_b_l_wheel.bmd", "royal_b_r_wheel.bmd", nullptr};
 const char* kCargo[2] = {"trav_cargo.bmd", "royal_cargo.bmd"};
+const char* kBurntRoyal[8] = {"royal_body_burnt.bmd", "royal_harness_burnt.bmd", "royal_cover_burnt.bmd",
+                              "royal_f_l_wheel_burnt.bmd", "royal_f_r_wheel_burnt.bmd",
+                              "royal_b_l_wheel_burnt.bmd", "royal_b_r_wheel_burnt.bmd", "royal_cargo_burnt.bmd"};
+const char* kBurntTrav[8] = {"trav_coach_burnt.bmd", "trav_harness_burnt.bmd", "trav_cover_burnt.bmd",
+                             nullptr, nullptr, nullptr, nullptr, "trav_cargo_burnt.bmd"};
+constexpr int kBlazeFrames = 30 * 10;   // destroyed: it burns at full blaze this long, then smoulders
+constexpr int kCharAfter = 45;          // ...and turns to the burnt-out wreck this far in (the fire at its height)
 const char* kHorseAnim[4] = {"hu_wait_01.bck", "hu_walk_slow.bck", "hu_walk_fast.bck", "hu_run_slow.bck"};
-constexpr u32 kHeapSize = 0x180000;   // horse, harness, wagon, the royal pieces and the cargo
+constexpr u32 kHeapSize = 0x200000;   // horse, harness, wagon, the royal pieces, the cargo and the burnt wreck
 
 // The rig, as the game's coach puts it together (Coach.arc's bind pose; +z forward):
 // the harness sits on the horse, the wagon on the harness's hitch (bs_loc), which is here.
@@ -160,6 +167,10 @@ int psrWagon_c::CreateHeap() {
         }
     }
     mpCargo = loadModel(kOwnArc, kCargo[mKind]);
+    for (int i = 0; i < 8; i++) {
+        const char* f = (mKind == PSR_WAGON_ROYAL ? kBurntRoyal : kBurntTrav)[i];
+        mpBurnt[i] = f != nullptr ? loadModel(kOwnArc, f) : nullptr;   // (missing: it just keeps its look)
+    }
     // the wagon's and the harness's own collision, as the game's coach has it
     mpBgCoach = JKR_NEW dBgW();
     if (mpBgCoach == nullptr) return 0;
@@ -199,6 +210,7 @@ void psrWagon_c::addDamage(int amount) {
         mWrecked = true;
         mLoose = true;
         mSmoke = kSmokeFrames;
+        mBlaze = kBlazeFrames;   // however it was wrecked (fire, or monsters smashing it): it goes up in flames
     }
 }
 
@@ -209,7 +221,12 @@ void psrWagon_c::ignite() {
 // Telma's coach's fire, by how far gone the wagon is; once it's a wreck it dies down to smoke.
 void psrWagon_c::updateFire() {
     int want = 0;   // how many of the effects burn
-    if (mWrecked) {
+    if (mWrecked && mBlaze > 0) {
+        --mBlaze;
+        want = 10;
+        if (kBlazeFrames - mBlaze >= kCharAfter) mCharred = true;
+    } else if (mWrecked) {
+        mCharred = true;
         if (mSmoke > 0) --mSmoke;
         want = mSmoke > kSmokeFrames / 2 ? 6 : (mSmoke > 0 ? 3 : 0);
     } else if (mBurning) {
@@ -340,13 +357,34 @@ int psrWagon_c::Draw() {
     J3DModel* list[12] = {};
     int n = 0;
     list[n++] = mpHorse->getModel();   // (drawn below, through its own morf, unless it ran off)
-    if (mKind == PSR_WAGON_ROYAL) {
+    // the burnt-out wreck, when every piece of it is there (else the normal look stays)
+    bool burnt = mCharred && mpBurnt[0] != nullptr && mpBurnt[1] != nullptr && mpBurnt[2] != nullptr;
+    if (burnt && mKind == PSR_WAGON_ROYAL) {
+        for (int i = 3; i < 7; i++) burnt = burnt && mpBurnt[i] != nullptr;
+    }
+    if (burnt) {
+        if (mKind == PSR_WAGON_ROYAL) {
+            for (int i = 0; i < 7; i++) {   // each where its royal piece is
+                mpBurnt[i]->setBaseTRMtx(mpRoyal[i]->getBaseTRMtx());
+                list[n++] = mpBurnt[i];
+            }
+        } else {
+            mpBurnt[0]->setBaseTRMtx(mCoachMtx);
+            mpBurnt[2]->setBaseTRMtx(mCoachMtx);
+            mpBurnt[1]->setBaseTRMtx(mHarnessMtx);
+            for (int i = 0; i < 3; i++) list[n++] = mpBurnt[i];
+        }
+    } else if (mKind == PSR_WAGON_ROYAL) {
         for (int i = 0; i < 7; i++) list[n++] = mpRoyal[i];
     } else {
         list[n++] = mpHarness;
         list[n++] = mpCoach;
     }
-    if (mpCargo != nullptr) list[n++] = mpCargo;
+    J3DModel* cargo = burnt && mpBurnt[7] != nullptr ? mpBurnt[7] : mpCargo;
+    if (cargo != nullptr) {
+        if (cargo != mpCargo) cargo->setBaseTRMtx(mCoachMtx);
+        list[n++] = cargo;
+    }
     for (int i = 0; i < n; i++) g_env_light.setLightTevColorType_MAJI(list[i], &tevStr);
     if (!mHorseGone) mpHorse->entryDL();
     for (int i = 1; i < n; i++) mDoExt_modelUpdateDL(list[i]);

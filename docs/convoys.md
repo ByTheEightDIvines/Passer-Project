@@ -68,7 +68,24 @@ so nothing below has been played yet.
   wall 1/2, guard camp bridge out/back, gorge/west/royal convoy) with a placeholder line each. Not
   hooked to talking yet: that comes with the real lines.
 
+- **First test fixes (2026-11-18):**
+  - Convoys: the first time a kind is open in a play session, one is already partway along its road
+    (they used to start at their gates on a random delay, so the user never met one). Every 10 s each
+    convoy writes a `convoy` line to `travellers_diag.log` (where, stage, Link's distance, open, shown).
+  - Boars (`E_WB`) are neutral: never a target, never fled from, never hunting; a Bulblin up on a boar
+    (`E_RD` with `ride_mode` != 0) is always in reach, and a blow at him goes up to his height (it used
+    to land on the boar: 100+ blows on boars in the diag log, hp never moving).
+  - A walker standing on the end of its path (the swordsman guard spawned on his seat) now arrives; it
+    used to loop "stuck" with a question mark forever.
+  - Guards' shields: on the back, upright, crest out, whenever they sit (camp or wagon bench). Seated,
+    the sit animation turned the hand over and the shield came out upside down. In a fight the shields
+    use the castle soldiers' own fight holds.
+  - Wagons: destroyed by anything, a wagon blazes for 10 s, turns into the burnt-out wreck 1.5 s in (the
+    approved look; `PsrWagon.arc` `*_burnt.bmd`, made by `tools/convoy/make_burnt.py`, `burn.py`,
+    `burnt_cover.py`), then smoulders.
+
 ## Still to do
+0. **Voices: tune every NPC's voice** (the user's polish item, last).
 1. **Dialogue:** write the lines, then hook `spotFor` into the talk marker.
 2. **Riders' cutscene sit poses** (A/C/D/E/F), if wanted; riders use the bench sit for now.
 3. **In-game test** (the user's final test): Telma's escort untouched, the long road's data hole,

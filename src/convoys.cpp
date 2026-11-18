@@ -242,6 +242,7 @@ void* foeSub(void* p, void* data) {
     if (!fopAcM_IsActor(p)) return nullptr;
     auto* a = static_cast<fopAc_ac_c*>(p);
     if (fopAcM_GetGroup(a) != fopAc_ENEMY_e || a->health <= 0) return nullptr;
+    if (fopAcM_GetName(a) == fpcNm_E_WB_e) return nullptr;   // a boar is no foe: its rider is
     auto* n = static_cast<NearFoe*>(data);
     const f32 dx = a->current.pos.x - n->at.x, dz = a->current.pos.z - n->at.z;
     if (dx * dx + dz * dz < n->r2) { n->found = true; return p; }
@@ -343,13 +344,13 @@ void putAway(std::vector<Member>& crew) {
     for (Member& m : crew) travellers::crewDespawn(m.slot);
 }
 
-void startConvoy(Convoy& c, Kind kind) {
+void startConvoy(Convoy& c, Kind kind, f32 along = 0.0f) {
     c = Convoy{};
     c.active = true;
     c.kind = kind;
     c.road = kind == K_GORGE ? 0 : (kind == K_ROYAL ? 1 : 2);
     c.reverse = kind == K_ROYAL;
-    c.s = 0.0f;
+    c.s = along;
     staffConvoy(c);
     char line[96];
     std::snprintf(line, sizeof(line), "convoys: a %s convoy sets off", kind == K_GORGE ? "gorge" : (kind == K_WEST ? "west-gate" : "royal"));
@@ -376,7 +377,12 @@ void tickConvoy(Convoy& c) {
     const s32 now = gameMinutes();
     if (!c.active) {
         if (!kindOpen(c.kind)) return;
-        if (c.nextAt < 0) c.nextAt = now + static_cast<s32>(rnd() % static_cast<u32>(kindEvery(c.kind)));
+        if (c.nextAt < 0) {
+            // the first time this kind is on the roads in a play session: one is already out there,
+            // somewhere along its road (not all waiting at their gates for the clock)
+            startConvoy(c, c.kind, roadLength(c.road) * (0.1f + 0.8f * static_cast<f32>(rnd() % 1000u) / 1000.0f));
+            return;
+        }
         // a new day's date can come back smaller (a new file): don't wait for ever
         if (c.nextAt - now > kindEvery(c.kind) * 2) c.nextAt = now;
         if (now >= c.nextAt) startConvoy(c, c.kind);
@@ -388,6 +394,12 @@ void tickConvoy(Convoy& c) {
     roadAt(c.road, c.reverse, c.s, &pos, &yaw, &room);
     // (only in the stage Link is in: crossing a loading zone it drives through it, like he does)
     const bool open = worldOpen() && !dComIfGp_event_runCheck() && stageAt(c.road, c.reverse, c.s) == curStage();
+    if ((g_frame % 300) == 0) {
+        travellers::diagLine("convoy  %s %.0f/%.0f at (%.0f %.0f) room %d stage %d/%d link %.0f open %d disp %d real %d halted %d wrecked %d",
+                             c.kind == K_GORGE ? "gorge" : (c.kind == K_WEST ? "west" : "royal"), c.s, roadLength(c.road),
+                             pos.x, pos.z, room, stageAt(c.road, c.reverse, c.s), curStage(), linkDist(pos), open,
+                             dComIfGp_roomControl_checkRoomDisp(room), c.real, c.halted, c.wrecked);
+    }
     psrWagon_c* w = wagonOf(c.wagon);
 
     // out in the world, or back on paper
