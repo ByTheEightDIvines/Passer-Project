@@ -29,6 +29,7 @@
 #include "camp_music.hpp"
 #include "mod_sounds.hpp"
 #include "shop_stage.hpp"
+#include "shop_lamps.hpp"
 #include "soul_actor.hpp"
 #include "note_actor.hpp"
 #include "bubble_actor.hpp"
@@ -3210,6 +3211,9 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     }
     if (psr_soul::registerActor() != MOD_OK) {
         return mods::set_error(error, MOD_ERROR, "failed to register the soul actor");
+    }
+    if (psr_shop_lamps::registerActor() != MOD_OK) {
+        svc_log->info(mod_ctx, "shop lantern actor unavailable; Beedle's shop has no lanterns");
     }
     if (psr_tent::registerActor() != MOD_OK) {
         return mods::set_error(error, MOD_ERROR, "failed to register the tent actor");
