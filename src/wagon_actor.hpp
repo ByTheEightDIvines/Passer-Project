@@ -20,6 +20,7 @@ constexpr u32 kPsrWagonDriven = 0x100;
 
 class J3DModel;
 class mDoExt_McaMorfSO;
+class JPABaseEmitter;
 
 class psrWagon_c : public fopAc_ac_c {
 public:
@@ -42,11 +43,29 @@ public:
     f32 mSpeed = 0.0f;                   // the convoy's speed this frame (units a frame)
     int mAnim = -1;
     bool mPlaced = false;
+    // damage: monsters at it, and fire (a Bulblin's fire arrow in the wood) that burns it down
+    static constexpr int kMaxDamage = 255;
+    int mDamage = 0;
+    int mBurnTick = 0;
+    bool mBurning = false;
+    bool mWrecked = false;          // burnt out or smashed: a wreck that stays where it is
+    bool mLoose = false;            // the horse broke loose and runs on its own
+    cXyz mHarnessPos;               // where the harness was left when the horse broke loose
+    s16 mHarnessYaw = 0;
+    JPABaseEmitter* mFx[10] = {};
+    int mSmoke = 0;                 // frames the wreck still smokes
+    bool mHorseGone = false;        // the loose horse ran off out of sight
+
+    void addDamage(int amount);
+    void ignite();
+    bool wrecked() const { return mWrecked; }
+    void updateFire();
 
     // Set by the convoy each frame while driven: where the horse is and which way it faces.
     void driveTo(const cXyz& horse, s16 yaw, f32 speed);
     // Spots on the wagon in the world: the driver's bench (seat 0 left, 1 right) and the hitch.
     cXyz benchSeat(int seat) const;
+    cXyz middle() const;          // the middle of the wagon's bed
     s16 coachYaw() const { return mCoachYaw; }
     s16 frontWheelSpin() const { return mFrontSpin; }
     s16 rearWheelSpin() const { return mRearSpin; }

@@ -90,6 +90,8 @@ struct Convoy {
     bool halted = false;
     int calm = 0;
     s32 nextAt = -1;              // game minute the next one sets off
+    bool wrecked = false;         // its wagon was burnt out or smashed: the convoy's over
+    f32 horseS = 0.0f;            // the loose horse, running on down the road
 };
 std::array<Convoy, K_NUM> g_convoys{};
 
@@ -199,9 +201,13 @@ fpc_ProcID makeWagon(u8 kind, bool driven, const cXyz& at, s16 yaw, s8 room) {
     return fopAcM_create(psrWagon_c::sProcName, params, &pos, room, &angle, nullptr, -1);
 }
 
-void dropWagon(fpc_ProcID& id) {
+// Take a wagon out. One still loading can't be taken yet: false (try again next frame).
+bool dropWagon(fpc_ProcID& id) {
+    if (id == fpcM_ERROR_PROCESS_ID_e) return true;
+    if (fpcM_IsCreating(id)) return false;
     if (auto* a = fopAcM_SearchByID(id)) fopAcM_delete(a);
     id = fpcM_ERROR_PROCESS_ID_e;
+    return true;
 }
 
 // a monster near this spot (alive, an enemy)
@@ -324,9 +330,9 @@ void startConvoy(Convoy& c, Kind kind) {
 }
 
 void endConvoy(Convoy& c, int every) {
+    if (!dropWagon(c.wagon)) return;   // still loading: next frame
     putAway(c.crew);
     releaseCrew(c.crew);
-    dropWagon(c.wagon);
     c.active = false;
     c.real = false;
     c.nextAt = gameMinutes() + every;
@@ -365,12 +371,41 @@ void tickConvoy(Convoy& c) {
             c.calm = 0;
         }
     } else if (!open || linkDist(pos) > kHideRadius || (w == nullptr && !fpcM_IsCreating(c.wagon))) {
+        if (!dropWagon(c.wagon)) return;   // still loading: next frame
         putAway(c.crew);
-        dropWagon(c.wagon);
         c.real = false;
         w = nullptr;
+        if (c.wrecked) {   // the wreck is left behind out of sight: that convoy is over
+            endConvoy(c, kindEvery(c.kind));
+            return;
+        }
     }
 
+    if (c.real && w != nullptr && (c.wrecked || w->wrecked())) {
+        if (!c.wrecked) {
+            // burnt out or smashed: everyone jumps down and runs (the fighters may stand), the horse
+            // breaks loose and bolts on down the road
+            c.wrecked = true;
+            c.horseS = c.s;
+            for (Member& m : c.crew) {
+                travellers::crewHold(m.slot, false);
+                if (auto* a = travellers::crewActor(m.slot)) {
+                    if (m.role == R_RIDER || !travellers::isFighter(a)) travellers::startFlee(a, w->middle());
+                    else travellers::resumeWalk(a);
+                }
+            }
+            svc_log->info(mod_ctx, "convoys: a wagon is wrecked");
+        }
+        if (!w->mHorseGone) {
+            c.horseS += 18.0f;
+            cXyz hp;
+            s16 hy;
+            roadAt(c.road, c.reverse, c.horseS, &hp, &hy, nullptr);
+            w->driveTo(hp, hy, 18.0f);
+            if (c.horseS - c.s > 2500.0f && outOfSight(hp)) w->mHorseGone = true;   // gone, out of sight
+        }
+        return;
+    }
     if (c.real && w != nullptr) {
         bringOut(c.crew, w, room);
         // monsters: stop, and the escorts go for them; quiet for a while: fall back in and go on
@@ -383,6 +418,7 @@ void tickConvoy(Convoy& c) {
                 c.calm += 10;
             }
             if (c.halted && c.calm >= kCalmFrames) c.halted = false;
+            if (c.halted && foeNear(w->middle(), 450.0f)) w->addDamage(2);   // monsters at the wagon itself
             for (Member& m : c.crew) {
                 if (m.role != R_ESCORT || m.fighting == c.halted) continue;
                 m.fighting = c.halted;
@@ -428,8 +464,8 @@ void tickNod() {
         const Parked& p = kParked[g_nod.which];
         const bool far = linkDist(p.pos) > kHideRadius;
         if (!open || want != g_nod.which || far || (w == nullptr && !fpcM_IsCreating(g_nod.wagon))) {
+            if (!dropWagon(g_nod.wagon)) return;   // still loading: next frame
             putAway(g_nod.crew);
-            dropWagon(g_nod.wagon);
             g_nod.which = -1;
             if (want < 0) releaseCrew(g_nod.crew);   // both walls are gone: so are they
             return;

@@ -2149,6 +2149,7 @@ void diagLine(const char* fmt, ...) {
 
 // --- convoy people ------------------------------------------------------------------------------
 constexpr int kCrewFirst = kPopulation + static_cast<int>(kGuardCast.size());
+void crewDespawn(int slot);
 
 int crewClaim(u8 type) {
     for (int s = kCrewFirst; s < kSlots; ++s) {
@@ -2166,9 +2167,8 @@ int crewClaim(u8 type) {
 
 void crewRelease(int slot) {
     if (slot < kCrewFirst || slot >= kSlots || !g_t[slot].crew) return;
-    Traveller& t = g_t[slot];
-    if (t.spawned) despawn(t, fopAcM_SearchByID(t.actor));
-    t = Traveller{};
+    crewDespawn(slot);
+    g_t[slot] = Traveller{};
 }
 
 bool crewSpawn(int slot, const cXyz& pos, s16 yaw, s8 room) {
@@ -2193,7 +2193,15 @@ bool crewSpawn(int slot, const cXyz& pos, s16 yaw, s8 room) {
 void crewDespawn(int slot) {
     if (slot < kCrewFirst || slot >= kSlots || !g_t[slot].crew) return;
     Traveller& t = g_t[slot];
-    if (t.spawned) despawn(t, fopAcM_SearchByID(t.actor));
+    if (!t.spawned) return;
+    if (fpcM_IsCreating(t.actor)) {   // still loading: it's deleted the moment it's made
+        addOrphan(t.actor);
+        t.spawned = false;
+        t.registered = false;
+        t.actor = fpcM_ERROR_PROCESS_ID_e;
+        return;
+    }
+    despawn(t, fopAcM_SearchByID(t.actor));
 }
 
 daNpcPasser_c* crewActor(int slot) {

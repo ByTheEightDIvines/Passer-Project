@@ -16,6 +16,8 @@
 #include "m_Do/m_Do_mtx.h"
 #include "JSystem/J3DGraphBase/J3DSys.h"
 #include "JSystem/J3DGraphAnimator/J3DModel.h"
+#include "JSystem/JParticle/JPAEmitter.h"
+#include "traveller_gear.hpp"
 #include "mods/service.hpp"
 #include "mods/svc/log.h"
 
@@ -67,6 +69,21 @@ int rearWheelCB(J3DJoint* joint, int calc) {
     return 1;
 }
 
+// The fire Telma's coach burns with (its own effects): the more damage, the more of them.
+constexpr u16 kFireFx[10] = {0x85F0, 0x85EF, 0x85E7, 0x85E8, 0x85E9, 0x85EA, 0x85EB, 0x85EC, 0x85ED, 0x85EE};
+constexpr int kCoachBody = 4;            // the wagon model's body joint (the fire follows it)
+constexpr int kBurnEvery = 6;            // a burning wagon takes 1 damage this often (about 50 s to burn out)
+constexpr int kSmokeFrames = 30 * 40;    // the wreck smoulders this long
+
+// A Bulblin's arrow in the wagon's wood sets it alight (ours, the bowman's, never do).
+void arrowStick(dBgW*, fopAc_ac_c* self, fopAc_ac_c* arrow, cXyz&) {
+    if (arrow == nullptr || fopAcM_GetName(arrow) != fpcNm_E_ARROW_e) return;
+    if (traveller_gear::isOurArrow(arrow)) return;
+    static_cast<psrWagon_c*>(self)->ignite();
+    static_cast<psrWagon_c*>(self)->addDamage(8);
+    fopAcM_delete(arrow);
+}
+
 f32 groundAt(const cXyz& p, f32 above = 400.0f) {
     dBgS_ObjGndChk gnd;
     cXyz probe(p.x, p.y + above, p.z);
@@ -81,6 +98,9 @@ J3DModel* loadModel(const char* arc, const char* name) {
 }  // namespace
 
 psrWagon_c::~psrWagon_c() {
+    for (JPABaseEmitter*& e : mFx) {
+        if (e != nullptr) { e->becomeInvalidEmitter(); e = nullptr; }
+    }
     if (mpBgCoach != nullptr) dComIfG_Bgsp().Release(mpBgCoach);
     if (mpBgHarness != nullptr) dComIfG_Bgsp().Release(mpBgHarness);
     dComIfG_resDelete(&mPhaseCoach, kCoachArc);
@@ -147,6 +167,7 @@ int psrWagon_c::CreateHeap() {
         mpBgCoach = nullptr;
     } else {
         mpBgCoach->SetCrrFunc(dBgS_MoveBGProc_Typical);
+        mpBgCoach->SetArrowStickCallback(arrowStick);
     }
     mpBgHarness = JKR_NEW dBgW();
     if (mpBgHarness == nullptr) return 0;
@@ -164,6 +185,53 @@ void psrWagon_c::driveTo(const cXyz& horse, s16 yaw, f32 speed) {
     mSpeed = speed;
 }
 
+cXyz psrWagon_c::middle() const {
+    mDoMtx_stack_c::copy(const_cast<psrWagon_c*>(this)->mCoachMtx);
+    cXyz local(0.0f, 60.0f, -170.0f), out;
+    mDoMtx_stack_c::multVec(&local, &out);
+    return out;
+}
+
+void psrWagon_c::addDamage(int amount) {
+    if (mWrecked) return;
+    mDamage = std::min(kMaxDamage, mDamage + amount);
+    if (mDamage >= kMaxDamage) {
+        mWrecked = true;
+        mLoose = true;
+        mSmoke = kSmokeFrames;
+    }
+}
+
+void psrWagon_c::ignite() {
+    if (!mWrecked) mBurning = true;
+}
+
+// Telma's coach's fire, by how far gone the wagon is; once it's a wreck it dies down to smoke.
+void psrWagon_c::updateFire() {
+    int want = 0;   // how many of the effects burn
+    if (mWrecked) {
+        if (mSmoke > 0) --mSmoke;
+        want = mSmoke > kSmokeFrames / 2 ? 6 : (mSmoke > 0 ? 3 : 0);
+    } else if (mBurning) {
+        want = 4 + mDamage * 6 / kMaxDamage;
+    }
+    cXyz at;
+    mDoMtx_stack_c::copy(mpCoach->getAnmMtx(kCoachBody));
+    mDoMtx_stack_c::multVecZero(&at);
+    const csXyz rot(0, mCoachYaw, 0);
+    for (int i = 2; i < 10; i++) {
+        const bool on = i < want;
+        if (on && mFx[i] == nullptr) {
+            mFx[i] = dComIfGp_particle_set(kFireFx[i], &at, &rot, nullptr);
+            if (mFx[i] != nullptr) mFx[i]->becomeImmortalEmitter();
+        } else if (!on && mFx[i] != nullptr) {
+            mFx[i]->becomeInvalidEmitter();
+            mFx[i] = nullptr;
+        }
+        if (mFx[i] != nullptr) mFx[i]->setGlobalRTMatrix(mpCoach->getAnmMtx(kCoachBody));
+    }
+}
+
 cXyz psrWagon_c::benchSeat(int seat) const {
     mDoMtx_stack_c::copy(const_cast<psrWagon_c*>(this)->mCoachMtx);
     cXyz local(seat == 0 ? -kBenchHalf : kBenchHalf, kBenchY, kBenchZ), out;
@@ -174,8 +242,12 @@ cXyz psrWagon_c::benchSeat(int seat) const {
 // Horse at the actor; harness on it; the wagon on the hitch, trailing behind it toward its rear axle
 // (so it swings round the bends after the horse, the way a wagon does).
 void psrWagon_c::placeParts() {
-    const f32 sy = cM_ssin(shape_angle.y), cy = cM_scos(shape_angle.y);
-    const cXyz hitch(current.pos.x + sy * kHitchZ, current.pos.y + kHitchY, current.pos.z + cy * kHitchZ);
+    if (!mLoose) {
+        mHarnessPos = current.pos;
+        mHarnessYaw = shape_angle.y;
+    }
+    const f32 sy = cM_ssin(mHarnessYaw), cy = cM_scos(mHarnessYaw);
+    const cXyz hitch(mHarnessPos.x + sy * kHitchZ, mHarnessPos.y + kHitchY, mHarnessPos.z + cy * kHitchZ);
     if (!mPlaced) {
         mRear.set(hitch.x + sy * kRearAxleZ, hitch.y, hitch.z + cy * kRearAxleZ);
         mPlaced = true;
@@ -196,6 +268,8 @@ void psrWagon_c::placeParts() {
     mDoMtx_stack_c::transS(current.pos);
     mDoMtx_stack_c::YrotM(shape_angle.y);
     mpHorse->getModel()->setBaseTRMtx(mDoMtx_stack_c::get());
+    mDoMtx_stack_c::transS(mHarnessPos);
+    mDoMtx_stack_c::YrotM(mHarnessYaw);
     mpHarness->setBaseTRMtx(mDoMtx_stack_c::get());
     cMtx_copy(mDoMtx_stack_c::get(), mHarnessMtx);
     if (mKind == PSR_WAGON_ROYAL) mpRoyal[1]->setBaseTRMtx(mDoMtx_stack_c::get());
@@ -236,8 +310,12 @@ void psrWagon_c::setHorseAnim() {
 
 int psrWagon_c::Execute() {
     if (!mDriven) mSpeed = 0.0f;
+    if (mBurning && !mWrecked && ++mBurnTick >= kBurnEvery) {
+        mBurnTick = 0;
+        addDamage(1);
+    }
     // the wheels roll by the distance covered
-    const f32 d = mSpeed;
+    const f32 d = mLoose ? 0.0f : mSpeed;   // a wreck's wheels don't turn
     mFrontSpin = static_cast<s16>(mFrontSpin + static_cast<s32>(d / kFrontWheelR * 10430.38f));
     mRearSpin = static_cast<s16>(mRearSpin + static_cast<s32>(d / kRearWheelR * 10430.38f));
     if (mDriven) {
@@ -250,6 +328,7 @@ int psrWagon_c::Execute() {
     placeParts();
     mpHorse->play(0, 0);
     mpHorse->modelCalc();
+    updateFire();
     eyePos = current.pos;
     eyePos.y += 200.0f;
     attention_info.position = eyePos;
@@ -260,7 +339,7 @@ int psrWagon_c::Draw() {
     g_env_light.settingTevStruct(0, &current.pos, &tevStr);
     J3DModel* list[12] = {};
     int n = 0;
-    list[n++] = mpHorse->getModel();
+    list[n++] = mpHorse->getModel();   // (drawn below, through its own morf, unless it ran off)
     if (mKind == PSR_WAGON_ROYAL) {
         for (int i = 0; i < 7; i++) list[n++] = mpRoyal[i];
     } else {
@@ -269,7 +348,7 @@ int psrWagon_c::Draw() {
     }
     if (mpCargo != nullptr) list[n++] = mpCargo;
     for (int i = 0; i < n; i++) g_env_light.setLightTevColorType_MAJI(list[i], &tevStr);
-    mpHorse->entryDL();
+    if (!mHorseGone) mpHorse->entryDL();
     for (int i = 1; i < n; i++) mDoExt_modelUpdateDL(list[i]);
     return 1;
 }
