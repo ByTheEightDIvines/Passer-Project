@@ -12,9 +12,9 @@
 
 namespace travellers {
 
-constexpr int kSlots = 48;               // travellers, guards, convoy people (and real actors at most)
-constexpr int kWalkPathBase = 0x40;       // path IDs 0x40..0x6F: each slot's walking path
-constexpr int kFleePathBase = 0x80;       // path IDs 0x80..0xAF: each slot's flee path
+constexpr int kSlots = 64;               // travellers, guards, convoy people (and real actors at most)
+constexpr int kWalkPathBase = 0x40;       // path IDs 0x40..0x7F: each slot's walking path
+constexpr int kFleePathBase = 0x80;       // path IDs 0x80..0xBF: each slot's flee path
 
 void initialize();
 void update();                            // once per frame (mod_update)
@@ -36,7 +36,7 @@ daNpcPasser_c* crewActor(int slot);       // their actor while out, else nullptr
 void crewHold(int slot, bool held);       // placed by hand (true) or left to the passer AI (false)
 bool crewDead(int slot);
 bool crewHeld(const fopAc_ac_c* passer);
-bool isGuard(const fopAc_ac_c* actor);   // one of the three camp guards
+bool isGuard(const fopAc_ac_c* actor);   // one of the camp guards
 bool isBeedle(const fopAc_ac_c* actor);  // Beedle, wandering the field (his own look, never scared, runs fast)
 bool isCrew(const fopAc_ac_c* passer);
 // A guard's arms: 0 none (not a guard), 1 spear and tall shield, 2 sword and small shield, 3 sword,

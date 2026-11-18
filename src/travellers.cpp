@@ -53,8 +53,8 @@ enum EdgeFlag : u8 { EF_ESCORT = 1, EF_NEEDS_BRIDGE = 2, EF_NO_BEEDLE = 4, EF_HA
 constexpr int kPopulation = 30;              // travellers on the network
 // The guards at their camp by the Bridge of Eldin, in the slots after the travellers: Castle Town's
 // own guard bodies (Cd2 type 1 MAD_a, type 0 MAN_a), there once Castle Town's twilight is lifted.
-constexpr std::array<u8, 3> kGuardCast{1, 0, 0};
-constexpr std::array<u8, 3> kGuardStyle{1, 1, 2};   // two spearmen and a swordsman
+constexpr std::array<u8, 6> kGuardCast{1, 0, 0, 1, 0, 1};
+constexpr std::array<u8, 6> kGuardStyle{1, 1, 2, 2, 1, 2};   // three spearmen and three swordsmen
 constexpr f32 kVirtualSpeed = 4.0f;          // units per frame while not spawned (about a walk)
 // A traveller only ever appears from its room's spawner: everyone in a room when it loads, and
 // after that whoever walks in from somewhere that isn't loaded. Those late arrivals wait (walking on
@@ -69,6 +69,7 @@ constexpr int kMaxReal = 16;                 // safety cap on real travellers at
 constexpr int kCampSeats = 5;                // seats around each camp fire
 constexpr int kMaxCampFighters = 2;         // at most this many fighters sit at one fire
 constexpr int kBowman = 8;                   // passer 8 (bow and sword): only one out in a room at a time
+constexpr int kGuardSeats = 8;               // the guards' fire (six guards, room to spare)
 constexpr int kAmphiSeats = 6;               // the amphitheater by Castle Town is a bit bigger
 constexpr int kMaxSeats = 10;
 constexpr int kGoneCooldownMin = 1800;       // frames (30-90 s) before a traveller the game deleted
@@ -524,7 +525,10 @@ int guardCampNode() {
     return -1;
 }
 
-int campSeats(int campNode) { return campNode == amphitheaterNode() ? kAmphiSeats : kCampSeats; }
+int campSeats(int campNode) {
+    if (campNode == guardCampNode()) return kGuardSeats;
+    return campNode == amphitheaterNode() ? kAmphiSeats : kCampSeats;
+}
 
 int seatsTaken(int campNode) {
     int n = 0;
@@ -1428,6 +1432,7 @@ void bedTick(Traveller& t) {
 
 // --- the guards' camp: their red wall tent behind the fire, the pennant on its ridge -------------
 constexpr f32 kGuardTentBack = 930.0f;    // fire to tent middle (the tent's half depth is 580)
+constexpr f32 kGuardTentSide = 1150.0f;   // fire to each side tent's middle
 constexpr f32 kPennantScale = 0.3f;
 constexpr u32 kPennantPole = 0x000C;      // @bg000c: Castle Town's pennant pole (its spec height is 500)
 constexpr s16 kPennantCloth = 1;          // FlagObj01: the orange crest
@@ -1489,6 +1494,15 @@ void updateCamps(int stage, const cXyz& link) {
                 if (y != -G_CM3D_F_INF && std::fabs(y - at.y) < 150.0f) at.y = y;
                 spawnTent(c, PSR_TENT_GUARD, at, face, n.room);
                 spawnPennant(c, at, face, n.room);
+                // two more tents for the bigger watch: either side of the fire, doors turned to it
+                for (int side = -1; side <= 1; side += 2) {
+                    const s16 sideFace = static_cast<s16>(face + side * 0x4000);   // pointing out to that side
+                    cXyz t2(mid.x + cM_ssin(sideFace) * kGuardTentSide, mid.y, mid.z + cM_scos(sideFace) * kGuardTentSide);
+                    const f32 y2 = probeGround(t2.x, t2.y, t2.z);
+                    if (y2 == -G_CM3D_F_INF || std::fabs(y2 - t2.y) > 150.0f) continue;   // no good ground there
+                    t2.y = y2;
+                    spawnTent(c, PSR_TENT_GUARD, t2, static_cast<s16>(sideFace + 0x8000), n.room);
+                }
             } else if (n.kind == NK_BEEDLE) {
                 TentSpot b{mid, face, 0.0f, 0.0f};
                 findBeedleSpot(mid, face, &b);

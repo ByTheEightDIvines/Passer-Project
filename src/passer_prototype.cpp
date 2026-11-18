@@ -2002,6 +2002,8 @@ void musicTick(daNpcPasser_c* passer, PasserState& state, bool busy) {
 // dead or gone), everyone else cowers where they sit until it's been quiet for a few seconds.
 constexpr f32 kCampGuardRadius = 1500.0f;   // an enemy this close to the fire wakes the camp
 constexpr f32 kCampLeashRadius = 2200.0f;   // a defender chases it this far from the fire
+constexpr f32 kGuardWakeRadius = 3500.0f;   // the camp guards: a monster this near their camp
+constexpr f32 kGuardLeashRadius = 5000.0f;  // ...and they chase it this far
 constexpr f32 kStrikeReach = 150.0f;
 constexpr f32 kLimpSpeed = 0.6f;
 constexpr f32 kHurtFleeSpeed = 0.65f;       // fleeing on the last heart: this much of a full run
@@ -2384,8 +2386,12 @@ bool campGuard(daNpcPasser_c* passer, PasserState& state) {
     }
     if (state.casting != 0) return true;   // an old woman casting: that comes first
     const bool fighter = travellers::isFighter(passer);
-    const f32 guardRadius = state.defending ? kCampLeashRadius : kCampGuardRadius;
-    auto* enemy = nearestEnemyAt(center, guardRadius, fighter ? kReachAbove : 1.0e9f);
+    // The camp guards are soldiers: they go for anything that comes anywhere near their camp, mounted
+    // Bulblins included (a rider sits higher than the other fighters will reach for), and chase it far.
+    const bool guard = travellers::isGuard(passer);
+    const f32 guardRadius = guard ? (state.defending ? kGuardLeashRadius : kGuardWakeRadius)
+                                  : (state.defending ? kCampLeashRadius : kCampGuardRadius);
+    auto* enemy = nearestEnemyAt(center, guardRadius, fighter && !guard ? kReachAbove : 1.0e9f);
     // the wolf at the fire: the fighters go for him; everyone else cowers as from any monster
     enemy = nearerFoe(center, enemy, wolfLinkNear(center, guardRadius));
     if (fighter && wolfShy(passer) && enemy == dComIfGp_getPlayer(0)) enemy = nullptr;
@@ -2420,7 +2426,7 @@ bool campGuard(daNpcPasser_c* passer, PasserState& state) {
                 // startled, drawing or mid-swing: it stays where it is until that's done
             } else if (dist > kStrikeReach) {
                 guardAnim(passer, state, kAnmRun);
-                stepToward(passer, enemy->current.pos, Cd2_HIO_maxSpeed(passer->m_type) * 1.5f);
+                stepToward(passer, enemy->current.pos, Cd2_HIO_maxSpeed(passer->m_type) * (guard ? 1.9f : 1.5f));
             } else {
                 guardAnim(passer, state, kAnmIdle);
                 const s16 yaw = cLib_targetAngleY(&passer->current.pos, &enemy->current.pos);
@@ -2789,6 +2795,8 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
 
 // A fighter stands its ground while it has more than one heart left.
 bool holdsGround(const daNpcPasser_c* passer) {
+    // the camp guards never run, however hurt; other fighters do on their last heart
+    if (travellers::isGuard(passer)) return true;
     return travellers::isFighter(passer) && travellers::life(passer) > kQuartersPerHeart;
 }
 
