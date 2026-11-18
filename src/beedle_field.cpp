@@ -2,8 +2,8 @@
 //
 // The ware: one a day (the save's day count picks it), from the wares Link can use so far (a bow for
 // arrows, a bomb bag for bombs, Lanayru cleared for water bombs, the Master Sword for bomblings, a
-// bottle for potions, milk and oil, the lantern for oil, Kakariko's shop open for the Hylian Shield and
-// the Hawkeye). Prices: the game's usual shop price, 5 Rupees cheaper (it's Beedle).
+// bottle for potions, milk, oil and bee larva, the lantern for oil, the slingshot for seeds). Prices: the
+// game's usual shop price, 5 Rupees cheaper (it's Beedle).
 // The talk (a flow of our own per ware): the offer with a choice -> our check (enough Rupees? room?)
 // -> our purchase (Rupees off, the ware given as the game gives it) -> "THANK YOU!" (his voice);
 // "GOODBYE!" (his voice) as the talk ends. While he talks: his Wind Waker talking (upper body).
@@ -28,7 +28,7 @@
 #include <vector>
 
 namespace {
-enum Kind : u8 { K_ARROWS, K_BOMBS, K_WATER, K_POKE, K_BOTTLE, K_SHIELD, K_HAWK };
+enum Kind : u8 { K_ARROWS, K_BOMBS, K_WATER, K_POKE, K_BOTTLE, K_SHIELD, K_LARVA, K_SEEDS };
 struct Ware {
     const char* name;   // as he says it
     u16 price;          // the usual price - 5
@@ -45,8 +45,8 @@ constexpr std::array<Ware, 11> kWares{{
     {"Lantern Oil", 15, K_BOTTLE, dItemNo_OIL_BOTTLE_e},         // 20
     {"Milk", 15, K_BOTTLE, dItemNo_MILK_BOTTLE_e},               // 20
     {"a Wooden Shield", 45, K_SHIELD, dItemNo_WOOD_SHIELD_e},    // 50
-    {"a Hylian Shield", 195, K_SHIELD, dItemNo_HYLIA_SHIELD_e},  // 200 (Malo Mart)
-    {"the Hawkeye", 95, K_HAWK, dItemNo_HAWK_EYE_e},             // 100 (Malo Mart)
+    {"Bee Larva", 5, K_LARVA, dItemNo_BEE_CHILD_e},              // 10 (Sera's Sundries), a bottle of 10
+    {"50 Seeds", 5, K_SEEDS, dItemNo_PACHINKO_SHOT_e},           // (no shop sells them: 10, as a pack of arrows)
 }};
 constexpr int kWareCount = static_cast<int>(kWares.size());
 
@@ -92,8 +92,9 @@ bool unlocked(const Ware& w) {
     case K_WATER: return has(dItemNo_BOMB_BAG_LV1_e) && travellers::lanayruCleared();
     case K_POKE: return has(dItemNo_BOMB_BAG_LV1_e) && has(dItemNo_MASTER_SWORD_e);
     case K_BOTTLE: return has(dItemNo_EMPTY_BOTTLE_e) && (w.item != dItemNo_OIL_BOTTLE_e || has(dItemNo_KANTERA_e));
-    case K_SHIELD: return w.item == dItemNo_WOOD_SHIELD_e || travellers::eldinCleared();
-    case K_HAWK: return has(dItemNo_BOW_e) && travellers::eldinCleared();
+    case K_SHIELD: return true;
+    case K_LARVA: return has(dItemNo_EMPTY_BOTTLE_e);
+    case K_SEEDS: return has(dItemNo_PACHINKO_e);
     }
     return false;
 }
@@ -104,9 +105,9 @@ bool room(const Ware& w) {
     case K_ARROWS: return dComIfGs_getArrowNum() < dComIfGs_getArrowMax();
     case K_BOMBS: case K_WATER: case K_POKE: return bagRoom(bombTypeOf(w.kind), countOf(w));
     case K_BOTTLE: return dComIfGs_checkEmptyBottle() > 0;
-    case K_SHIELD:
-        return !dComIfGs_isCollectShield(w.item == dItemNo_HYLIA_SHIELD_e ? COLLECT_HYLIAN_SHIELD : COLLECT_WOODEN_SHIELD);
-    case K_HAWK: return !has(dItemNo_HAWK_EYE_e);
+    case K_SHIELD: return !dComIfGs_isCollectShield(COLLECT_WOODEN_SHIELD);
+    case K_LARVA: return dComIfGs_checkEmptyBottle() > 0;
+    case K_SEEDS: return dComIfGs_getPachinkoNum() < dComIfGs_getPachinkoMax();
     }
     return false;
 }

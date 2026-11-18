@@ -122,6 +122,7 @@ so nothing below has been played yet.
   look (traveller_gear `kBeedleLook`). Wanders road spots and camps (never sits), never into town, never
   any road through F_SP122 room 8 (his tent). Flees at 2.2x a full run, never cowers or screams, with the
   game's footstep dust (dPaPoT_c, as the postman). Lantern on his bag at night (`kBeedleHook`).
-- Shop: beedle_field.cpp. One ware a day (save date), from those unlocked; usual price - 5; custom flow
+- Shop: beedle_field.cpp. One ware a day (save date), from those unlocked; usual price - 5 (arrows, bombs,
+  water bombs, bomblings, red/blue potion, oil, milk, wooden shield, bee larva, seeds); custom flow
   query/event check and buy; THANK YOU (beedle_0038) / GOODBYE (beedle_0037) on programs 0xED/0xEC, files
   `res/voices/beedle_thanks.wav` / `beedle_goodbye.wav`.
