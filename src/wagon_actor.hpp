@@ -2,6 +2,7 @@
 #include "mods/svc/actor.h"
 
 #include "f_op/f_op_actor.h"
+#include "d/d_kankyo.h"
 #include "SSystem/SComponent/c_phase.h"
 #include "d/d_bg_w.h"
 
@@ -52,7 +53,10 @@ public:
     bool mLoose = false;            // the horse broke loose and runs on its own
     cXyz mHarnessPos;               // where the harness was left when the horse broke loose
     s16 mHarnessYaw = 0;
-    JPABaseEmitter* mFx[10] = {};
+    JPABaseEmitter* mFx[10] = {};   // (unused: Telma's coach fire only exists in her own stage)
+    u32 mFlames[8][3] = {};          // the common fire (the camp fires'), at up to 8 spots on the wagon
+    LIGHT_INFLUENCE mFireLight{};
+    bool mFireLit = false;
     int mSmoke = 0;                 // frames the wreck still smokes
     int mBlaze = 0;                 // destroyed: frames it still burns at full blaze (whatever wrecked it)
     bool mCharred = false;          // drawn as the burnt-out wreck (swapped in mid-blaze)
@@ -65,6 +69,7 @@ public:
     void ignite();
     bool wrecked() const { return mWrecked; }
     void updateFire();
+    void cutFireLight();
 
     // Set by the convoy each frame while driven: where the horse is and which way it faces.
     void driveTo(const cXyz& horse, s16 yaw, f32 speed);

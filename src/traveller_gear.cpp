@@ -11,6 +11,7 @@
 // game builds it (so it is freed with it), and draws it glued to the backbone joint every frame,
 // lit like the traveller (the same way the game draws the things townsfolk carry).
 #include "global.h"
+#include "mod_lights.hpp"
 
 #include "d/actor/d_a_npc_cd2.h"
 #include "d/actor/d_a_npc_passer.h"
@@ -371,6 +372,18 @@ HookAction onLoadResrcPre(ModContext*, void* args, void* retval, void*) {
     const Look* look = travellerLook(npc);
     if (look == nullptr || retval == nullptr) return HOOK_CONTINUE;
     const int type = npc->m_type;
+    {
+        // the first time each body archive is asked for, say so before loading it: a crash while
+        // loading (as on 2026-11-18) then names the archive in the log
+        static const char* s_asked[48] = {};
+        static int s_nAsked = 0;
+        bool seen = false;
+        for (int i = 0; i < s_nAsked; ++i) seen = seen || s_asked[i] == look->arc;
+        if (!seen && s_nAsked < 48) {
+            s_asked[s_nAsked++] = look->arc;
+            travellers::diagLine("look    loading %s (%s) for type %d", look->arc, look->bmd, type);
+        }
+    }
     int result = dComIfG_resLoad(&npc->mPhase1, look->arc);
     if (result == cPhs_COMPLEATE_e) result = dComIfG_resLoad(&npc->mPhase4, "object");
     if (result == cPhs_COMPLEATE_e) result = dComIfG_resLoad(&npc->mPhase2, generalArc(type));
@@ -893,6 +906,7 @@ bool lightTick(daNpcPasser_c* passer, bool night, bool atCamp) {
         g->glow.mColor.b = 60;
         g->glow.mPow = 220.0f;
         g->glow.mFluctuation = 0.5f;
+        mod_lights::offer(flame, 70.0f);   // and on the ground and walls round him
         if (!g->lit) {
             dKy_plight_set(&g->glow);
             g->lit = true;
@@ -936,6 +950,7 @@ bool lightTick(daNpcPasser_c* passer, bool night, bool atCamp) {
         g->glow.mColor.b = 60;
         g->glow.mPow = g->torch ? 300.0f : 220.0f;
         g->glow.mFluctuation = g->torch ? 1.0f : 0.5f;
+        mod_lights::offer(flame, g->torch ? 90.0f : 70.0f);   // and on the ground and walls round it
         if (!g->lit) {
             dKy_plight_set(&g->glow);
             g->lit = true;

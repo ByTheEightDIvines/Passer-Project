@@ -30,6 +30,7 @@
 #include "mod_sounds.hpp"
 #include "shop_stage.hpp"
 #include "shop_lamps.hpp"
+#include "mod_lights.hpp"
 #include "soul_actor.hpp"
 #include "note_actor.hpp"
 #include "bubble_actor.hpp"
@@ -3292,6 +3293,7 @@ MOD_EXPORT ModResult mod_update(ModError*) {
     clearRockPile();
     camp_music::tick();
     shop_stage::tick();
+    mod_lights::tick();
     return MOD_OK;
 }
 

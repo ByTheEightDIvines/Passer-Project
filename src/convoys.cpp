@@ -328,7 +328,16 @@ cXyz wagonFrame(psrWagon_c* w, f32 x, f32 y, f32 z) {
     return out;
 }
 
+// The wagon has placed itself (its first update has run): before that its frame is all zeros and
+// the crew would be made at the world's origin, out of sight for good (seen 2026-11-18).
+bool wagonPlaced(psrWagon_c* w) {
+    if (w == nullptr) return false;
+    const f32 axis = w->mCoachMtx[0][0] * w->mCoachMtx[0][0] + w->mCoachMtx[2][0] * w->mCoachMtx[2][0];
+    return axis > 0.25f && wagonFrame(w, 0.0f, 0.0f, 0.0f).abs(w->current.pos) < 3000.0f;
+}
+
 void bringOut(std::vector<Member>& crew, psrWagon_c* w, s8 room) {
+    if (!wagonPlaced(w)) return;
     for (Member& m : crew) {
         if (travellers::crewActor(m.slot) != nullptr || travellers::crewDead(m.slot)) continue;
         cXyz at = m.role == R_RIDER ? w->benchSeat(m.x < 0.0f ? 0 : 1) : wagonFrame(w, m.x, 0.0f, m.z);
@@ -395,7 +404,10 @@ void tickConvoy(Convoy& c) {
     s8 room;
     roadAt(c.road, c.reverse, c.s, &pos, &yaw, &room);
     // (only in the stage Link is in: crossing a loading zone it drives through it, like he does)
-    const bool open = worldOpen() && !dComIfGp_event_runCheck() && stageAt(c.road, c.reverse, c.s) == curStage();
+    const bool open = worldOpen() && stageAt(c.road, c.reverse, c.s) == curStage();
+    // an event (Epona's call, a door, a talk) only holds it where it is: dropping the wagon then made
+    // wrecks and whole convoys blink out of the world while Link stood beside them
+    const bool held = dComIfGp_event_runCheck();
     if ((g_frame % 300) == 0) {
         travellers::diagLine("convoy  %s %.0f/%.0f at (%.0f %.0f) room %d stage %d/%d link %.0f open %d disp %d real %d halted %d wrecked %d",
                              c.kind == K_GORGE ? "gorge" : (c.kind == K_WEST ? "west" : "royal"), c.s, roadLength(c.road),
@@ -405,6 +417,7 @@ void tickConvoy(Convoy& c) {
     psrWagon_c* w = wagonOf(c.wagon);
 
     // out in the world, or back on paper
+    if (held) return;
     if (!c.real) {
         if (open && dComIfGp_roomControl_checkRoomDisp(room) && linkDist(pos) < kShowRadius && outOfSight(pos)) {
             c.wagon = makeWagon(c.kind == K_ROYAL ? PSR_WAGON_ROYAL : PSR_WAGON_TRAVELLER, true, pos, yaw, room);
@@ -498,7 +511,8 @@ void tickNod() {
     else if (travellers::eldinCleared() && !travellers::lanayruCleared()) want = 1;
 
     psrWagon_c* w = wagonOf(g_nod.wagon);
-    const bool open = worldOpen() && !dComIfGp_event_runCheck() && curStage() == 0;   // both walls are in the field
+    const bool open = worldOpen() && curStage() == 0;   // both walls are in the field
+    if (dComIfGp_event_runCheck()) return;   // an event holds things as they are (never drops the wagon)
     if (g_nod.which >= 0) {
         const Parked& p = kParked[g_nod.which];
         const bool far = linkDist(p.pos) > kHideRadius;

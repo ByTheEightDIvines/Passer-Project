@@ -1,4 +1,5 @@
 #include "global.h"
+#include "mod_lights.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -105,6 +106,7 @@ J3DModel* loadModel(const char* arc, const char* name) {
 }  // namespace
 
 psrWagon_c::~psrWagon_c() {
+    cutFireLight();
     for (JPABaseEmitter*& e : mFx) {
         if (e != nullptr) { e->becomeInvalidEmitter(); e = nullptr; }
     }
@@ -211,6 +213,10 @@ void psrWagon_c::addDamage(int amount) {
         mLoose = true;
         mSmoke = kSmokeFrames;
         mBlaze = kBlazeFrames;   // however it was wrecked (fire, or monsters smashing it): it goes up in flames
+        // the moment it goes: a burst of smoke and splinters (a bomb's), as the fire takes it
+        const cXyz at = middle();
+        dComIfGp_particle_set(0x95, &at, nullptr, nullptr);   // ID_IT_JT_BMEX_SMOKE01
+        dComIfGp_particle_set(0x96, &at, nullptr, nullptr);   // ID_IT_JT_BMEX_SMOKE02
     }
 }
 
@@ -232,21 +238,53 @@ void psrWagon_c::updateFire() {
     } else if (mBurning) {
         want = 4 + mDamage * 6 / kMaxDamage;
     }
-    cXyz at;
-    mDoMtx_stack_c::copy(mpCoach->getAnmMtx(kCoachBody));
-    mDoMtx_stack_c::multVecZero(&at);
-    const csXyz rot(0, mCoachYaw, 0);
-    for (int i = 2; i < 10; i++) {
-        const bool on = i < want;
-        if (on && mFx[i] == nullptr) {
-            mFx[i] = dComIfGp_particle_set(kFireFx[i], &at, &rot, nullptr);
-            if (mFx[i] != nullptr) mFx[i]->becomeImmortalEmitter();
-        } else if (!on && mFx[i] != nullptr) {
-            mFx[i]->becomeInvalidEmitter();
-            mFx[i] = nullptr;
+    // The game's own fire (the camp fires': glow, flames, sparks), in spots over the wagon in its own
+    // frame (origin at the hitch, +z forward; the body runs back from the hitch): the more of it is
+    // burning, the more spots. Telma's coach fire (kFireFx) only exists in her stage's effects.
+    static const cXyz kSpots[8] = {
+        cXyz(0.0f, 150.0f, -260.0f), cXyz(-55.0f, 120.0f, -160.0f), cXyz(55.0f, 120.0f, -360.0f),
+        cXyz(0.0f, 170.0f, -420.0f), cXyz(-60.0f, 100.0f, -330.0f), cXyz(60.0f, 110.0f, -200.0f),
+        cXyz(0.0f, 90.0f, -120.0f),  cXyz(-40.0f, 80.0f, -460.0f),
+    };
+    static const u16 kIds[3] = {0x3AD, 0x3AF, 0x3AE};   // ID_ZF_J_FIRE00_GLOW, FIRE02_FIRE, FIRE01_SPARK
+    const int spots = want <= 0 ? 0 : std::min(8, 1 + want * 8 / 10);
+    for (int i = 0; i < 8; i++) {
+        if (i >= spots) {
+            for (u32& id : mFlames[i]) id = 0;   // not set again this frame: it goes out by itself
+            continue;
         }
-        if (mFx[i] != nullptr) mFx[i]->setGlobalRTMatrix(mpCoach->getAnmMtx(kCoachBody));
+        mDoMtx_stack_c::copy(mCoachMtx);
+        cXyz at;
+        mDoMtx_stack_c::multVec(&kSpots[i], &at);
+        const bool smoulder = mWrecked && mBlaze <= 0;
+        const f32 k = smoulder ? 0.6f : 1.4f;
+        const cXyz scale(k, k, k);
+        for (int j = 0; j < 3; j++) {
+            if (smoulder && j == 2) { mFlames[i][j] = 0; continue; }   // no sparks off the embers
+            mFlames[i][j] = dComIfGp_particle_set(mFlames[i][j], kIds[j], &at, nullptr, nullptr, &scale, 0xFF,
+                                                  nullptr, -1, nullptr, nullptr, nullptr);
+        }
     }
+    // its light: on the people round it, and (the nearest fire to the camera) on the ground
+    if (spots > 0) {
+        mDoMtx_stack_c::copy(mCoachMtx);
+        mDoMtx_stack_c::multVec(&kSpots[0], &mFireLight.mPosition);
+        mFireLight.mColor.r = 0xBC;
+        mFireLight.mColor.g = 0x66;
+        mFireLight.mColor.b = 0x42;
+        mFireLight.mPow = 300.0f + 60.0f * spots;
+        mFireLight.mFluctuation = 1.0f;
+        if (!mFireLit) { dKy_plight_set(&mFireLight); mFireLit = true; }
+        mod_lights::offer(mFireLight.mPosition, 60.0f + 15.0f * spots);
+    } else if (mFireLit) {
+        cutFireLight();
+    }
+}
+
+void psrWagon_c::cutFireLight() {
+    const int i = (mFireLight.mIndex < 0 ? -mFireLight.mIndex : mFireLight.mIndex) & 0xFFF;
+    if (mFireLit && i >= 1 && i <= 50 && g_env_light.pointlight[i - 1] == &mFireLight) dKy_plight_cut(&mFireLight);
+    mFireLit = false;
 }
 
 cXyz psrWagon_c::benchSeat(int seat) const {

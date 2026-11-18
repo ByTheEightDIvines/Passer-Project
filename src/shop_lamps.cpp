@@ -1,4 +1,5 @@
 #include "global.h"
+#include "mod_lights.hpp"
 
 #include "shop_lamps.hpp"
 #include "travellers.hpp"
@@ -23,7 +24,7 @@ constexpr f32 kBaseY = 330.0f;
 constexpr f32 kZ[psrShopLamps_c::kNum] = {-330.0f, 0.0f, 330.0f};
 constexpr f32 kScale = 1.6f;
 constexpr f32 kFlameY = 23.0f * kScale;             // the flame in a lantern, this far up from its base
-constexpr f32 kFlameScale = 1.5f;
+constexpr f32 kFlameScale = 2.2f;   // the lantern is 1.6 times Link's: a flame to fill it
 constexpr u32 kHeapSize = 0x80000000;               // auto-sized
 
 bool g_pending = false;                             // created, not yet running
@@ -137,6 +138,7 @@ int psrShopLamps_c::Execute() {
         mGlow[i].mPow = 500.0f;
         mGlow[i].mFluctuation = 1.0f;
         dKy_plight_set(&mGlow[i]);   // never adds one twice; the scene's lighting may have cleared it
+        mod_lights::offer(mGlow[i].mPosition, 110.0f);   // the canvas, floor and shelves round it
     }
     mLit = night;
     return 1;

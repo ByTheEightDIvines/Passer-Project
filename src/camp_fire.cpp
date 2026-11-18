@@ -1,4 +1,5 @@
 #include "global.h"
+#include "mod_lights.hpp"
 
 #include "camp_fire.hpp"
 #include "travellers.hpp"
@@ -284,6 +285,7 @@ void psrFire_c::updateFire() {
         mLit = false;
     }
     if (mLit) {
+        mod_lights::offer(mLight.mPosition, 160.0f);   // the fire lights the ground round the camp
         mFlame[0] = dComIfGp_particle_set(mFlame[0], 0x3AD, &mFlamePos, NULL, NULL);
         mFlame[1] = dComIfGp_particle_set(mFlame[1], 0x3AF, &mFlamePos, NULL, NULL);
         mFlame[2] = dComIfGp_particle_set(mFlame[2], 0x3AE, &mFlamePos, NULL, NULL);

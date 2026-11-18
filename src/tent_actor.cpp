@@ -1,4 +1,5 @@
 #include "global.h"
+#include "mod_lights.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -321,6 +322,15 @@ int psrTent_c::Execute() {
             travellers::diagLine("tent    Beedle's lantern %s", mHasFlame ? "lit" : "could not be lit");
         } else if (!night && mHasFlame) {
             if (svc_actor->delete_actor(mod_ctx, mFlame) == MOD_OK) mHasFlame = false;
+        }
+        if (night && mHasFlame && mStageNum > 0) {
+            // the game's flame lights only people: the canvas and the ground round the door too
+            const StageProp& lamp = kStage[0];
+            const f32 k = psr_tent::kScale[mKind];
+            const f32 c = cM_scos(shape_angle.y), sn = cM_ssin(shape_angle.y);
+            const cXyz at(current.pos.x + sn * lamp.z * k, current.pos.y + (lamp.y + 28.0f * lamp.scale) * k,
+                          current.pos.z + c * lamp.z * k);
+            mod_lights::offer(at, 80.0f);
         }
         // Link at the curtain (the back of the entry, where its collision stops him): into the shop.
         if (auto* link = dComIfGp_getPlayer(0)) {
