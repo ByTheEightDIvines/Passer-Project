@@ -30,7 +30,7 @@ const char* kRoyalModel[8] = {"royal_body.bmd", "royal_harness.bmd", "royal_cove
                               "royal_b_l_wheel.bmd", "royal_b_r_wheel.bmd", nullptr};
 const char* kCargo[2] = {"trav_cargo.bmd", "royal_cargo.bmd"};
 const char* kHorseAnim[4] = {"hu_wait_01.bck", "hu_walk_slow.bck", "hu_walk_fast.bck", "hu_run_slow.bck"};
-constexpr u32 kHeapSize = 0x100000;
+constexpr u32 kHeapSize = 0x180000;   // horse, harness, wagon, the royal pieces and the cargo
 
 // The rig, as the game's coach puts it together (Coach.arc's bind pose; +z forward):
 // the harness sits on the horse, the wagon on the harness's hitch (bs_loc), which is here.
