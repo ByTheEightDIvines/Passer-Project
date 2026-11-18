@@ -77,6 +77,8 @@ const Kit* kitFor(const Look* look) {
     }
     return nullptr;
 }
+#include "guard_gear.inc"
+
 const Look* lookFor(int type) {
     static const Look kLooks[30] = {
         {}, {}, {},
@@ -100,6 +102,9 @@ const Look* lookFor(int type) {
         {"P_WGN_a2", "wgn_a2.bmd", "wgn_a2.btp", "pack_wgn_a2.bmd"},   // 28
         {"P_WAN_b2", "wan_b2.bmd", "wan_b2.btp", "pack_wan_b2.bmd"},   // 29
     };
+    // the guards: Castle Town's own guard bodies, no pack (their arms are drawn from guard_gear.inc)
+    static const Look kGuardLooks[2] = {{"MAN_a", "man_a.bmd", nullptr, nullptr}, {"MAD_a", "mad_a.bmd", nullptr, nullptr}};
+    if (type == 0 || type == 1) return &kGuardLooks[type];
     if (type < 0 || type >= 30 || kLooks[type].arc == nullptr) return nullptr;
     return &kLooks[type];
 }
@@ -131,6 +136,11 @@ struct Gear {
     JKRSolidHeap* extras = nullptr;   // the torch/lantern and staff live here: the actor's own heap has no room
     J3DModel* light = nullptr;    // its torch or lantern (copies of Rusl's torch and Link's lantern)
     J3DModel* staff = nullptr;    // the old women's hooked staff (their lantern hangs from it)
+    // a guard's arms: the game's own spear, the castle soldiers' shields, sword and scabbard
+    J3DModel* gSpear = nullptr;
+    J3DModel* gShield = nullptr;
+    J3DModel* gSword = nullptr;
+    J3DModel* gScab = nullptr;
     // Food and drink (Castle Town's own, cut from its rooms): a ham or a loaf (Telma's bar, the bakery
     // One of each kind is picked per meal (see kFoodGrip for how each kind sits in the hand).
     J3DModel* eats[6] = {};       // held by one end: salmon kebab, veggie kebab, carrot, bread, meat, corn
@@ -437,8 +447,23 @@ void onCreateHeapPost(ModContext*, void* args, void* retval, void*) {
     }
     g->seat = make("psr_seat.bmd");
     g->sitting = false;
+    const u8 style = travellers::guardStyle(passer);
+    g->gSpear = g->gShield = g->gSword = g->gScab = nullptr;
+    if (style != 0) {
+        if (style == travellers::kStyleSpear) {
+            if (auto* data = static_cast<J3DModelData*>(dComIfG_getObjectRes("object", "b_spear.bmd"))) {
+                g->gSpear = mDoExt_J3DModel__create(data, 0x80000, 0x11000084);
+            }
+            g->gShield = make("psr_g_shield_t.bmd");
+        } else {
+            g->gShield = make("psr_g_shield_s.bmd");
+            g->gSword = make("psr_g_sword.bmd");
+        }
+        g->gScab = make("psr_g_scabbard.bmd");
+    }
     // fighters carry a torch, everyone else a lantern; the old women hang theirs on a hooked staff
     g->torch = travellers::isFighter(passer);
+    const bool guard = style != 0;   // a guard's hands are full: no torch, no lantern
     // The game sizes a townsfolk's heap for its own body; the torch, lantern and staff don't fit in
     // it (they silently failed to be made). They get a heap of their own, freed with the traveller.
     if (g->extras != nullptr) {   // (made twice: the game retried)
@@ -450,7 +475,7 @@ void onCreateHeapPost(ModContext*, void* args, void* retval, void*) {
     g->extras = mDoExt_createSolidHeapFromGame(0x40000, 0x20);
     if (g->extras != nullptr) {
         JKRHeap* before = mDoExt_setCurrentHeap(g->extras);
-        g->light = make(g->torch ? "psr_torch.bmd" : "psr_lantern.bmd");
+        g->light = guard ? nullptr : make(g->torch ? "psr_torch.bmd" : "psr_lantern.bmd");
         g->staff = isOldWoman(passer->m_type) ? make("psr_staff.bmd") : nullptr;
         static const char* const kEats[6] = {"psr_food_kebab.bmd", "psr_food_veggie.bmd", "psr_food_carrot.bmd",
                                              "psr_food_bread.bmd", "psr_food_meat.bmd", "psr_food_corn.bmd"};
@@ -463,9 +488,10 @@ void onCreateHeapPost(ModContext*, void* args, void* retval, void*) {
         g->goblet = make("psr_goblet.bmd");
         g->tankard = make("psr_cup_tankard.bmd");
         g->mealItem = nullptr;
-        if (passer->m_type == kBowmanType) {
-            g->bow = make("psr_bow.bmd");
-            g->quiver = make("psr_quiver.bmd");
+        const bool royal = style == travellers::kStyleArcher;   // the royal convoy's archer: the royal bow
+        if (passer->m_type == kBowmanType || royal) {
+            g->bow = make(royal ? "psr_bow_royal.bmd" : "psr_bow.bmd");
+            g->quiver = make(royal ? "psr_quiver_royal.bmd" : "psr_quiver.bmd");
             if (g->bow != nullptr) {
                 g->bow->setUserArea(reinterpret_cast<uintptr_t>(&g->bowPose));
                 J3DModelData* bd = g->bow->getModelData();
@@ -634,6 +660,17 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
             g_env_light.setLightTevColorType_MAJI(g->nockArrow, &passer->tevStr);
             mDoExt_modelUpdateDL(g->nockArrow);
         }
+    }
+    if (const u8 style = travellers::guardStyle(passer); style != 0) {
+        // the guards: spear (walking: as on the spear walk; fighting: as the castle soldiers hold it),
+        // shield on the left arm, scabbard at the side, the sword in hand while fighting
+        const bool big = passer->m_type == 1;
+        const bool fighting = fighter_anim::weaponOut(passer) && !fighter_anim::bowView(passer).inHand;
+        drawOn(g->gSpear, kHandR, fighting ? (big ? &kHold_fspear_mad_a : &kHold_fspear_man_a)
+                                            : (big ? &kHold_spear_mad_a : &kHold_spear_man_a));
+        drawOn(g->gShield, kHandL, style == travellers::kStyleSpear ? &kHold_tall : &kHold_small);
+        drawOn(g->gScab, kWaist, &kHold_scab);
+        if (fighting) drawOn(g->gSword, kHandR, big ? &kHold_fsword_mad_a : &kHold_fsword_man_a);
     }
     drawOn(g->belt, kWaist, nullptr);
     Mtx inHand;

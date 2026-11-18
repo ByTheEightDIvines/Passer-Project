@@ -28,7 +28,7 @@ bool eldinBridgeWarpedBack();   // Link has warped it home (from the desert): th
 bool allTwilightCleared();      // Faron, Eldin and Lanayru are all lit
 
 // Convoy people: roster slots of their own that the convoys fill, place and empty.
-int crewClaim(u8 type);                   // a free slot for someone of this body, or -1
+int crewClaim(u8 type, u8 style = 0);     // a free slot for someone of this body (a guard: their arms), or -1
 void crewRelease(int slot);               // gone for good (despawned if out)
 bool crewSpawn(int slot, const cXyz& pos, s16 yaw, s8 room);   // bring them out here
 void crewDespawn(int slot);               // take them out (they stay on the roster)
@@ -37,6 +37,10 @@ void crewHold(int slot, bool held);       // placed by hand (true) or left to th
 bool crewDead(int slot);
 bool crewHeld(const fopAc_ac_c* passer);
 bool isCrew(const fopAc_ac_c* passer);
+// A guard's arms: 0 none (not a guard), 1 spear and tall shield, 2 sword and small shield, 3 sword,
+// small shield and the royal bow.
+u8 guardStyle(const fopAc_ac_c* passer);
+constexpr u8 kStyleSpear = 1, kStyleSword = 2, kStyleArcher = 3;
 
 // The passer actor belongs to this mod's travellers.
 bool isTraveller(const fopAc_ac_c* actor);

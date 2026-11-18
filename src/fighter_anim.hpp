@@ -42,6 +42,8 @@ bool weaponMtx(const daNpcPasser_c* passer, Mtx out);
 // --- the bowman (passer 8): the Bulblin's draw / aim / shot, refitted to his body ---
 // He has the bow animations (and is passer 8).
 bool bowman(const daNpcPasser_c* passer);
+// A guard takes a blow from in front on his shield (most of the time): the block plays and it does no harm.
+bool block(daNpcPasser_c* passer, const cXyz& from);
 // What the bow is doing for drawing it: in his left hand (else on his back), an arrow in his right
 // hand, and whether the string is on his fingers (drawn back).
 struct BowView {

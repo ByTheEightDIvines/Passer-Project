@@ -66,6 +66,8 @@ const Body* bodyFor(int type) {
         case 13: model = "MAN_c2"; break;
         case 14: model = "MAS_a2"; break;
         case 29: model = "WAN_b2"; break;   // the woman fighter (her own retargeted set)
+        case 0: model = "MAN_a2"; break;    // the guards: the men's skeleton, MAN_a2's and MAD_a2's hands
+        case 1: model = "MAD_a2"; break;
         default: return nullptr;
     }
     for (const Body& b : kBodies) {
@@ -81,6 +83,7 @@ constexpr int kLoopRelease = 13;
 constexpr int kLoopClear = 12;        // draw: the weapon is up out of its loop
 constexpr int kLoopTakeUp = 7;        // sheathe: the hand has slid up the handle
 constexpr f32 kHitFrames[] = {4.0f, 20.0f};
+constexpr f32 kThrustHit = 13.0f;   // the guards' thrust: fully in on frame 13
 
 // The startled hop, moved from the animation's centre onto the actor (MAN_a2 units, forward +).
 constexpr f32 kSurprisedRoot[] = {
@@ -137,7 +140,41 @@ J3DAnmTransformKey* anm(const char* name) {
 // The fight animations shared by the men; the woman fighter (#29, WAN_b2: 21 joints) has her own
 // copies, retargeted to her body ("psr_wf_...").
 constexpr int kWomanFighter = 29;
+
+// The guards (types 0, 1): spearmen fight from pose A (on guard) with the thrust, swordsmen from the
+// crouched pose D with the men's two-blow swing; both block with their shields (pose C). Fitted to
+// each guard body ("psr_g_<what>_man_a" / "_mad_a").
+u8 styleOf(const daNpcPasser_c* passer) {
+    if (passer == nullptr || (passer->m_type != 0 && passer->m_type != 1)) return 0;
+    return travellers::guardStyle(passer);
+}
+J3DAnmTransformKey* guardAnm(const daNpcPasser_c* passer, const char* what) {
+    char name[40];
+    std::snprintf(name, sizeof(name), "psr_g_%s_%s.bck", what, passer->m_type == 1 ? "mad_a" : "man_a");
+    return anm(name);
+}
+bool guardAnmAny(J3DAnmTransform* a) {
+    if (a == nullptr) return false;
+    static const char* const kWhat[] = {"spear", "sword", "thrust", "block"};
+    for (const char* body : {"man_a", "mad_a"}) {
+        for (const char* what : kWhat) {
+            char name[40];
+            std::snprintf(name, sizeof(name), "psr_g_%s_%s.bck", what, body);
+            if (a == anm(name)) return true;
+        }
+    }
+    return false;
+}
+
 J3DAnmTransformKey* fa(const daNpcPasser_c* passer, const char* name) {
+    if (const u8 st = styleOf(passer)) {
+        const bool spear = st == travellers::kStyleSpear;
+        if (std::strcmp(name, "psr_squareup.bck") == 0 || std::strcmp(name, "psr_squareup_step.bck") == 0) {
+            if (auto* a = guardAnm(passer, spear ? "spear" : "sword")) return a;
+        } else if (spear && std::strcmp(name, "psr_s_fight_a.bck") == 0) {
+            if (auto* a = guardAnm(passer, "thrust")) return a;
+        }
+    }
     if (passer != nullptr && passer->m_type == kWomanFighter && std::strncmp(name, "psr_", 4) == 0) {
         char own[48];
         std::snprintf(own, sizeof(own), "psr_wf_%s", name + 4);
@@ -158,7 +195,7 @@ bool ours(const Body* b, J3DAnmTransform* a) {
         std::snprintf(own, sizeof(own), "psr_wf_%s", n + 4);
         if (a == anm(own)) return true;
     }
-    return a == anm(b->draw) || a == anm(b->sheathe);
+    return a == anm(b->draw) || a == anm(b->sheathe) || guardAnmAny(a);
 }
 
 
@@ -280,9 +317,24 @@ void startPhase(daNpcPasser_c* passer, Slot& s, Phase ph, J3DAnmTransformKey* a,
     restart(passer, a, false, morf);
 }
 
-void startDraw(daNpcPasser_c* passer, Slot& s, const Body* b) { startPhase(passer, s, Phase::Drawing, anm(b->draw), 4.0f); }
+void giveBack(daNpcPasser_c* passer, Slot& s);
+void play(daNpcPasser_c* passer, J3DAnmTransformKey* a, bool loop, f32 morf);
+
+void startDraw(daNpcPasser_c* passer, Slot& s, const Body* b) {
+    if (styleOf(passer) == travellers::kStyleSpear) {   // his spear's in his hand already: straight on guard
+        s.phase = Phase::Ready;
+        s.oneShot = nullptr;
+        play(passer, fa(passer, "psr_squareup.bck"), true, 6.0f);
+        return;
+    }
+    startPhase(passer, s, Phase::Drawing, anm(b->draw), 4.0f);
+}
 
 void startSheathe(daNpcPasser_c* passer, Slot& s, const Body* b) {
+    if (styleOf(passer) == travellers::kStyleSpear) {   // nothing to put away
+        giveBack(passer, s);
+        return;
+    }
     startPhase(passer, s, Phase::Sheathing, anm(b->sheathe), 6.0f);
 }
 
@@ -297,7 +349,7 @@ void startBow(daNpcPasser_c* passer, Slot& s) {
 // The body each stock passer type wears (traveller_gear's looks), for the per-body animations.
 const char* modelFor(int type) {
     static const char* const kNames[30] = {
-        nullptr, nullptr, nullptr, "mon_a", "man_b", nullptr, "mas_a", "mbn_a", "man_a2", "mad_a2",
+        "man_a", "mad_a", nullptr, "mon_a", "man_b", nullptr, "mas_a", "mbn_a", "man_a2", "mad_a2",
         nullptr, "mon_a2", nullptr, "man_c2", "mas_a2", "mbn_a2", nullptr, nullptr, nullptr, nullptr,
         "won_a", nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, "won_a2", "wgn_a2", "wan_b2"};
     return type >= 0 && type < 30 ? kNames[type] : nullptr;
@@ -539,7 +591,8 @@ bool weaponOut(const daNpcPasser_c* passer) {
 }
 
 bool bowman(const daNpcPasser_c* passer) {
-    return passer != nullptr && passer->m_type == kBowmanType && anm(kBowDraw) != nullptr &&
+    return passer != nullptr && (passer->m_type == kBowmanType || styleOf(passer) == travellers::kStyleArcher) &&
+           anm(kBowDraw) != nullptr &&
            anm(kBowAim) != nullptr && anm(kBowShoot) != nullptr;
 }
 
@@ -664,8 +717,12 @@ int update(daNpcPasser_c* passer, Want want, bool swing, bool turning) {
             break;
 
         case Phase::Swinging:
-            for (f32 hit : kHitFrames) {
-                if (s.prevFrame < hit && now >= hit) ++hits;
+            if (styleOf(passer) == travellers::kStyleSpear) {
+                if (s.prevFrame < kThrustHit && now >= kThrustHit) ++hits;   // the spear goes home
+            } else {
+                for (f32 hit : kHitFrames) {
+                    if (s.prevFrame < hit && now >= hit) ++hits;
+                }
             }
             if (finished(passer)) {
                 s.phase = Phase::Ready;
@@ -805,6 +862,19 @@ void hit(daNpcPasser_c* passer, const cXyz& from) {
     startForced(passer, anim, kHitSpeed, true, 2.0f);
 }
 
+bool block(daNpcPasser_c* passer, const cXyz& from) {
+    if (passer == nullptr || passer->mpMorf == nullptr || styleOf(passer) == 0) return false;
+    // a blow from in front, while it isn't already busy with its own thrust or swing: on the shield
+    const s16 rel = static_cast<s16>(cLib_targetAngleY(&passer->current.pos, &from) - passer->shape_angle.y);
+    if (std::abs(static_cast<int>(rel)) > 0x3000) return false;
+    if (const Slot* s = slotFor(passer, false); s != nullptr && (s->phase == Phase::Swinging || bowPhase(s->phase))) return false;
+    if (cM_rndF(1.0f) > 0.7f) return false;   // most of them
+    J3DAnmTransformKey* anim = guardAnm(passer, "block");
+    if (anim == nullptr) return false;
+    startForced(passer, anim, 1.0f, true, 2.0f);
+    return true;
+}
+
 bool fall(daNpcPasser_c* passer, bool landed) {
     if (passer == nullptr) return false;
     J3DAnmTransformKey* anim = borrowed(passer, landed ? "land" : "fly");
@@ -887,9 +957,15 @@ void layerTick(daNpcPasser_c* passer, bool carryLight) {
     L.legW = std::clamp(L.legW + (wantLegs ? kLegFade : -kLegFade), 0.0f, 1.0f);
 
     // the light arm
-    L.hold = bodyAnm(passer, "hold");
+    // (a guard's left arm carries his shield instead: up and across for the spearmen (pose A), at the
+    // side for the swordsmen and the archer (pose D), not while he fights, which poses it himself)
+    const u8 style = styleOf(passer);
+    const bool guard = style != 0;
+    L.hold = guard ? bodyAnm(passer, style == travellers::kStyleSpear ? "garm_A" : "garm_D") : bodyAnm(passer, "hold");
     const bool picking = cur != nullptr && (cur == bodyAnm(passer, "pickup") || cur == bodyAnm(passer, "cast"));
-    const bool wantArm = carryLight && !forced && !sitting && !picking && L.hold != nullptr;
+    const bool onBench = cur != nullptr && cur == passer->getAnmP(14, 0);   // a convoy rider, seated
+    const bool wantArm = guard ? (!forced && !sitting && !onBench && !weaponOut(passer) && L.hold != nullptr)
+                               : (carryLight && !forced && !sitting && !picking && L.hold != nullptr);
     L.armW = std::clamp(L.armW + (wantArm ? kArmFade : -kArmFade), 0.0f, 1.0f);
 
     // food or drink, seated: the body's own eat/drink/sip loop on the same arm

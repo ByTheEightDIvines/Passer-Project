@@ -1613,6 +1613,7 @@ void onProfileExecutePost(ModContext*, void* args, void*, void*) {
         torchTick(passer, *state);
         const int hour = dKy_getdaytime_hour();
         traveller_gear::lightTick(passer, hour >= 19 || hour < 6, false);
+        fighter_anim::layerTick(passer, false);   // a marching guard's shield arm
         return;
     }
     if (!state->dead) {
@@ -2581,6 +2582,12 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
                             daPy_py_c::checkNowWolf() && travellers::isFighter(passer);
         if (!byWolf && (attacker == nullptr || !fopAcM_IsActor(attacker) ||
                         fopAcM_GetGroup(attacker) != fopAc_ENEMY_e)) {
+            return HOOK_CONTINUE;
+        }
+        // A guard takes it on his shield: no harm done.
+        if (!byWolf && fighter_anim::block(passer, attacker->current.pos)) {
+            state->invuln = kHurtInvulnFrames;
+            travellers::noteAct(passer, "blocked a blow with his shield");
             return HOOK_CONTINUE;
         }
         // Damage in quarter hearts, the same amount the attack would take from Link.

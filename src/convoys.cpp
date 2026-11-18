@@ -47,6 +47,7 @@
 namespace convoys {
 namespace {
 #include "convoy_routes.inc"
+#include "convoy_gates.inc"
 
 constexpr f32 kSpeed = 4.5f;            // units a frame: the escorts' walk
 constexpr f32 kShowRadius = 7500.0f;    // a convoy this near Link is out in the world
@@ -60,8 +61,9 @@ constexpr f32 kSideOut = 230.0f;        // the escorts walk this far out from th
 constexpr f32 kSitDrop = 37.0f;         // the bench sit puts the seat this far under the feet
 
 struct Road {
-    const ConvoyPt* p;
-    int n;
+    std::vector<ConvoyPt> p;
+    std::vector<u8> stage;        // per point: 0 the field (F_SP121), 1 outside Castle Town (F_SP122)
+    int n = 0;
     std::vector<f32> cum;
 };
 std::array<Road, 3> g_roads{};
@@ -135,10 +137,15 @@ f32 groundAt(f32 x, f32 y, f32 z) {
     return dComIfG_Bgsp().GroundCross(&gnd);
 }
 
-bool inField() {
+// which of the convoys' stages Link is in: 0 the field, 1 outside Castle Town's gates, -1 neither
+int curStage() {
     const char* s = dComIfGp_getStartStageName();
-    return s != nullptr && std::strcmp(s, "F_SP121") == 0;
+    if (s == nullptr) return -1;
+    if (std::strcmp(s, "F_SP121") == 0) return 0;
+    if (std::strcmp(s, "F_SP122") == 0) return 1;
+    return -1;
 }
+bool inField() { return curStage() >= 0; }
 
 // Link in the lit field, outside events and the escort: a convoy may be out in the world
 bool worldOpen() {
@@ -146,14 +153,25 @@ bool worldOpen() {
 }
 
 void buildRoads() {
-    const ConvoyPt* ps[3] = {kGorgeRoad, kLongRoad, kWestRoad};
-    const int ns[3] = {static_cast<int>(sizeof(kGorgeRoad) / sizeof(kGorgeRoad[0])),
-                       static_cast<int>(sizeof(kLongRoad) / sizeof(kLongRoad[0])),
-                       static_cast<int>(sizeof(kWestRoad) / sizeof(kWestRoad[0]))};
+    // the field roads, carried on outside Castle Town to its gates: the gorge and long roads end
+    // over the east bridge at the east gate (the royal convoys run the long one from there), the
+    // west road starts at the west gate and crosses the west bridge into the field
+    auto add = [](Road& road, const ConvoyPt* pts, size_t n, u8 stage) {
+        road.p.insert(road.p.end(), pts, pts + n);
+        road.stage.insert(road.stage.end(), n, stage);
+    };
+#define PSR_N(a) (sizeof(a) / sizeof((a)[0]))
+    for (Road& road : g_roads) { road.p.clear(); road.stage.clear(); }
+    add(g_roads[0], kGorgeRoad, PSR_N(kGorgeRoad), 0);
+    add(g_roads[0], kEastGate, PSR_N(kEastGate), 1);
+    add(g_roads[1], kLongRoad, PSR_N(kLongRoad), 0);
+    add(g_roads[1], kEastGate, PSR_N(kEastGate), 1);
+    add(g_roads[2], kWestGate, PSR_N(kWestGate), 1);
+    add(g_roads[2], kWestRoad, PSR_N(kWestRoad), 0);
+#undef PSR_N
     for (int r = 0; r < 3; ++r) {
         Road& road = g_roads[r];
-        road.p = ps[r];
-        road.n = ns[r];
+        road.n = static_cast<int>(road.p.size());
         road.cum.assign(road.n, 0.0f);
         for (int i = 1; i < road.n; ++i) {
             const f32 dx = road.p[i].x - road.p[i - 1].x, dz = road.p[i].z - road.p[i - 1].z;
@@ -184,6 +202,14 @@ void roadAt(int r, bool reverse, f32 d, cXyz* pos, s16* yaw, s8* room) {
         *yaw = cM_atan2s(c.x - from.x, c.z - from.z);
     }
     if (room != nullptr) *room = (k < 0.5f ? a : b).room;
+}
+// which stage that spot is in (0 the field, 1 outside Castle Town)
+int stageAt(int r, bool reverse, f32 d) {
+    const Road& road = g_roads[r];
+    const f32 L = road.cum.back();
+    const f32 t = std::clamp(reverse ? L - d : d, 0.0f, L);
+    int i = static_cast<int>(std::upper_bound(road.cum.begin(), road.cum.end(), t) - road.cum.begin()) - 1;
+    return road.stage[std::clamp(i, 0, road.n - 1)];
 }
 
 psrWagon_c* wagonOf(fpc_ProcID id) {
@@ -250,8 +276,8 @@ f32 linkDist(const cXyz& at) {
 constexpr std::array<u8, 3> kRiderCast{7, 15, 28};              // townsfolk who don't fight
 constexpr std::array<u8, 7> kEscortCast{3, 6, 8, 9, 11, 13, 14}; // the men fighters (8: the bowman)
 
-void addMember(std::vector<Member>& crew, u8 type, u8 role, f32 x, f32 z, s16 face = 0) {
-    const int slot = travellers::crewClaim(type);
+void addMember(std::vector<Member>& crew, u8 type, u8 role, f32 x, f32 z, s16 face = 0, u8 style = 0) {
+    const int slot = travellers::crewClaim(type, style);
     if (slot < 0) return;
     Member m;
     m.slot = slot;
@@ -271,11 +297,12 @@ void staffConvoy(Convoy& c) {
     releaseCrew(c.crew);
     if (c.kind == K_ROYAL) {
         // two guards on the bench, three walking: a spearman, a swordsman, a spearman
-        addMember(c.crew, 0, R_RIDER, -30.0f, 0.0f);
-        addMember(c.crew, 1, R_RIDER, 30.0f, 0.0f);
-        addMember(c.crew, 1, R_ESCORT, -kSideOut, -120.0f);
-        addMember(c.crew, 0, R_ESCORT, kSideOut, -520.0f);
-        addMember(c.crew, 0, R_ESCORT, -kSideOut, -760.0f);
+        using travellers::kStyleSpear; using travellers::kStyleSword; using travellers::kStyleArcher;
+        addMember(c.crew, 0, R_RIDER, -30.0f, 0.0f, 0, kStyleSword);
+        addMember(c.crew, 1, R_RIDER, 30.0f, 0.0f, 0, kStyleSword);
+        addMember(c.crew, 1, R_ESCORT, -kSideOut, -120.0f, 0, kStyleSpear);
+        addMember(c.crew, 0, R_ESCORT, kSideOut, -520.0f, 0, kStyleArcher);   // the royal bow
+        addMember(c.crew, 0, R_ESCORT, -kSideOut, -760.0f, 0, kStyleSpear);
     } else {
         // two travellers driving, two fighters walking on each side
         addMember(c.crew, kRiderCast[rnd() % kRiderCast.size()], R_RIDER, -30.0f, 0.0f);
@@ -359,7 +386,8 @@ void tickConvoy(Convoy& c) {
     s16 yaw;
     s8 room;
     roadAt(c.road, c.reverse, c.s, &pos, &yaw, &room);
-    const bool open = worldOpen() && !dComIfGp_event_runCheck();
+    // (only in the stage Link is in: crossing a loading zone it drives through it, like he does)
+    const bool open = worldOpen() && !dComIfGp_event_runCheck() && stageAt(c.road, c.reverse, c.s) == curStage();
     psrWagon_c* w = wagonOf(c.wagon);
 
     // out in the world, or back on paper
@@ -459,7 +487,7 @@ void tickNod() {
     else if (travellers::eldinCleared() && !travellers::lanayruCleared()) want = 1;
 
     psrWagon_c* w = wagonOf(g_nod.wagon);
-    const bool open = worldOpen() && !dComIfGp_event_runCheck();
+    const bool open = worldOpen() && !dComIfGp_event_runCheck() && curStage() == 0;   // both walls are in the field
     if (g_nod.which >= 0) {
         const Parked& p = kParked[g_nod.which];
         const bool far = linkDist(p.pos) > kHideRadius;
@@ -511,6 +539,13 @@ void setAnim(daNpcPasser_c* p, Member& m, u8 idx, f32 rate) {
     if (m.anim != idx) {
         m.anim = idx;
         auto* a = static_cast<J3DAnmTransformKey*>(p->getAnmP(idx, idx == 14 ? 0 : p->getObjNum()));
+        // a spearman walks and stands with his spear as a staff: the men's own stick walk and wait
+        if (travellers::guardStyle(p) == travellers::kStyleSpear && (idx == 2 || idx == 0)) {
+            if (auto* stick = static_cast<J3DAnmTransformKey*>(
+                    dComIfG_getObjectRes("Mspecial", idx == 2 ? "m_walk_stick.bck" : "m_wait_stick.bck"))) {
+                a = stick;
+            }
+        }
         if (a != nullptr) p->setAnm(a, rate, 8.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
     }
     if (p->mpMorf != nullptr) p->mpMorf->setPlaySpeed(rate);

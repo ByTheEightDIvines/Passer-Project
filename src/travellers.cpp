@@ -54,6 +54,7 @@ constexpr int kPopulation = 30;              // travellers on the network
 // The guards at their camp by the Bridge of Eldin, in the slots after the travellers: Castle Town's
 // own guard bodies (Cd2 type 1 MAD_a, type 0 MAN_a), there once Castle Town's twilight is lifted.
 constexpr std::array<u8, 3> kGuardCast{1, 0, 0};
+constexpr std::array<u8, 3> kGuardStyle{1, 1, 2};   // two spearmen and a swordsman
 constexpr f32 kVirtualSpeed = 4.0f;          // units per frame while not spawned (about a walk)
 // A traveller only ever appears from its room's spawner: everyone in a room when it loads, and
 // after that whoever walks in from somewhere that isn't loaded. Those late arrivals wait (walking on
@@ -88,7 +89,7 @@ constexpr int kHealFramesResting = 150;      // ...every 2.5 s while sitting at 
 // Travellers who fight (every man but 4, 7 and 15, plus passer 29). They stand their ground and only
 // run once they are down to their last heart.
 constexpr int kCookPathId = 0x3F;   // the camp cook's body (camp_cook.cpp)
-constexpr std::array<u8, 8> kFighters{3, 6, 8, 9, 11, 13, 14, 29};
+constexpr std::array<u8, 10> kFighters{3, 6, 8, 9, 11, 13, 14, 29, 0, 1};   // (0, 1: the guards)
 // The passer types from the cast (stock passer type ids).
 // Everyone on the road but the bards: each fire has a bard of its own (homeCamp), so no others.
 constexpr std::array<u8, 13> kWalkCast{3, 6, 7, 8, 9, 11, 13, 14, 15, 20, 27, 28, 29};
@@ -278,6 +279,7 @@ struct Traveller {
     int sleepFrames = 0;
     int homeCamp = -1;     // a bard's own fire: he travels by day and is back to play there every night
     bool guard = false;    // one of the guards: lives at the guards' camp, never takes to the road
+    u8 style = 0;          // a guard's arms: 1 spear and tall shield, 2 sword and small shield, 3 that and the royal bow
     // Convoy people (riders, escorts, the folk by the parked wagons): the convoys put them in and take
     // them out, and say where they stand. The roster leaves them alone: no roads, no camps, no spawner.
     bool crew = false;
@@ -879,7 +881,11 @@ void setIdle(daNpcPasser_c* p) {
     cXyz seat;
     if (campInfo(p, nullptr, &seat, nullptr) && p->current.pos.absXZ(seat) <= 40.0f && traveller_gear::sit(p, true)) return;
     traveller_gear::sit(p, false);
-    if (auto* idle = static_cast<J3DAnmTransformKey*>(p->getAnmP(0, p->getObjNum()))) {
+    auto* idle = static_cast<J3DAnmTransformKey*>(p->getAnmP(0, p->getObjNum()));
+    if (guardStyle(p) == kStyleSpear) {   // a spearman stands leaning on his spear
+        if (auto* stick = static_cast<J3DAnmTransformKey*>(dComIfG_getObjectRes("Mspecial", "m_wait_stick.bck"))) idle = stick;
+    }
+    if (idle != nullptr) {
         p->setAnm(idle, 1.0f, 12.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
     }
 }
@@ -1511,6 +1517,7 @@ void populate() {
         t.used = true;
         t.guard = true;
         t.type = kGuardCast[k];
+        t.style = kGuardStyle[k];
         t.node = guards;
         t.state = ST_REST;
         t.restUntilMorning = true;
@@ -2151,7 +2158,7 @@ void diagLine(const char* fmt, ...) {
 constexpr int kCrewFirst = kPopulation + static_cast<int>(kGuardCast.size());
 void crewDespawn(int slot);
 
-int crewClaim(u8 type) {
+int crewClaim(u8 type, u8 style) {
     for (int s = kCrewFirst; s < kSlots; ++s) {
         Traveller& t = g_t[s];
         if (t.used) continue;
@@ -2159,6 +2166,7 @@ int crewClaim(u8 type) {
         t.used = true;
         t.crew = true;
         t.type = type;
+        t.style = style;
         t.state = ST_REST;
         return s;
     }
@@ -2218,6 +2226,11 @@ bool crewDead(int slot) { return slot >= kCrewFirst && slot < kSlots && g_t[slot
 bool crewHeld(const fopAc_ac_c* passer) {
     const int slot = slotOf(passer);
     return slot >= 0 && g_t[slot].crew && g_t[slot].held;
+}
+
+u8 guardStyle(const fopAc_ac_c* passer) {
+    const int slot = slotOf(passer);
+    return slot >= 0 && g_t[slot].used ? g_t[slot].style : 0;
 }
 
 bool isCrew(const fopAc_ac_c* passer) {
