@@ -112,3 +112,16 @@ so nothing below has been played yet.
 - While the conversation runs (`dialogue::talking()`), `convoys::update` returns early (other events put
   the convoys away, which would make one vanish in front of Link); a walking/standing crew member being
   talked to stands and turns to Link (`placeHeld`). Nothing during Telma's escort.
+
+## Beedle (2026-11-18)
+- Model: `tools/beedle/` (export_blend.py in Blender 4.0, skinbmd.py the skinned writer, build_beedle.py on
+  MAN_a's joint frames with his bone positions; WW backbone1+2 = the game's backbone). His WW animations:
+  retarget_ww.py (`psr_bs_*_up.bck` upper body over standing legs for the field; `psr_bs_*.bck` whole, for
+  the tent). Field archive `P_Beedl.arc` (pack_beedle.py).
+- Field: traveller slot 29 (`travellers::isBeedle`), type 0 (men's skeleton, Mgeneral walk/run/stand), his
+  look (traveller_gear `kBeedleLook`). Wanders road spots and camps (never sits), never into town, never
+  any road through F_SP122 room 8 (his tent). Flees at 2.2x a full run, never cowers or screams, with the
+  game's footstep dust (dPaPoT_c, as the postman). Lantern on his bag at night (`kBeedleHook`).
+- Shop: beedle_field.cpp. One ware a day (save date), from those unlocked; usual price - 5; custom flow
+  query/event check and buy; THANK YOU (beedle_0038) / GOODBYE (beedle_0037) on programs 0xED/0xEC, files
+  `res/voices/beedle_thanks.wav` / `beedle_goodbye.wav`.
