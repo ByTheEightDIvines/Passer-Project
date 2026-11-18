@@ -23,8 +23,8 @@ constexpr const char* kModel = "psr_shop_kntr.bmd";  // materials renamed al_kt_
 constexpr f32 kBaseY = 330.0f;
 constexpr f32 kZ[psrShopLamps_c::kNum] = {-330.0f, 0.0f, 330.0f};
 constexpr f32 kScale = 1.6f;
-constexpr f32 kFlameY = 23.0f * kScale;             // the flame in a lantern, this far up from its base
-constexpr f32 kFlameScale = 2.2f;   // the lantern is 1.6 times Link's: a flame to fill it
+constexpr f32 kFlameY = 12.0f * kScale;             // on the wick: the glass runs 9.5..27 up the lantern
+constexpr f32 kFlameScale = kScale;  // as big as the lantern is scaled (2.2 rose out of the lid)
 constexpr u32 kHeapSize = 0x80000000;               // auto-sized
 
 bool g_pending = false;                             // created, not yet running

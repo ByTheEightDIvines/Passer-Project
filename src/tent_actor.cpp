@@ -307,7 +307,7 @@ int psrTent_c::Execute() {
         if (night && !mHasFlame && mStageNum > 0) {
             const StageProp& lamp = kStage[0];
             const f32 k = psr_tent::kScale[mKind];
-            const f32 ly = (lamp.y + 28.0f * lamp.scale) * k - 15.0f;   // the flame sits 15 above the actor
+            const f32 ly = (lamp.y + 12.0f * lamp.scale) * k - 15.0f;   // on the wick (glass 9.5..27); the flame sits 15 above the actor
             const f32 lz = lamp.z * k;
             const f32 c = cM_scos(shape_angle.y), sn = cM_ssin(shape_angle.y);
             ActorSpawnParams p{};

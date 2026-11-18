@@ -1617,8 +1617,19 @@ void refreshStory() {
     if (dComIfGs_isEventBit(dSv_event_flag_c::saveBitLabels[68])) blocks |= EB_RIDER_GATE;
     if (rooms != g_openRooms || blocks != g_openBlocks) {
         diag("story   open rooms %05x (was %05x) blockers gone %x (was %x)", rooms, g_openRooms, blocks, g_openBlocks);
+        const bool firstOpen = g_openRooms == 0 && rooms != 0 && g_started;
         g_openRooms = rooms;
         g_openBlocks = blocks;
+        // the field has just opened (a save loaded after everyone was placed with it shut): those parked
+        // resting get going soon, as at the start of a day, not "tomorrow morning"
+        if (firstOpen) {
+            for (int s = 0; s < kPopulation && s < kSlots; ++s) {
+                Traveller& t = g_t[s];
+                if (!t.used || t.spawned || t.guard || t.crew || t.dead || t.state != ST_REST) continue;
+                t.restUntilMorning = false;
+                t.timer = rndRange(30, 1800);
+            }
+        }
     }
 }
 
@@ -2028,13 +2039,15 @@ void update() {
     if (!g_started) {
         g_rng ^= static_cast<u32>(dKy_getdaytime_minute() * 7919 + hour() * 104729);
         refreshBridge();
-    if ((g_frame % 60) == 0) {   // the story moves on (or a save is loaded): open up the field
-        refreshStory();
-        rehomeStranded();
-    }
         refreshStory();
         populate();
         g_started = true;
+    }
+    // the story moves on (or a save is loaded): open up the field. (This sat inside the block above,
+    // which runs once before any save is loaded: the field stayed shut and nobody ever set off.)
+    if ((g_frame % 60) == 0) {
+        refreshStory();
+        rehomeStranded();
     }
     const int stage = currentStage();
     auto* player = dComIfGp_getPlayer(0);

@@ -2944,7 +2944,11 @@ HookAction onTalkTagExecutePre(ModContext*, void* args, void*, void*) {
                 beedle_field::talkStarted(who);
             }
         } else if (n > 0) {
-            const int pick = std::min(n - 1, static_cast<int>(cM_rndF(static_cast<f32>(n))));
+            // each person their own line, moving on one each time he's talked to: the people of one wagon
+            // don't all say the same thing, and nobody repeats himself back to back
+            static std::array<u8, travellers::kSlots> s_turn{};
+            const int slot = std::clamp(travellers::slotIndex(who), 0, static_cast<int>(travellers::kSlots) - 1);
+            const int pick = (slot * 7 + s_turn[slot]++) % n;
             tag->mFlowNodeNo = g_spotNodes[spot][pick];
             g_talkWith = fopAcM_GetID(who);
             // he keeps moving (and turns to Link, when he isn't sitting) while the rest of the world waits
