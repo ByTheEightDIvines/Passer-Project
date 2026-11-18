@@ -4,6 +4,8 @@
 #include "d/actor/d_a_e_rd.h"
 #include "d/actor/d_a_player.h"
 #include "d/actor/d_a_tag_kmsg.h"
+#include "d/actor/d_a_set_bgobj.h"
+#include "d/actor/d_a_bg_obj.h"
 #include "d/d_com_inf_game.h"
 #include "d/d_particle_name.h"
 #include "d/d_path.h"
@@ -327,8 +329,9 @@ std::array<uint16_t, kCookLineCount> g_cookNodes{0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF}
 
 // Rooms 0 (the field past the bridge), 4 and 5 are loaded together, and the passer walks
 // through them, so enemies from any of them count.
+// Never during Telma's escort: its Bulblins and archers are left entirely to the game.
 bool inPasserArea(const fopAc_ac_c* actor) {
-    return actor != nullptr && travellers::inNetworkStage();
+    return actor != nullptr && travellers::inNetworkStage() && !travellers::escortRunning();
 }
 
 bool inFieldRoom(const fopAc_ac_c* actor) {
@@ -513,6 +516,57 @@ bool startSidestep(daNpcPasser_c* passer, PasserState& state);
 void sidestepTick(daNpcPasser_c* passer, PasserState& state, f32 speed);
 bool swingOrStrike(daNpcPasser_c* passer, PasserState& state);
 void fighterAnim(daNpcPasser_c* passer, PasserState& state);
+
+// Rock pile 2: six bombable boulders (@bg004d, switch 0x0f) across the road where Hyrule Field's
+// northwest road meets the north field (F_SP121 room 10). Nothing in the story clears them, so the
+// convoy road would stay shut for players who never bomb them: they're never made. Their setter
+// (mmvbg) normally spawns the boulder and deletes itself; skipping the spawn leaves just that.
+// Nothing is written to the save, and the other boulders in the room (other switches) are untouched.
+constexpr u16 kRockPileBg = 0x004D;
+constexpr u8 kRockPileSwitch = 0x0F;
+constexpr int kRockPileRoom = 10;
+
+HookAction onSetBgObjCreateInitPre(ModContext*, void* args, void* retval, void*) {
+    auto* setter = mods::arg<daSetBgObj_c*>(args, 0);
+    if (setter == nullptr) return HOOK_CONTINUE;
+    const char* stage = dComIfGp_getStartStageName();
+    if (stage == nullptr || std::strcmp(stage, "F_SP121") != 0) return HOOK_CONTINUE;
+    if (fopAcM_GetRoomNo(setter) != kRockPileRoom) return HOOK_CONTINUE;
+    if ((fopAcM_GetParam(setter) & 0xFFFF) != kRockPileBg) return HOOK_CONTINUE;
+    if ((static_cast<u16>(setter->current.angle.z) & 0xFF) != kRockPileSwitch) return HOOK_CONTINUE;
+    if (retval != nullptr) *static_cast<int*>(retval) = 1;
+    return HOOK_SKIP_ORIGINAL;
+}
+
+// Fallback, should the setter hook not take (e.g. the call inlined): a boulder of the pile that
+// was made anyway is deleted, a few times a second while room 10 is loaded. Only ever ours.
+bool isRockPileBoulder(fopAc_ac_c* a) {
+    if (fopAcM_GetName(a) != fpcNm_BG_OBJ_e || fopAcM_GetRoomNo(a) != kRockPileRoom) return false;
+    if ((fopAcM_GetParam(a) & 0xFFFF) != kRockPileBg) return false;
+    return daBgObj_prm::getSwBit(static_cast<daBgObj_c*>(a)) == kRockPileSwitch;
+}
+
+void clearRockPile() {
+    static int s_tick = 0;
+    if ((++s_tick % 20) != 0) return;
+    const char* stage = dComIfGp_getStartStageName();
+    if (stage == nullptr || std::strcmp(stage, "F_SP121") != 0) return;
+    if (!dComIfGp_roomControl_checkRoomDisp(kRockPileRoom)) return;
+    struct Found { std::array<fopAc_ac_c*, 8> a{}; int n = 0; } found;
+    fpcM_Search([](void* p, void* data) -> void* {
+        if (!fopAcM_IsActor(p)) return nullptr;
+        auto* f = static_cast<Found*>(data);
+        auto* a = static_cast<fopAc_ac_c*>(p);
+        if (f->n < static_cast<int>(f->a.size()) && isRockPileBoulder(a)) f->a[f->n++] = a;
+        return nullptr;
+    }, &found);
+    for (int i = 0; i < found.n; ++i) fopAcM_delete(found.a[i]);
+    if (found.n > 0) {
+        char line[96];
+        std::snprintf(line, sizeof(line), "removed %d boulder(s) of the northwest rock pile", found.n);
+        svc_log->info(mod_ctx, line);
+    }
+}
 
 // The Bulblin currently running its update, while a live passer is close enough to target.
 fopAc_ac_c* g_bulblinNearPasser = nullptr;
@@ -977,6 +1031,7 @@ DEFINE_HOOK_SYMBOL("daE_RD_Execute", int(void*), BulblinExecute);
 DEFINE_HOOK(&fopAcIt_Judge, ActorJudge);
 DEFINE_HOOK_SYMBOL("src/d/actor/d_a_e_rd.cpp#get_pla", fopAc_ac_c*(fopAc_ac_c*), BulblinGetPla);
 DEFINE_HOOK(&daNpcCd2_c::checkFearSituation, PasserFearCheck);
+DEFINE_HOOK(&daSetBgObj_c::CreateInit, SetBgObjCreateInit);
 DEFINE_HOOK(&daTag_KMsg_c::Execute, TalkTagExecute);
 DEFINE_HOOK(&fopAcM_searchActorAngleY, EnemyTargetAngleY);
 DEFINE_HOOK(&fopAcM_searchActorAngleX, EnemyTargetAngleX);
@@ -2892,6 +2947,9 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     if (mods::hook::add_post<BulblinGetPla>(onGetPlaPost) != MOD_OK) {
         svc_log->info(mod_ctx, "Bulblin get_pla hook unavailable; Bulblins target whoever is closer");
     }
+    if (mods::hook::add_pre<SetBgObjCreateInit>(onSetBgObjCreateInitPre) != MOD_OK) {
+        svc_log->info(mod_ctx, "boulder setter hook unavailable; the northwest rock pile stays");
+    }
     if (!traveller_gear::install()) {
         return mods::set_error(error, MOD_UNAVAILABLE, "failed to install the traveller look hooks");
     }
@@ -2925,6 +2983,7 @@ MOD_EXPORT ModResult mod_update(ModError*) {
     spot_picker::update();
     updateHunts();
     travellers::update();
+    clearRockPile();
     camp_music::tick();
     shop_stage::tick();
     return MOD_OK;

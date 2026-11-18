@@ -19,6 +19,12 @@ constexpr int kFleePathBase = 0x60;       // path IDs 0x60..0x7F: each slot's fl
 void initialize();
 void update();                            // once per frame (mod_update)
 
+// Story state, read from the save so it holds while Link is anywhere.
+bool escortRunning();     // Telma's wagon escort is on: nothing of ours appears in the field
+bool eldinCleared();      // Eldin's twilight is gone (the Faron-Eldin twilight wall with it)
+bool lanayruCleared();    // Lanayru's twilight is gone (the Eldin-Lanayru wall, Castle Town lit)
+bool eldinBridgeOpen();   // the Bridge of Eldin is standing: not yet taken, or warped back
+
 // The passer actor belongs to this mod's travellers.
 bool isTraveller(const fopAc_ac_c* actor);
 // The path a traveller's actor asked for (dPath_GetRoomPath hook), or nullptr.

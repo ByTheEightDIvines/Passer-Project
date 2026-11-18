@@ -1341,16 +1341,41 @@ void updateCamps(int stage, const cXyz& link) {
     }
 }
 
-void probeBridge(int stage) {
-    if (g_bridgeRepaired || stage != 0 || !dComIfGp_roomControl_checkRoomDisp(0)) return;
-    if ((g_frame % 60) != 0) return;
-    dBgS_ObjGndChk gnd;
-    cXyz probe(kBridgeProbe[0], kBridgeProbe[1] + 300.0f, kBridgeProbe[2]);
-    gnd.SetPos(&probe);
-    const f32 h = dComIfG_Bgsp().GroundCross(&gnd);
-    if (h != -G_CM3D_F_INF && std::fabs(h - kBridgeProbe[1]) < 150.0f) {
-        g_bridgeRepaired = true;
-        svc_log->info(mod_ctx, "travellers: the Eldin-side bridge is repaired; the escort valley is open");
+// Escort: the game switches the field to its escort layers on this temp bit, and Telma's
+// wagon (NPC_COACH) is out. Once the escort's closing cutscene has played (M_035) it's over for
+// good, whatever the temp bit says. The wagon search runs once a frame, here, not in the hooks.
+bool g_escort = false;
+
+bool computeEscort() {
+    /* dSv_event_flag_c::M_035 - Cutscene - [cutscene: 35] after carriage guarding event */
+    if (dComIfGs_isEventBit(dSv_event_flag_c::saveBitLabels[68])) return false;
+    if (dComIfGs_isTmpBit(0x0601)) return true;
+    return fopAcM_SearchByName(fpcNm_NPC_COACH_e) != nullptr;
+}
+
+}  // namespace
+
+bool escortRunning() { return g_escort; }
+bool eldinCleared() { return dComIfGs_isDarkClearLV(1) == TRUE; }
+bool lanayruCleared() { return dComIfGs_isDarkClearLV(2) == TRUE; }
+
+bool eldinBridgeOpen() {
+    /* dSv_event_flag_c::M_092 - Hyrule Field - Warped Eldin Bridge */
+    if (dComIfGs_isEventBit(dSv_event_flag_c::saveBitLabels[125])) return true;
+    /* dSv_event_flag_c::M_050 - Main Event - Eldin Bridge disappears */
+    return !dComIfGs_isEventBit(dSv_event_flag_c::saveBitLabels[83]);
+}
+
+namespace {
+
+// The bridge is read from the save (see eldinBridgeOpen), so it's right wherever Link is; this
+// only logs the change.
+void refreshBridge() {
+    const bool open = eldinBridgeOpen();
+    if (open != g_bridgeRepaired) {
+        g_bridgeRepaired = open;
+        svc_log->info(mod_ctx, open ? "travellers: the Bridge of Eldin is standing; the escort valley is open"
+                                    : "travellers: the Bridge of Eldin is gone; the escort valley is shut");
     }
 }
 
@@ -1695,7 +1720,10 @@ void update() {
     const int stage = currentStage();
     auto* player = dComIfGp_getPlayer(0);
     // No travellers in a province still covered by twilight (they keep travelling virtually).
-    const bool inWorld = stage >= 0 && player != nullptr && !dKy_darkworld_check();
+    // ...nor while Telma's escort runs: the field is the game's own then.
+    g_escort = computeEscort();
+    refreshBridge();
+    const bool inWorld = stage >= 0 && player != nullptr && !dKy_darkworld_check() && !g_escort;
     const cXyz link = inWorld ? player->current.pos : cXyz(0.0f, 0.0f, 0.0f);
     if (const int worldNow = inWorld ? stage : -2; worldNow != g_lastWorldLogged) {
         // only when it changes (this used to write a line every frame while out of the world)
@@ -1711,7 +1739,6 @@ void update() {
     if (g_spawnCooldown > 0) --g_spawnCooldown;
     const bool settled = inWorld && !dComIfGp_event_runCheck();
     if (settled) {
-        probeBridge(stage);
         updateCamps(stage, link);
     }
     const int maxLive = kMaxReal;
@@ -1876,8 +1903,8 @@ bool bowmanIn(int room) {
 bool spawnerTick(fopAc_ac_c* spawner, bool firstTick) {
     const int stage = currentStage();
     auto* player = dComIfGp_getPlayer(0);
-    if (stage < 0 || player == nullptr || dKy_darkworld_check() || dComIfGp_event_runCheck()) {
-        return false;   // no travellers in twilight; nothing appears during events
+    if (stage < 0 || player == nullptr || dKy_darkworld_check() || dComIfGp_event_runCheck() || g_escort) {
+        return false;   // no travellers in twilight; nothing appears during events or Telma's escort
     }
     const int room = fopAcM_GetRoomNo(spawner);
     static std::array<int, 64> s_lastArrival{};   // per room: frame of its last late arrival
