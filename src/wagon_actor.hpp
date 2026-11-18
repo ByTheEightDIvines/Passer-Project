@@ -13,7 +13,7 @@
 //   params bit 8:    driven (the convoy moves it); clear = parked where it was made, horse waiting.
 // The horse, harness and Telma's wagon come straight from the disc's Coach.arc; the royal pieces and
 // both cargos from PsrWagon.arc in the dusk's overlay.
-#define PSR_WAGON_NAME "PsrWagon"
+#define PSR_WAGON_NAME "PsrWgn"   // (actor names are at most 7 letters)
 
 enum PsrWagonKind : u8 { PSR_WAGON_TRAVELLER = 0, PSR_WAGON_ROYAL = 1 };
 constexpr u32 kPsrWagonDriven = 0x100;

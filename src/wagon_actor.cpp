@@ -19,7 +19,6 @@
 #include "mods/service.hpp"
 #include "mods/svc/log.h"
 
-IMPORT_SERVICE(ActorService, svc_actor);
 
 namespace {
 const char* kCoachArc = "Coach";     // the disc's own: horse, harness, Telma's wagon, their collision
@@ -75,7 +74,7 @@ f32 groundAt(const cXyz& p, f32 above = 400.0f) {
     return dComIfG_Bgsp().GroundCross(&gnd);
 }
 
-J3DModel* model(const char* arc, const char* name) {
+J3DModel* loadModel(const char* arc, const char* name) {
     auto* data = static_cast<J3DModelData*>(dComIfG_getObjectRes(arc, name));
     return data != nullptr ? mDoExt_J3DModel__create(data, 0x80000, 0x11000084) : nullptr;
 }
@@ -121,8 +120,8 @@ int psrWagon_c::CreateHeap() {
                                        0x80000, 0x11000084);
     if (mpHorse == nullptr || mpHorse->getModel() == nullptr) return 0;
     mAnim = 0;
-    mpHarness = model(kCoachArc, "harness.bmd");
-    mpCoach = model(kCoachArc, "coach.bmd");
+    mpHarness = loadModel(kCoachArc, "harness.bmd");
+    mpCoach = loadModel(kCoachArc, "coach.bmd");
     if (mpHarness == nullptr || mpCoach == nullptr) return 0;
     mpHarness->setUserArea(reinterpret_cast<uintptr_t>(this));
     mpCoach->setUserArea(reinterpret_cast<uintptr_t>(this));
@@ -136,11 +135,11 @@ int psrWagon_c::CreateHeap() {
     }
     if (mKind == PSR_WAGON_ROYAL) {
         for (int i = 0; i < 7; i++) {
-            mpRoyal[i] = model(kOwnArc, kRoyalModel[i]);
+            mpRoyal[i] = loadModel(kOwnArc, kRoyalModel[i]);
             if (mpRoyal[i] == nullptr) return 0;
         }
     }
-    mpCargo = model(kOwnArc, kCargo[mKind]);
+    mpCargo = loadModel(kOwnArc, kCargo[mKind]);
     // the wagon's and the harness's own collision, as the game's coach has it
     mpBgCoach = JKR_NEW dBgW();
     if (mpBgCoach == nullptr) return 0;
