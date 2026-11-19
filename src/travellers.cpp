@@ -7,6 +7,7 @@
 #include "spot_picker.hpp"
 #include "traveller_gear.hpp"
 #include "people.hpp"
+#include "guard_grudge.hpp"
 
 #include "d/actor/d_a_npc_passer.h"
 #include "d/d_bg_s_gnd_chk.h"
@@ -2317,6 +2318,7 @@ void update() {
         rehomeStranded();
     }
     people::tick();
+    grudge::tick();
     const int stage = currentStage();
     auto* player = dComIfGp_getPlayer(0);
     // No travellers in a province still covered by twilight (they keep travelling virtually).

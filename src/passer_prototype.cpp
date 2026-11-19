@@ -46,6 +46,7 @@
 #include "dialogue_marks.hpp"
 #include "beedle_field.hpp"
 #include "people.hpp"
+#include "guard_grudge.hpp"
 
 #include <algorithm>
 #include <array>
@@ -343,6 +344,7 @@ mods::flow::Graph g_talkGraph;
 std::deque<mods::flow::RegisteredMessage> g_spotMessages;   // the convoy and guard lines, alive as long as the mod
 mods::flow::Graph g_spotGraph;
 mods::flow::Graph g_beedleGraph;
+mods::flow::Graph g_grudgeGraph;
 mods::flow::Graph g_peopleGraph;
 uint16_t g_talkNode = 0xFFFF;
 constexpr int kCookLineCount = 4;
@@ -2117,9 +2119,12 @@ void strike(daNpcPasser_c* passer, PasserState& state) {
     at.z += cM_scos(passer->shape_angle.y) * 90.0f;
     // a soldier's blow goes where the foe is (still turning to face it, the blow didn't), as far as
     // his weapon reaches, and up at one overhead (a Kargarok swooping)
-    if (!state.vsWolf && soldier(passer)) {
+    if (soldier(passer)) {
         const f32 reach = reachOf(passer);
-        if (fopAc_ac_c* foe = nearestEnemyAt(passer->current.pos, reach + 120.0f, kSoldierReachAbove + 60.0f)) {
+        fopAc_ac_c* foe = state.vsWolf ? dComIfGp_getPlayer(0)   // Link (wolf, or him over his bombs)
+                                       : nearestEnemyAt(passer->current.pos, reach + 120.0f, kSoldierReachAbove + 60.0f);
+        if (foe != nullptr && passer->current.pos.absXZ(foe->current.pos) > reach + 120.0f) foe = nullptr;
+        if (foe != nullptr) {
             cXyz d = foe->current.pos - passer->current.pos;
             d.y = 0.0f;
             const f32 len = d.absXZ();
@@ -2448,6 +2453,7 @@ bool campGuard(daNpcPasser_c* passer, PasserState& state) {
     // the wolf at the fire: the fighters go for him; everyone else cowers as from any monster
     enemy = nearerFoe(center, enemy, wolfLinkNear(center, guardRadius));
     if (fighter && wolfShy(passer) && enemy == dComIfGp_getPlayer(0)) enemy = nullptr;
+    if (guard && grudge::hostile(passer) && !daPy_py_c::checkNowWolf()) enemy = dComIfGp_getPlayer(0);   // after Link
     state.vsWolf = enemy != nullptr && enemy == dComIfGp_getPlayer(0);
 
     if (fighter && !holdsGround(passer)) {
@@ -2655,6 +2661,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
                     say(passer, *state, psr_bubble::kScared);
                     travellers::noteAct(passer, "a bomb! running");
                 }
+                if (soldier(passer)) grudge::onBomb(passer, bomb);   // a strike against Link (guard_grudge)
                 passer->setAction(daNpcPasser_c::MODE_1);
             }
         }
@@ -2704,7 +2711,10 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
             }
         }
         // the bowman: monsters out to bow range (birds circling overhead too)
-        const bool bowman = fighter_anim::bowman(passer) && holdsGround(passer);
+        // a soldier whose squad Link has bombed three times: Link's the one he's after (guard_grudge)
+        const bool afterLink = soldierHere && holdsGround(passer) && grudge::hostile(passer) && !daPy_py_c::checkNowWolf();
+        if (afterLink) enemy = dComIfGp_getPlayer(0);
+        const bool bowman = fighter_anim::bowman(passer) && holdsGround(passer) && !afterLink;
         if (bowman && enemy == nullptr) enemy = nearestEnemyAt(passer->current.pos, kBowRange);
         state->vsWolf = enemy != nullptr && enemy == dComIfGp_getPlayer(0);
         bool shoot = false;
@@ -2736,7 +2746,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
             // out of reach: charge at it (not at wolf Link: him it only squares up to)
             state->shooting = shoot;
             const f32 reach = soldierHere ? reachOf(passer) : kStrikeReach;
-            const bool charge = !shoot && !state->vsWolf && !fighter_anim::busy(passer) &&
+            const bool charge = !shoot && (!state->vsWolf || afterLink) && !fighter_anim::busy(passer) &&
                                 passer->current.pos.absXZ(enemy->current.pos) > reach;
             if (charge && !state->chasing) {
                 say(passer, *state, psr_bubble::kAttack);
@@ -2841,11 +2851,15 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
             callOut(passer, *state, kVoiceYelp, 30);
             say(passer, *state, psr_bubble::kScared);
             travellers::noteAct(passer, "thrown by a bomb (unhurt)");
+            if (soldier(passer)) grudge::onBomb(passer, attacker);
             return HOOK_CONTINUE;
         }
         const bool byWolf = attacker != nullptr && attacker == dComIfGp_getPlayer(0) &&
                             daPy_py_c::checkNowWolf() && travellers::isFighter(passer);
-        if (!byWolf && (attacker == nullptr || !fopAcM_IsActor(attacker) ||
+        // a soldier fighting Link over his bombs: Link's blows count (but never kill: see below)
+        const bool byLink = attacker != nullptr && attacker == dComIfGp_getPlayer(0) && !daPy_py_c::checkNowWolf() &&
+                            grudge::hostile(passer);
+        if (!byWolf && !byLink && (attacker == nullptr || !fopAcM_IsActor(attacker) ||
                         fopAcM_GetGroup(attacker) != fopAc_ENEMY_e)) {
             return HOOK_CONTINUE;
         }
@@ -2863,7 +2877,9 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
             life = state->health * kQuartersPerHeart;   // not on the roster (old prototype walker)
         }
         // the wolf hurts, but never kills: at least a quarter heart is always left
-        life = byWolf ? std::max(1, life - damage) : std::max(0, life - damage);
+        life = byWolf ? std::max(1, life - damage)
+             : byLink ? std::max(kQuartersPerHeart, life - damage)   // Link knocks him down to his last heart, no further
+                      : std::max(0, life - damage);
         travellers::setLife(passer, life);
         state->health = (life + kQuartersPerHeart - 1) / kQuartersPerHeart;
         passer->health = static_cast<s16>(state->health);
@@ -2873,6 +2889,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         state->voiceWait = 0;
         callOut(passer, *state, kVoiceYelp, 30);                           // and is heard
         say(passer, *state, travellers::isFighter(passer) ? psr_bubble::kAngry : psr_bubble::kScared);
+        if (byLink && life <= kQuartersPerHeart) grudge::yield(passer);   // "Mercy! I yield!"
         if (byWolf) {
             // bitten: from now on it's like any other traveller with the wolf: runs from him, never fights
             fighter_anim::drop(passer);
@@ -3268,6 +3285,17 @@ ModResult registerGreetingFlow() {
             if (!g_peopleGraph) report("the travellers' own talk (the graph)", g_peopleGraph.result());
         }
     }
+    {
+        mods::flow::GraphBuilder graph{kTalkFlowGroup};
+        if (const ModResult r = grudge::registerLines(graph, kTalkFlowGroup, kLanguages.data(), static_cast<int>(kLanguages.size()));
+            r != MOD_OK) {
+            report("the guards' bomb lines (a message)", r);
+        } else {
+            g_grudgeGraph = graph.commit();
+            grudge::linesReady(static_cast<bool>(g_grudgeGraph));
+            if (!g_grudgeGraph) report("the guards' bomb lines (the graph)", g_grudgeGraph.result());
+        }
+    }
     const bool any = static_cast<bool>(g_talkGraph) || g_spotNodesReady || static_cast<bool>(g_beedleGraph);
     return any ? MOD_OK : MOD_ERROR;
 }
@@ -3415,6 +3443,9 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
     }
     if (!traveller_gear::install()) {
         return mods::set_error(error, MOD_UNAVAILABLE, "failed to install the traveller look hooks");
+    }
+    if (grudge::registerActor() != MOD_OK) {
+        svc_log->info(mod_ctx, "guards' yell actor unavailable; they won't warn Link about his bombs");
     }
     if (cook::registerActor() != MOD_OK) {
         return mods::set_error(error, MOD_ERROR, "failed to register the camp cook");

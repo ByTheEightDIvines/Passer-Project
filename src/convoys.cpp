@@ -11,6 +11,7 @@
 #include "dialogue_marks.hpp"
 #include "travellers.hpp"
 #include "wagon_actor.hpp"
+#include "guard_grudge.hpp"
 
 #include "SSystem/SComponent/c_math.h"
 #include "SSystem/SComponent/c_lib.h"
@@ -484,7 +485,8 @@ void tickConvoy(Convoy& c) {
                 if (m.role != R_ESCORT || m.scared > 0) continue;   // (running from a bomb: not now)
                 auto* a = travellers::crewActor(m.slot);
                 const f32 behind = a != nullptr ? a->current.pos.absXZ(wagonFrame(w, m.x, 0.0f, m.z)) : 0.0f;
-                const bool fight = c.halted && behind < kLeash;
+                // (and the royal escort, all of them, while they're after Link over his bombs)
+                const bool fight = (c.halted && behind < kLeash) || (c.kind == K_ROYAL && grudge::squadHostile(2));
                 if (m.fighting == fight) continue;
                 m.fighting = fight;
                 travellers::crewHold(m.slot, !fight);

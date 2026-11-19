@@ -2,12 +2,14 @@
 
 #include "convoys.hpp"
 #include "travellers.hpp"
+#include "guard_grudge.hpp"
 
 namespace dialogue {
 
 Spot spotFor(const fopAc_ac_c* actor) {
     if (actor == nullptr) return SPOT_NONE;
     if (travellers::isBeedle(actor)) return SPOT_BEEDLE;
+    if (grudge::sore(actor)) return SPOT_GUARD_SORE;
     if (travellers::isGuard(actor)) {
         return travellers::eldinBridgeWarpedBack() ? SPOT_GUARD_BRIDGE_BACK : SPOT_GUARD_BRIDGE_OUT;
     }
@@ -27,6 +29,7 @@ const char* placeholder(Spot spot) {
         "[LINE: nod wagon, wall 2 - they know Link]",
         "[LINE: guard camp, bridge out]",
         "[LINE: guard camp, bridge back - one more ale]",
+        "[LINE: guards, beaten by Link]",
         "[LINE: gorge convoy]",
         "[LINE: west-gate convoy]",
         "[LINE: royal convoy]",
@@ -54,6 +57,9 @@ const char* const kLines[SPOT_COUNT][kMaxLines] = {
     {"The bridge fell out of the sky and\nlanded right where it used to be!\nWe're getting back on the road. After\none more ale.",
      "Yes, yes, we're leaving. Right after\nthis ale. And possibly the next one.\nDuty calls, but it can wait.",
      "Repaired, they say! I've checked it\ntwice. Well, I've looked at it twice.\nFrom here."},
+    // any soldier, a while after Link beat them (guard_grudge)
+    {"Oh. It's you. ...Keep your distance,\nbomb boy.",
+     "My helmet's still ringing, thanks for\nasking."},
     // the gorge travellers
     {"We're headed for Castle Town. The road\nthrough the gorge is safe enough now\nthat the darkness has lifted.",
      "Stay close if you're going our way.\nThe Bulblins don't like a crowd."},
