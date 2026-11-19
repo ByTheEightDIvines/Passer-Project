@@ -242,7 +242,7 @@ bool forcedAnm(J3DAnmTransform* a) {
     if (a == nullptr) return false;
     static const char* const kNames[] = {"psr_m_hit_f.bck", "psr_m_hit_l.bck", "psr_m_hit_r.bck", "psr_m_fly.bck",
                                          "psr_m_land.bck",  "psr_w_hit_f.bck", "psr_w_hit_l.bck", "psr_w_hit_r.bck",
-                                         "psr_w_fly.bck",   "psr_w_land.bck"};
+                                         "psr_w_fly.bck",   "psr_w_land.bck", "psr_m_sitflinch.bck", "psr_w_sitflinch.bck"};
     for (const char* n : kNames) {
         if (a == anm(n)) return true;
         char own[48];
@@ -873,6 +873,12 @@ void hit(daNpcPasser_c* passer, const cXyz& from) {
     startForced(passer, anim, kHitSpeed, true, 2.0f);
 }
 
+// Sitting: a flinch where they sit (tools/camp/sit_flinch.py), back to the sit after.
+void sitFlinch(daNpcPasser_c* passer) {
+    if (passer == nullptr || passer->mpMorf == nullptr) return;
+    if (J3DAnmTransformKey* a = borrowed(passer, "sitflinch")) startForced(passer, a, 1.0f, true, 2.0f);
+}
+
 bool block(daNpcPasser_c* passer, const cXyz& from) {
     if (passer == nullptr || passer->mpMorf == nullptr || styleOf(passer) == 0) return false;
     // a blow from in front, while it isn't already busy with its own thrust or swing: on the shield
@@ -1113,6 +1119,18 @@ HookAction onJointTweakPre(ModContext*, void* args, void* retval, void*) {
     if (slot < 0 || slot > travellers::kSlots) return HOOK_CONTINUE;
     const Body* b = npc->m_type < 16 ? bodyFor(npc->m_type) : nullptr;
     const int jnt = joint->getJntNo();
+    if (jnt == 0 && slot < travellers::kSlots) {
+        // on a camp bench: the whole body up or down to the bench's seat (the townsfolk sit at their
+        // own stool heights, men lower than women; a bench is one height for all)
+        const f32 lift = traveller_gear::benchLift(static_cast<daNpcPasser_c*>(npc));
+        if (lift != 0.0f) {
+            Mtx m;
+            cMtx_copy(model->getAnmMtx(0), m);
+            m[1][3] += lift;
+            model->setAnmMtx(0, m);
+            cMtx_copy(m, J3DSys::mCurrentMtx);
+        }
+    }
     if (slot < travellers::kSlots) applyLayer(npc, model, jnt);   // running legs, the light arm
     if (g_tweakOwner[slot] != fopAcM_GetID(npc)) {
         g_tweakOwner[slot] = fopAcM_GetID(npc);

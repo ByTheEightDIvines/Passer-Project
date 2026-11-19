@@ -79,6 +79,12 @@ void noteStuck(const fopAc_ac_c* passer, const char* what);   // diary: a travel
 bool campInfo(const fopAc_ac_c* passer, cXyz* center, cXyz* seat, s16* seatYaw);
 // The seats around a camp's fire (campNode = the camp's road node), for the fire to draw its stumps.
 int campSeatCount(int campNode);
+// The benches round a camp's fire (2 or 3 seats each; tools/camp/bench.py): count, and each one's
+// middle on the ground, the way its sitters face (the fire) and its seats.
+constexpr f32 kBenchTop = 44.0f;        // a bench's seat, over the ground
+constexpr f32 kBenchSeatGap = 90.0f;    // seat to seat along it
+int campBenchCount(int campNode);
+bool campBenchSpot(int campNode, int bench, cXyz* pos, s16* yaw, int* seats);
 bool campSeatSpot(int campNode, int seat, cXyz* pos, s16* yaw);
 bool campSeatInUse(int campNode, int seat);   // someone is sitting on it right now (it draws its own)
 // Put its resting (sitting) animation back next frame.

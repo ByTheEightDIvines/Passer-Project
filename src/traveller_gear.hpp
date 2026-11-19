@@ -21,6 +21,8 @@ bool install();
 // Sit this traveller down on its log at a camp fire (true if it did), or note it got up.
 bool sit(daNpcPasser_c* passer, bool on);
 bool sitting(int slot);
+// Sitting on a camp bench: how far to raise (or lower) the body onto its seat; 0 otherwise.
+f32 benchLift(daNpcPasser_c* passer);
 // Once a frame: fighters carry a torch at night, everyone else a lantern, the old women a hooked
 // staff all day with the lantern lit on it at night; flames and light. Returns whether the left arm
 // should hold something up now.

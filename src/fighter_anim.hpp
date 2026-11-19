@@ -64,6 +64,8 @@ bool install();
 // Hit (any traveller): the Bokoblin's stagger, from the front or either side depending on where the
 // blow came from, just under a second; it stops where it stands meanwhile, then carries on.
 void hit(daNpcPasser_c* passer, const cXyz& from);
+// Sitting down: a flinch where they sit, then back to sitting.
+void sitFlinch(daNpcPasser_c* passer);
 // The fall (the last blow): the Bokoblin's fly-back pose while in the air (landed=false), then its
 // landing sprawl (landed=true), held on the last frame. False if the body has no such animation.
 bool fall(daNpcPasser_c* passer, bool landed);

@@ -53,8 +53,6 @@ constexpr Decor kDecor[psrFire_c::kDecorNum] = {
     {0, -300.0f, -260.0f, 0.9f, 0x3300},
 };
 
-constexpr f32 kStoolHeight = 40.0f;   // a man's stool (the vanilla one is 37.2)
-constexpr f32 kStoolWidth = 1.1f;
 constexpr f32 kScoopReach = 250.0f;
 
 bool fireTime() {
@@ -146,9 +144,11 @@ int psrFire_c::CreateHeap() {
             return 0;
         }
     }
-    const int seats = travellers::campSeatCount(mCampNode);
-    for (int i = 0; i < seats && i < kStoolMax; i++) {
-        mpStool[i] = makeModel(kPackArc, "psr_seat.bmd");
+    // the benches round the fire (a 2-seat or 3-seat split log each; tools/camp/bench.py)
+    for (int i = 0; i < travellers::campBenchCount(mCampNode) && i < kStoolMax; i++) {
+        int seats = 0;
+        if (!travellers::campBenchSpot(mCampNode, i, nullptr, nullptr, &seats)) continue;
+        mpStool[i] = makeModel(kPackArc, seats >= 3 ? "psr_bench3.bmd" : "psr_bench2.bmd");
     }
     mpMat = makeModel(kCampArc, "psr_cookmat.bmd");
     for (int i = 0; i < kDecorNum; i++) {
@@ -195,7 +195,7 @@ void psrFire_c::groundDecor() {
         cXyz at;
         s16 yaw;
         mStoolY[i] = current.pos.y;
-        if (!travellers::campSeatSpot(mCampNode, i, &at, &yaw)) continue;
+        if (!travellers::campBenchSpot(mCampNode, i, &at, &yaw, nullptr)) continue;
         cXyz probe(at.x, current.pos.y + 400.0f, at.z);
         dBgS_ObjGndChk gnd;
         gnd.SetPos(&probe);
@@ -233,10 +233,9 @@ void psrFire_c::placeModels() {
     for (int i = 0; i < kStoolMax; i++) {
         cXyz at;
         s16 yaw;
-        if (mpStool[i] == NULL || !travellers::campSeatSpot(mCampNode, i, &at, &yaw)) continue;
+        if (mpStool[i] == NULL || !travellers::campBenchSpot(mCampNode, i, &at, &yaw, nullptr)) continue;
         mDoMtx_stack_c::transS(at.x, mStoolY[i], at.z);
         mDoMtx_stack_c::YrotM(yaw);
-        mDoMtx_stack_c::scaleM(kStoolWidth, kStoolHeight, kStoolWidth);
         mpStool[i]->setBaseTRMtx(mDoMtx_stack_c::get());
     }
     if (mpMat != NULL) {
@@ -355,7 +354,7 @@ int psrFire_c::Draw() {
         draw(mpBubbles);
     }
     for (int i = 0; i < kStoolMax; i++) {
-        if (!travellers::campSeatInUse(mCampNode, i)) draw(mpStool[i]);   // a sitter draws its own
+        draw(mpStool[i]);   // the benches (always: the sitters sit on them)
     }
     draw(mpMat);
     for (J3DModel* m : mpDecor) draw(m);

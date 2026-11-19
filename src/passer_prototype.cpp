@@ -2865,9 +2865,10 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         // Link's sword (or anything of his) on anyone else: a flinch, never harm
         if (!byWolf && !byLink && attacker != nullptr && attacker == dComIfGp_getPlayer(0)) {
             const int slot = travellers::slotIndex(passer);
-            if (convoys::isRider(slot) || travellers::isBeedle(passer) || traveller_gear::sitting(slot)) return HOOK_CONTINUE;
+            if (convoys::isRider(slot) || travellers::isBeedle(passer)) return HOOK_CONTINUE;
             state->invuln = kHurtInvulnFrames;
-            fighter_anim::hit(passer, attacker->current.pos);   // the stagger, facing him
+            if (traveller_gear::sitting(slot)) fighter_anim::sitFlinch(passer);   // where they sit
+            else fighter_anim::hit(passer, attacker->current.pos);               // the stagger, facing him
             state->voiceWait = 0;
             callOut(passer, *state, kVoiceYelp, 30);
             say(passer, *state, psr_bubble::kScared);

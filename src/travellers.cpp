@@ -1153,19 +1153,51 @@ void stepRestOrTown(Traveller& t) {
     }
 }
 
-// Seat i at a camp: from 135 deg left of the camp's facing round to 45 deg right of it,
-// 185 out from the fire (220 at the amphitheater), facing the fire.
+// The benches round a camp's fire (approved renders, 2026-11-19): on the open side of the fire, away
+// from the tents behind it - a camp's five seats on a 2-seat bench 110 deg to the left of the camp's
+// facing and a 3-seat one 15 deg to its right, 200 out; six (the amphitheater) on two 3-seat ones 235
+// out; the guards' eight on two 3-seat ones and a 2-seat one between.
+struct BenchSet { int n; int seats[3]; s16 angle[3]; f32 ring; };
+BenchSet benchSet(int campNode) {
+    const int seats = campSeats(campNode);
+    if (seats >= 8) return {3, {3, 2, 3}, {static_cast<s16>(-0x5000), static_cast<s16>(-0x1C00), static_cast<s16>(0x1400)}, 260.0f};
+    if (seats == 6) return {2, {3, 3, 0}, {static_cast<s16>(-0x4E39), static_cast<s16>(0x0E39), 0}, 235.0f};
+    return {2, {2, 3, 0}, {static_cast<s16>(-0x4E39), static_cast<s16>(0x0AAB), 0}, 200.0f};
+}
+
+bool benchSpot(int campNode, int bench, cXyz* pos, s16* yaw, int* seats) {
+    if (campNode < 0 || bench < 0) return false;
+    const BenchSet b = benchSet(campNode);
+    if (bench >= b.n) return false;
+    const Node& n = kNodes[campNode];
+    const s16 a = static_cast<s16>(n.facing + b.angle[bench]);
+    if (pos) pos->set(n.x + cM_ssin(a) * b.ring, n.y, n.z + cM_scos(a) * b.ring);
+    if (yaw) *yaw = static_cast<s16>(a + 0x8000);   // its sitters face the fire
+    if (seats) *seats = b.seats[bench];
+    return true;
+}
+
+// Seat i at a camp: along the benches, in order, facing the fire.
 bool seatSpot(int campNode, int seat, cXyz* pos, s16* yaw) {
     if (campNode < 0 || seat < 0) return false;
-    const int seats = campSeats(campNode);
-    if (seat >= seats) return false;
-    const Node& n = kNodes[campNode];
-    const f32 ring = seats > kCampSeats ? 220.0f : 185.0f;
-    const int step = seats > 1 ? 0x8000 / (seats - 1) : 0;
-    const s16 a = static_cast<s16>(n.facing - 0x6000 + seat * step);
-    if (pos) pos->set(n.x + cM_ssin(a) * ring, n.y, n.z + cM_scos(a) * ring);
-    if (yaw) *yaw = static_cast<s16>(a + 0x8000);
-    return true;
+    if (seat >= campSeats(campNode)) return false;
+    const BenchSet b = benchSet(campNode);
+    int first = 0;
+    for (int k = 0; k < b.n; ++k) {
+        if (seat < first + b.seats[k]) {
+            cXyz mid;
+            s16 face = 0;
+            benchSpot(campNode, k, &mid, &face, nullptr);
+            const f32 along = (static_cast<f32>(seat - first) - (b.seats[k] - 1) * 0.5f) * kBenchSeatGap;
+            // along the bench: its +x (the sitters face +z)
+            const f32 ax = cM_scos(face), az = -cM_ssin(face);
+            if (pos) pos->set(mid.x + ax * along, mid.y, mid.z + az * along);
+            if (yaw) *yaw = face;
+            return true;
+        }
+        first += b.seats[k];
+    }
+    return false;
 }
 
 bool bedSpot(const Traveller& t, cXyz* inside, cXyz* doorstep, s16* faceIn);
@@ -2212,6 +2244,8 @@ void noteStand(const fopAc_ac_c* passer, const fopAc_ac_c* enemy) {
 }
 
 int campSeatCount(int campNode) { return campSeats(campNode); }
+int campBenchCount(int campNode) { return campNode < 0 ? 0 : benchSet(campNode).n; }
+bool campBenchSpot(int campNode, int bench, cXyz* pos, s16* yaw, int* seats) { return benchSpot(campNode, bench, pos, yaw, seats); }
 
 bool campSeatSpot(int campNode, int seat, cXyz* pos, s16* yaw) { return seatSpot(campNode, seat, pos, yaw); }
 

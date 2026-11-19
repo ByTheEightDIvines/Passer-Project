@@ -592,7 +592,7 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
         mDoExt_modelUpdateDL(m);
     };
     const bool seated = !cook::isBody(passer) && g->sitting && travellers::campInfo(passer, nullptr, nullptr, nullptr);
-    if (g->seat != nullptr && seated) {
+    if (false && g->seat != nullptr && seated) {   // (the camp fires draw benches now: no stool of his own)
         // the vanilla stools put the seat 37.2 (men) / 55.9 (women) up, scaled like the person
         const f32 scale = Cd2_HIO_objScale(passer->m_type);
         const f32 height = (passer->m_type < 16 ? 37.2f : 55.9f) * scale;
@@ -902,6 +902,16 @@ int pickMeal(daNpcPasser_c* passer, int kind) {
 
 bool sitting(int slot) {
     return slot >= 0 && slot < static_cast<int>(g_gear.size()) && g_gear[slot].sitting && g_gear[slot].seat != nullptr;
+}
+
+f32 benchLift(daNpcPasser_c* passer) {
+    if (passer == nullptr || cook::isBody(passer)) return 0.0f;
+    const int slot = travellers::slotIndex(passer);
+    if (!sitting(slot) || !travellers::campInfo(passer, nullptr, nullptr, nullptr)) return 0.0f;
+    // the townsfolk's sit puts the seat 37.2 (men) / 55.9 (women) up, scaled like the person
+    const f32 scale = Cd2_HIO_objScale(passer->m_type);
+    const f32 own = (passer->m_type < 16 ? 37.2f : 55.9f) * scale;
+    return travellers::kBenchTop - own;
 }
 
 bool sit(daNpcPasser_c* passer, bool on) {
