@@ -1,6 +1,7 @@
 #include "global.h"
 #include "player_camp.hpp"
 
+#include "freeze.hpp"
 #include "mod_lights.hpp"
 #include "tent_actor.hpp"
 #include "travellers.hpp"
@@ -9,6 +10,7 @@
 #include "SSystem/SComponent/c_math.h"
 #include "SSystem/SComponent/c_phase.h"
 #include "d/actor/d_a_alink.h"
+#include "d/actor/d_a_midna.h"
 #include "d/actor/d_a_npc.h"
 #include "d/actor/d_a_player.h"
 #include "d/d_bg_s_gnd_chk.h"
@@ -52,6 +54,11 @@ constexpr f32 kBenchRing = 230.0f;
 constexpr f32 kDoorOut = 70.0f;            // where Link stands to check the tent: just out from its door
 constexpr f32 kCheckReach = 230.0f;        // ...within this of that spot
 constexpr f32 kFireReach = 260.0f;         // a wolf this close to an unlit fire can ask Midna to light it
+// Midna's snap, as when she takes the Ordon sword and shield from the wolf (demo10, the Faron spring's
+// pack; copied into our own psr_fx.jpc): the two effects at her hand, the two on the thing she sparks.
+constexpr u16 kSnapHand[2] = {0x86BC, 0x86BD};
+constexpr u16 kSnapThing[2] = {0x86BA, 0x86C2};
+constexpr int kSnapDelay = 8;              // frames from her snap to the fire catching
 
 // --- Midna's menu (the game's Midna flow in message group 0, as read from zel_00.bmg) --------------
 constexpr u16 kMidnaGroup = 0;
@@ -432,6 +439,7 @@ public:
     Talk mTalk = TALK_NONE;
     int mTimer = 0;
     int mWait = 0;
+    int mSnap = 0;               // frames since Midna snapped her fingers at the cold fire
     bool mFlowStarted = false;
     dMsgFlow_c mFlow;
     f32 mSleepFrom = 0.0f;
@@ -445,6 +453,7 @@ public:
     void placeModels();
     void makeTent();
     void light(bool spark);
+    void snap();
     void updateFire();
     void updateAttention();
     bool waitForEvent();
@@ -494,6 +503,7 @@ cPhs_Step psrPCamp_c::create() {
     if (a != cPhs_COMPLEATE_e) return a;
     if (b != cPhs_COMPLEATE_e) return b;
     mLoaded = true;
+    psr_freeze::loadEffects();   // our effects pack (Midna's snap) lives in PsrPack
     if (!fopAcM_entrySolidHeap(this, createHeapCallBack, 0x20000)) return cPhs_ERROR_e;
     mCenter = current.pos;
     mYaw = shape_angle.y;
@@ -580,12 +590,29 @@ void psrPCamp_c::light(bool spark) {
     store();
     mDoAud_seStart(Z2SE_OBJ_FIRE_IGNITION, &mFlamePos, 0, dComIfGp_getReverb(fopAcM_GetRoomNo(this)));
     if (spark) {
-        // Midna's snap: a little puff of her twilight over the wood
-        const cXyz at(mCenter.x, mCenter.y + 40.0f, mCenter.z);
-        const cXyz small(0.35f, 0.35f, 0.35f);
-        dComIfGp_particle_set(ID_ZI_J_LK_WARP_APP_A, &at, &tevStr, &shape_angle, &small);
+        // her snap lands on the wood: the sparkle she makes things appear and vanish with
+        const cXyz at(mCenter.x, mCenter.y + 30.0f, mCenter.z);
+        const cXyz one(1.0f, 1.0f, 1.0f);
+        for (u16 id : kSnapThing) psr_freeze::effect(id, at, mYaw, one);
     }
     travellers::diagLine("pcamp   fire lit (%s)", spark ? "Midna's spark" : "lantern");
+}
+
+// Midna snaps her fingers (her "magic" from the sword and shield scene), with the sparkle at her hand.
+void psrPCamp_c::snap() {
+    psr_freeze::loadEffects();   // (PsrPack is ours to read: this actor loaded it)
+    cXyz hand = mCenter;
+    if (daMidna_c* midna = daPy_py_c::getMidnaActor()) {
+        hand = midna->current.pos;
+        hand.y += 40.0f;
+    } else if (daPy_py_c* link = player()) {
+        hand = link->current.pos;
+        hand.y += 130.0f;
+    }
+    const cXyz one(1.0f, 1.0f, 1.0f);
+    for (u16 id : kSnapHand) psr_freeze::effect(id, hand, mYaw, one);
+    mDoAud_seStart(Z2SE_D10_MDN_MAGIC, &hand, 0, dComIfGp_getReverb(fopAcM_GetRoomNo(this)));
+    travellers::diagLine("pcamp   Midna snaps at %.0f %.0f %.0f", hand.x, hand.y, hand.z);
 }
 
 // Coro's flame, glow and crackle, and his fire's collision: a lantern swing lights it.
@@ -710,10 +737,19 @@ void psrPCamp_c::runTalk() {
         mFlow.init(this, mTalk == TALK_TENT ? g_tentNode : g_wolfFireNode, 0, NULL);
         mFlowStarted = true;
     }
+    if (mTalk == TALK_FIRE && mSnap > 0) {
+        // after her line: the snap at her hand, then the fire catches
+        if (++mSnap == kSnapDelay) light(true);
+        if (mSnap >= kSnapDelay + 20) {
+            mSnap = 0;
+            endEvent();
+        }
+        return;
+    }
     if (mFlow.doFlow(this, NULL, 0) == 0) return;
     if (mTalk == TALK_FIRE) {
-        light(true);
-        endEvent();
+        snap();
+        mSnap = 1;
         return;
     }
     if (mTalk == TALK_TENT && g_sleepYes) {

@@ -173,10 +173,21 @@ void loadEffects() {
     if (g_pack != nullptr) return;
     const void* src = dComIfG_getObjectRes("PsrPack", "psr_fx.jpc");
     if (src == nullptr) return;
-    constexpr u32 size = 19328;   // psr_fx.jpc, exactly: Link's freeze (Snowpeak's pack), the chest puff (dungeons'),
-                                  // the death smoke (the monster puff's smoke, recoloured grey) and the old
-                                  // women's spell (the chest puff's glow and sparkles, recoloured icy blue)
+    // psr_fx.jpc: Link's freeze (Snowpeak's pack), the chest puff (dungeons'), the death smoke (the monster
+    // puff's smoke, recoloured grey), the old women's spell (the chest puff's glow and sparkles, recoloured
+    // icy blue) and Midna's snap (her hand and the thing she sparks, from the Faron spring's pack, 0x86BA-BD).
+    // Its size, from its own header: the textures come last, each block giving its own length.
     if (std::memcmp(src, "JPAC2-10", 8) != 0) return;
+    const u8* b = static_cast<const u8*>(src);
+    auto be16 = [&](u32 o) { return static_cast<u32>(b[o] << 8 | b[o + 1]); };
+    auto be32 = [&](u32 o) { return static_cast<u32>(b[o] << 24 | b[o + 1] << 16 | b[o + 2] << 8 | b[o + 3]); };
+    const u32 texNum = be16(10);
+    u32 size = be32(12);
+    for (u32 i = 0; i < texNum; ++i) {
+        if (std::memcmp(b + size, "TEX1", 4) != 0) return;   // not what we packed: leave our effects out
+        size += be32(size + 4);
+    }
+    if (size > 0x10000) return;
     g_heap = mDoExt_createSolidHeapFromSystem(0x20000, 0x20);
     if (g_heap == nullptr) return;
     void* copy = g_heap->alloc(size, 0x20);   // ours to keep: the effects point into it
