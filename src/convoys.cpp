@@ -80,6 +80,7 @@ struct Member {
     s16 face = 0;                 // bystanders: which way they stand, from the wagon's way
     u8 anim = 0xFF;
     bool fighting = false;
+    int scared = 0;               // frames still off running from one of Link's bombs (drivers never)
 };
 
 struct Convoy {
@@ -384,6 +385,8 @@ bool kindOpen(Kind k) {
 
 int kindEvery(Kind k) { return k == K_ROYAL ? kRoyalEvery : (k == K_WEST ? kWestEvery : kGorgeEvery); }
 
+void scareTick(std::vector<Member>& crew);   // (below, with the bombs)
+
 void tickConvoy(Convoy& c) {
     const s32 now = gameMinutes();
     if (!c.active) {
@@ -463,6 +466,7 @@ void tickConvoy(Convoy& c) {
     }
     if (c.real && w != nullptr) {
         bringOut(c.crew, w, room);
+        scareTick(c.crew);
         // Monsters: the wagon never stops (its drivers aren't scared, they keep driving); the escorts
         // go for them, and once it's quiet, or they've fallen too far behind, they run back to their
         // places at the wagon's side.
@@ -477,7 +481,7 @@ void tickConvoy(Convoy& c) {
             if (c.halted && c.calm >= kCalmFrames) c.halted = false;
             if (c.halted && foeNear(w->middle(), 450.0f)) w->addDamage(2);   // monsters at the wagon itself
             for (Member& m : c.crew) {
-                if (m.role != R_ESCORT) continue;
+                if (m.role != R_ESCORT || m.scared > 0) continue;   // (running from a bomb: not now)
                 auto* a = travellers::crewActor(m.slot);
                 const f32 behind = a != nullptr ? a->current.pos.absXZ(wagonFrame(w, m.x, 0.0f, m.z)) : 0.0f;
                 const bool fight = c.halted && behind < kLeash;
@@ -503,6 +507,28 @@ void tickConvoy(Convoy& c) {
     }
 }
 
+// Link's bombs: everyone but the drivers runs (let go from their places; their own fear does the
+// running), and comes back to their place a few seconds after there's no bomb near any more.
+constexpr f32 kBombFear = 650.0f;
+constexpr int kBombScared = 150;
+void scareTick(std::vector<Member>& crew) {
+    for (Member& m : crew) {
+        if (m.role == R_RIDER) continue;
+        auto* a = travellers::crewActor(m.slot);
+        if (a == nullptr) continue;
+        if (travellers::liveBombNear(a->current.pos, kBombFear) != nullptr) {
+            if (m.scared == 0) {
+                travellers::crewHold(m.slot, false);
+                m.anim = 0xFF;
+            }
+            m.scared = kBombScared;
+        } else if (m.scared > 0 && --m.scared == 0) {
+            travellers::crewHold(m.slot, m.role == R_ESCORT ? !m.fighting : true);   // back to the wagon
+            m.anim = 0xFF;
+        }
+    }
+}
+
 // --- the parked wagons ----------------------------------------------------------------------
 void tickNod() {
     // which wall's spot: the Faron-Eldin wall while Faron's lit and Eldin isn't, then the next one
@@ -523,7 +549,10 @@ void tickNod() {
             if (want < 0) releaseCrew(g_nod.crew);   // both walls are gone: so are they
             return;
         }
-        if (w != nullptr) bringOut(g_nod.crew, w, p.room);
+        if (w != nullptr) {
+            bringOut(g_nod.crew, w, p.room);
+            scareTick(g_nod.crew);
+        }
         return;
     }
     if (want < 0 || !open) return;
@@ -650,6 +679,26 @@ void placeHeld(daNpcPasser_c* p) {
     p->setBaseMtx();
     if (p->mpMorf != nullptr) p->mpMorf->modelCalc();
 }
+bool isRider(int slot) {
+    for (const Convoy& c : g_convoys) {
+        if (!c.active) continue;
+        for (const Member& m : c.crew) if (m.slot == slot) return m.role == R_RIDER;
+    }
+    return false;
+}
+
+void scare(int slot) {
+    auto run = [&](std::vector<Member>& crew) {
+        for (Member& m : crew) {
+            if (m.slot != slot || m.role == R_RIDER) continue;
+            if (m.scared == 0) { travellers::crewHold(m.slot, false); m.anim = 0xFF; }
+            m.scared = kBombScared;
+        }
+    };
+    for (Convoy& c : g_convoys) if (c.active) run(c.crew);
+    run(g_nod.crew);
+}
+
 int crewSpot(int slot) {
     if (slot < 0) return -1;
     for (const Convoy& c : g_convoys) {

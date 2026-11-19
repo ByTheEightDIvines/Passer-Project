@@ -10,6 +10,7 @@
 #include "d/d_bg_s_gnd_chk.h"
 #include "d/d_com_inf_game.h"
 #include "d/d_kankyo.h"
+#include "d/d_particle_name.h"
 #include "f_op/f_op_actor_mng.h"
 #include "f_pc/f_pc_draw_priority.h"
 #include "f_pc/f_pc_manager.h"
@@ -35,6 +36,13 @@ const char* kBurntRoyal[8] = {"royal_body_burnt.bmd", "royal_harness_burnt.bmd",
                               "royal_b_l_wheel_burnt.bmd", "royal_b_r_wheel_burnt.bmd", "royal_cargo_burnt.bmd"};
 const char* kBurntTrav[8] = {"trav_coach_burnt.bmd", "trav_harness_burnt.bmd", "trav_cover_burnt.bmd",
                              nullptr, nullptr, nullptr, nullptr, "trav_cargo_burnt.bmd"};
+// the lanterns: our copy of the game's lantern (materials renamed, see shop_lamps.cpp), hung by the
+// handle at the cover's front corners in the wagon's frame, 1.6 times its size (as the shop's)
+constexpr const char* kLampModel = "psr_wgn_kntr.bmd";
+constexpr f32 kLampScale = 1.6f;
+constexpr f32 kLampX = 128.0f, kLampHandleY = 212.0f, kLampZ = 112.0f;
+constexpr f32 kLampHandle = 44.0f;   // its handle above its base
+constexpr f32 kLampWick = 12.0f;     // the flame above its base (the glass runs 9.5..27)
 constexpr int kBlazeFrames = 30 * 10;   // destroyed: it burns at full blaze this long, then smoulders
 constexpr int kCharAfter = 45;          // ...and turns to the burnt-out wreck this far in (the fire at its height)
 const char* kHorseAnim[4] = {"hu_wait_01.bck", "hu_walk_slow.bck", "hu_walk_fast.bck", "hu_run_slow.bck"};
@@ -107,6 +115,7 @@ J3DModel* loadModel(const char* arc, const char* name) {
 
 psrWagon_c::~psrWagon_c() {
     cutFireLight();
+    cutLampLight();
     for (JPABaseEmitter*& e : mFx) {
         if (e != nullptr) { e->becomeInvalidEmitter(); e = nullptr; }
     }
@@ -169,6 +178,7 @@ int psrWagon_c::CreateHeap() {
         }
     }
     mpCargo = loadModel(kOwnArc, kCargo[mKind]);
+    for (J3DModel*& l : mpLamp) l = loadModel(kOwnArc, kLampModel);   // (missing: no lanterns, nothing else)
     for (int i = 0; i < 8; i++) {
         const char* f = (mKind == PSR_WAGON_ROYAL ? kBurntRoyal : kBurntTrav)[i];
         mpBurnt[i] = f != nullptr ? loadModel(kOwnArc, f) : nullptr;   // (missing: it just keeps its look)
@@ -281,6 +291,42 @@ void psrWagon_c::updateFire() {
     }
 }
 
+void psrWagon_c::lampsTick() {
+    const bool lit = dKy_daynight_check() && !mWrecked;
+    for (int i = 0; i < 2; i++) {
+        mDoMtx_stack_c::copy(mCoachMtx);
+        mDoMtx_stack_c::transM(i == 0 ? -kLampX : kLampX, kLampHandleY - kLampHandle * kLampScale, kLampZ);
+        cXyz flame;
+        const cXyz wick(0.0f, kLampWick * kLampScale, 0.0f);
+        mDoMtx_stack_c::multVec(&wick, &flame);
+        mDoMtx_stack_c::scaleM(kLampScale, kLampScale, kLampScale);
+        if (mpLamp[i] != nullptr) mpLamp[i]->setBaseTRMtx(mDoMtx_stack_c::get());
+        if (!lit || mpLamp[i] == nullptr) { mLampFlame[i] = 0; continue; }   // (a level emitter not set again goes out)
+        const cXyz scale(kLampScale, kLampScale, kLampScale);
+        mLampFlame[i] = dComIfGp_particle_set(mLampFlame[i], ID_ZI_J_KANTERA_FIRE, &flame, nullptr, nullptr, &scale,
+                                              0xFF, nullptr, -1, nullptr, nullptr, nullptr);
+        if (i == 1) {   // one warm light between the two (on the drivers, the horse and the road)
+            mDoMtx_stack_c::copy(mCoachMtx);
+            const cXyz mid(0.0f, kLampHandleY - kLampHandle * kLampScale + kLampWick * kLampScale + 10.0f, kLampZ);
+            mDoMtx_stack_c::multVec(&mid, &mLampLight.mPosition);
+            mLampLight.mColor.r = 0xBC;
+            mLampLight.mColor.g = 0x66;
+            mLampLight.mColor.b = 0x42;
+            mLampLight.mPow = 500.0f;
+            mLampLight.mFluctuation = 1.0f;
+            if (!mLampLit) { dKy_plight_set(&mLampLight); mLampLit = true; }
+            mod_lights::offer(mLampLight.mPosition, 90.0f);
+        }
+    }
+    if (!lit && mLampLit) cutLampLight();
+}
+
+void psrWagon_c::cutLampLight() {
+    const int i = (mLampLight.mIndex < 0 ? -mLampLight.mIndex : mLampLight.mIndex) & 0xFFF;
+    if (mLampLit && i >= 1 && i <= 50 && g_env_light.pointlight[i - 1] == &mLampLight) dKy_plight_cut(&mLampLight);
+    mLampLit = false;
+}
+
 void psrWagon_c::cutFireLight() {
     const int i = (mFireLight.mIndex < 0 ? -mFireLight.mIndex : mFireLight.mIndex) & 0xFFF;
     if (mFireLit && i >= 1 && i <= 50 && g_env_light.pointlight[i - 1] == &mFireLight) dKy_plight_cut(&mFireLight);
@@ -384,6 +430,7 @@ int psrWagon_c::Execute() {
     mpHorse->play(0, 0);
     mpHorse->modelCalc();
     updateFire();
+    lampsTick();
     eyePos = current.pos;
     eyePos.y += 200.0f;
     attention_info.position = eyePos;
@@ -434,6 +481,7 @@ int psrWagon_c::Draw() {
             }
         }
     }
+    if (!mCharred) for (J3DModel* l : mpLamp) if (l != nullptr && n < 12) list[n++] = l;   // the lanterns (gone with the wreck)
     J3DModel* cargo = burnt && mpBurnt[7] != nullptr ? mpBurnt[7] : mpCargo;
     if (cargo != nullptr) {
         if (cargo != mpCargo) cargo->setBaseTRMtx(mCoachMtx);

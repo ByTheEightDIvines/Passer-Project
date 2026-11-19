@@ -56,6 +56,13 @@ public:
     JPABaseEmitter* mFx[10] = {};   // (unused: Telma's coach fire only exists in her own stage)
     u32 mFlames[8][3] = {};          // the common fire (the camp fires'), at up to 8 spots on the wagon
     LIGHT_INFLUENCE mFireLight{};
+    // the two lanterns hung at the cover's front corners, lit at night (out once it's a wreck)
+    J3DModel* mpLamp[2] = {};
+    u32 mLampFlame[2] = {};
+    LIGHT_INFLUENCE mLampLight{};
+    bool mLampLit = false;
+    void lampsTick();
+    void cutLampLight();
     bool mFireLit = false;
     int mSmoke = 0;                 // frames the wreck still smokes
     int mBlaze = 0;                 // destroyed: frames it still burns at full blaze (whatever wrecked it)

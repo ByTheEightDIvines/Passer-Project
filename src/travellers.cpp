@@ -1746,6 +1746,20 @@ void noteAct(fopAc_ac_c* passer, const char* what) {
 }
 
 bool isTraveller(const fopAc_ac_c* actor) { return slotOf(actor) >= 0; }
+fopAc_ac_c* liveBombNear(const cXyz& at, f32 r) {
+    struct Q { cXyz at; f32 best; fopAc_ac_c* found; } q{at, r * r, nullptr};
+    fpcM_Search([](void* p, void* data) -> void* {
+        if (!fopAcM_IsActor(p)) return nullptr;
+        auto* a = static_cast<fopAc_ac_c*>(p);
+        if (fopAcM_GetName(a) != fpcNm_NBOMB_e || fopAcM_checkCarryNow(a)) return nullptr;   // in Link's hands: not yet
+        auto* qq = static_cast<Q*>(data);
+        const f32 dx = a->current.pos.x - qq->at.x, dz = a->current.pos.z - qq->at.z, d2 = dx * dx + dz * dz;
+        if (d2 < qq->best && std::fabs(a->current.pos.y - qq->at.y) < 600.0f) { qq->best = d2; qq->found = a; }
+        return nullptr;
+    }, &q);
+    return q.found;
+}
+
 bool isGuard(const fopAc_ac_c* actor) {
     const int s = slotOf(actor);
     return s >= 0 && g_t[s].guard;

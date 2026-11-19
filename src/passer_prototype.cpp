@@ -156,6 +156,10 @@ constexpr int kQuartersPerHeart = 4;
 constexpr int kDeathDuration = 90;          // safety limit if he never finds the ground
 constexpr int kDeathLie = 45;               // a second and a half on the ground after the sprawl
 constexpr int kDeathLimit = 240;            // never more than eight seconds dying, whatever happens
+constexpr f32 kBombFear = 650.0f;           // one of Link's bombs this near: they run
+constexpr int kBombScareFrames = 90;        // ...and keep running this long after it's gone
+constexpr f32 kBlastSpeedXZ = 11.0f;        // caught by the blast: thrown this hard (no harm done)
+constexpr f32 kBlastSpeedY = 17.0f;
 constexpr f32 kLaunchSpeedXZ = 14.0f;       // away from the enemy that landed the hit
 constexpr f32 kLaunchSpeedY = 26.0f;
 constexpr f32 kLaunchGravity = 1.6f;
@@ -179,6 +183,10 @@ constexpr std::array kLanguages{
 };
 
 struct PasserState {
+    int bombScare = 0;        // frames still running from one of Link's bombs (everyone runs, fighters too)
+    cXyz bombAt{};            // ...where it was
+    int blast = 0;            // frames thrown by a bomb's blast (no harm: a shove, a stagger, then running)
+    f32 blastX = 0.0f, blastY = 0.0f, blastZ = 0.0f;
     int chatFrames = 0;       // a seated camper talking: frames left
     int mealFrames = 0;       // a seated camper eating or drinking: frames left
     bool wasScared = false;   // running or cowering last frame (to scream once as it starts)
@@ -1177,9 +1185,11 @@ HookAction onInitEscapePre(ModContext*, void* args, void*, void*) {
     if (cook::isBody(passer)) {
         return HOOK_SKIP_ORIGINAL;   // he runs from monsters his own way
     }
-    // Run from the nearest enemy (or from Link, if it's him it's scared of).
+    // Run from the nearest enemy (or from Link, if it's him it's scared of); from a bomb, the bomb.
     cXyz threat = passer->current.pos;
-    if (auto* enemy = nearestEnemy(passer, kChasedRadius)) {
+    if (auto* st = findState(passer, false); st != nullptr && st->bombScare > 0) {
+        threat = st->bombAt;
+    } else if (auto* enemy = nearestEnemy(passer, kChasedRadius)) {
         threat = enemy->current.pos;
     } else if (auto* player = dComIfGp_getPlayer(0)) {
         threat = player->current.pos;
@@ -1715,7 +1725,8 @@ void onProfileExecutePost(ModContext*, void* args, void*, void*) {
         setDamageable(passer);
         torchTick(passer, *state);
         const int hour = dKy_getdaytime_hour();
-        traveller_gear::lightTick(passer, hour >= 19 || hour < 6, false);
+        // (the drivers have their hands on the reins: no lantern; the wagon carries its own)
+        traveller_gear::lightTick(passer, (hour >= 19 || hour < 6) && !convoys::isRider(travellers::slotIndex(passer)), false);
         fighter_anim::layerTick(passer, false);   // a marching guard's shield arm
         return;
     }
@@ -2559,6 +2570,53 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         return HOOK_CONTINUE;
     }
 
+    // Thrown by a bomb's blast: through the air, away from it, no harm done; down again, it runs.
+    if (state->blast > 0) {
+        --state->blast;
+        passer->speedF = 0.0f;
+        passer->current.pos.x += state->blastX;
+        passer->current.pos.y += state->blastY;
+        passer->current.pos.z += state->blastZ;
+        state->blastX *= kLaunchDrag;
+        state->blastZ *= kLaunchDrag;
+        state->blastY -= kLaunchGravity;
+        passer->mAcch.CrrPos(dComIfG_Bgsp());
+        if (passer->mAcch.ChkWallHit()) { state->blastX = 0.0f; state->blastZ = 0.0f; }
+        const bool landed = state->blastY < 0.0f && passer->mAcch.ChkGroundHit();
+        if (landed || state->blast == 0) {
+            state->blast = 0;
+            passer->setAction(daNpcPasser_c::MODE_1);   // and away from it
+        }
+        return HOOK_SKIP_ORIGINAL;
+    }
+    // One of Link's bombs near (lit, out of his hands): everyone runs from it, fighters, guards, the
+    // people at the fire, Beedle. (The wagon drivers stay on their bench: convoys::isRider.)
+    if (state->bombScare > 0) --state->bombScare;
+    // (someone the convoy still holds in place: the drivers never run; walkers are let go first)
+    if (!state->talking && !travellers::crewHeld(passer)) {
+        if (fopAc_ac_c* bomb = travellers::liveBombNear(passer->current.pos, kBombFear)) {
+            const bool fresh = state->bombScare == 0;
+            state->bombScare = kBombScareFrames;
+            state->bombAt = bomb->current.pos;
+            const bool running = passer->mActionIdx == daNpcPasser_c::MODE_1 && passer->field_0xb1c == 1;
+            if (fresh || !running) {
+                state->standing = false;
+                state->defending = false;
+                state->campCower = false;
+                state->arrived = false;
+                state->cowering = false;
+                state->anim = 0xFF;
+                traveller_gear::sit(passer, false);
+                fighter_anim::drop(passer);
+                if (fresh) {
+                    say(passer, *state, psr_bubble::kScared);
+                    travellers::noteAct(passer, "a bomb! running");
+                }
+                passer->setAction(daNpcPasser_c::MODE_1);
+            }
+        }
+    }
+
     if (state->cowering && !state->talking) {
         passer->speedF = 0.0f;
         // Wait until nothing scary has been near for a few seconds, then walk on.
@@ -2575,7 +2633,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
     state->onGuard = false;
     state->turning = false;
     state->shooting = false;
-    if (!state->talking && !state->cowering) {
+    if (!state->talking && !state->cowering && state->bombScare == 0) {
         campHandled = bedTick(passer, *state) || campGuard(passer, *state);
     }
     musicTick(passer, *state, campHandled || state->talking);
@@ -2702,6 +2760,32 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         auto* attacker = passer->mCyl.GetTgHitAc();
         passer->mCyl.ResetTgHit();
         if (traveller_gear::isOurArrow(attacker)) return HOOK_CONTINUE;   // the bowman's: never at travellers
+        // Caught by one of Link's bombs: thrown back, staggered, then running - but never hurt.
+        // (The wagon drivers ride it out on their bench.)
+        if (attacker != nullptr && fopAcM_IsActor(attacker) && fopAcM_GetName(attacker) == fpcNm_NBOMB_e) {
+            const int slot = travellers::slotIndex(passer);
+            if (convoys::isRider(slot)) return HOOK_CONTINUE;
+            if (travellers::crewHeld(passer)) convoys::scare(slot);   // let go from his place to fly
+            cXyz away = passer->current.pos - attacker->current.pos;
+            away.y = 0.0f;
+            const f32 len = away.absXZ();
+            if (len > 1.0f) { away.x /= len; away.z /= len; } else { away.set(cM_ssin(passer->shape_angle.y + 0x8000), 0.0f, cM_scos(passer->shape_angle.y + 0x8000)); }
+            state->blast = 45;
+            state->blastX = away.x * kBlastSpeedXZ;
+            state->blastZ = away.z * kBlastSpeedXZ;
+            state->blastY = kBlastSpeedY;
+            state->bombScare = kBombScareFrames;
+            state->bombAt = attacker->current.pos;
+            state->invuln = kHurtInvulnFrames;
+            state->standing = state->defending = state->campCower = state->arrived = state->cowering = false;
+            traveller_gear::sit(passer, false);
+            fighter_anim::hit(passer, attacker->current.pos);   // the stagger, facing the blast
+            state->voiceWait = 0;
+            callOut(passer, *state, kVoiceYelp, 30);
+            say(passer, *state, psr_bubble::kScared);
+            travellers::noteAct(passer, "thrown by a bomb (unhurt)");
+            return HOOK_CONTINUE;
+        }
         const bool byWolf = attacker != nullptr && attacker == dComIfGp_getPlayer(0) &&
                             daPy_py_c::checkNowWolf() && travellers::isFighter(passer);
         if (!byWolf && (attacker == nullptr || !fopAcM_IsActor(attacker) ||
@@ -2796,6 +2880,8 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
 
 // A fighter stands its ground while it has more than one heart left.
 bool holdsGround(const daNpcPasser_c* passer) {
+    // one of Link's bombs: everyone runs, the guards too
+    if (auto* st = findState(const_cast<daNpcPasser_c*>(passer), false); st != nullptr && st->bombScare > 0) return false;
     // the camp guards never run, however hurt; other fighters do on their last heart
     if (travellers::isGuard(passer)) return true;
     return travellers::isFighter(passer) && travellers::life(passer) > kQuartersPerHeart;

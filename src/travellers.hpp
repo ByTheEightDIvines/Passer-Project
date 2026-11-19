@@ -37,6 +37,8 @@ void crewHold(int slot, bool held);       // placed by hand (true) or left to th
 bool crewDead(int slot);
 bool crewHeld(const fopAc_ac_c* passer);
 bool isGuard(const fopAc_ac_c* actor);   // one of the camp guards
+// One of Link's bombs, lit and out of his hands, within r of `at` (the nearest), else nullptr.
+fopAc_ac_c* liveBombNear(const cXyz& at, f32 r);
 bool isBeedle(const fopAc_ac_c* actor);  // Beedle, wandering the field (his own look, never scared, runs fast)
 bool isCrew(const fopAc_ac_c* passer);
 // A guard's arms: 0 none (not a guard), 1 spear and tall shield, 2 sword and small shield, 3 sword,
