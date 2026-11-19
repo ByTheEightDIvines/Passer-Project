@@ -140,3 +140,10 @@ You asked for:
 - `tools/msgtool/bmg.py`: BMG INF1/FLW1/FLI1 reader and flow walker.
 - `tools/room/camview.py`: shop camera-view renderer (unfinished check).
 - `msg_dumps/`: the game's message BMGs extracted from your ROM's `res/Msgus` (reference only, not for shipping).
+
+## Agreed next big feature: living travellers
+See `PLAN_living_travellers.md` (also in the repo as `docs/PLAN_living_travellers.md`). Build it after Beedle's shop is tested.
+- Stage 1: they wake up in their tents (home camps, locals and wanderers).
+- Stage 2: relationships.
+- Stage 3: smarter on the road.
+- Stage 4: dialogue built from their needs and feelings.
