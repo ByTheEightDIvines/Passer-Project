@@ -109,6 +109,15 @@ void noteDelete(const daNpcPasser_c* passer);
 daNpcPasser_c* nearestActor(const cXyz& pos, f32 maxDist);
 // Is this one of the Hyrule Field stages the network covers?
 bool inNetworkStage();
+// Which of them (0 F_SP121, 1 F_SP122), or -1.
+int networkStage();
+
+// --- for Link's own camp (player_camp.cpp) ---
+// How bumpy the ground under a footprint is (highest minus lowest of a 5 x 5 grid of probes), or -1
+// if it can't stand there (no ground, water, or a ledge well above or below refY).
+f32 groundBump(const cXyz& at, s16 yaw, f32 hx, f32 hz, f32 refY, bool fine);
+// Clear of every camp and Beedle's tent by campClear, and of every road by roadClear (xz).
+bool clearOfCampsAndRoads(const cXyz& at, f32 campClear, f32 roadClear);
 // Diagnostics: an enemy's targeting answer was swapped from Link to a traveller.
 void noteEnemyRedirect();
 // Diagnostics: what a traveller is doing (logged if the game deletes it).

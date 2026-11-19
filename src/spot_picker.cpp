@@ -24,6 +24,7 @@
 #include "mods/svc/ui.h"
 #include "mods/svc/actor.h"
 #include "tent_actor.hpp"
+#include "player_camp.hpp"
 
 #include <cstdio>
 #include <cstring>
@@ -321,6 +322,14 @@ void spawnTestTent(u8 kind) {
     }
 }
 void onTestA(ModContext*, void*) { spawnTestTent(PSR_TENT_A); }
+void onCampGear(ModContext*, void*) {
+    player_camp::testGiveGear();
+    toast("Link's camp", "Midna has the camping gear. Call her in the field: More... > Set up camp.");
+}
+void onCampReset(ModContext*, void*) {
+    player_camp::testReset();
+    toast("Link's camp", "Gear and camp cleared.");
+}
 void onTestWall(ModContext*, void*) { spawnTestTent(PSR_TENT_WALL); }
 void onTestBeedle(ModContext*, void*) { spawnTestTent(PSR_TENT_BEEDLE); }
 void onTestClear(ModContext*, void*) {
@@ -370,6 +379,11 @@ ModResult buildPanel(ModContext*, UiElementHandle pane, void*, ModError*) {
     addButton(pane, "Big tent here", onTestWall, nullptr);
     addButton(pane, "Beedle's tent here", onTestBeedle, nullptr);
     addButton(pane, "Remove test tents", onTestClear, nullptr);
+
+    svc_ui->pane_add_section(mod_ctx, pane, "Link's camp (testing)");
+    addButton(pane, "Give Midna the camping gear", onCampGear,
+              "Skips finding it in Faron: Midna's menu offers the camp in the field right away.");
+    addButton(pane, "Clear the gear and the camp", onCampReset, nullptr);
 
     svc_ui->pane_add_section(mod_ctx, pane, "Logged spots (press one to copy it)");
     UiListDesc list = UI_LIST_DESC_INIT;

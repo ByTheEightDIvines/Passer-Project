@@ -2011,6 +2011,43 @@ void initialize() {
 }
 
 bool inNetworkStage() { return currentStage() >= 0; }
+int networkStage() { return currentStage(); }
+
+f32 groundBump(const cXyz& at, s16 yaw, f32 hx, f32 hz, f32 refY, bool fine) {
+    return bumpiness(at, yaw, hx, hz, refY, fine);
+}
+
+bool clearOfCampsAndRoads(const cXyz& at, f32 campClear, f32 roadClear) {
+    const int stage = currentStage();
+    for (int i = 0; i < kCampCount; ++i) {
+        const Camp& cp = kCamps[i];
+        if (kNodes[cp.node].stage != stage) continue;
+        const f32 dx = cp.x - at.x, dz = cp.z - at.z;
+        if (dx * dx + dz * dz < campClear * campClear) return false;
+    }
+    for (int i = 0; i < kNodeCount; ++i) {   // Beedle's tent and the guards' camp are nodes too
+        const Node& n = kNodes[i];
+        if (n.stage != stage || (n.kind != NK_BEEDLE && n.kind != NK_GUARD_CAMP && n.kind != NK_CAMP)) continue;
+        const f32 dx = n.x - at.x, dz = n.z - at.z;
+        if (dx * dx + dz * dz < campClear * campClear) return false;
+    }
+    // every road: the straight bits between its points
+    for (int e = 0; e < kEdgeCount; ++e) {
+        const Edge& ed = kEdges[e];
+        for (int k = 0; k + 1 < ed.count; ++k) {
+            const Point& p = kPoints[ed.first + k];
+            const Point& q = kPoints[ed.first + k + 1];
+            if (p.stage != stage || q.stage != stage) continue;
+            const f32 vx = q.x - p.x, vz = q.z - p.z;
+            const f32 len2 = vx * vx + vz * vz;
+            f32 t = len2 > 0.0f ? ((at.x - p.x) * vx + (at.z - p.z) * vz) / len2 : 0.0f;
+            t = std::clamp(t, 0.0f, 1.0f);
+            const f32 dx = p.x + vx * t - at.x, dz = p.z + vz * t - at.z;
+            if (dx * dx + dz * dz < roadClear * roadClear) return false;
+        }
+    }
+    return true;
+}
 
 void noteEnemyRedirect() { ++g_redirects; }
 

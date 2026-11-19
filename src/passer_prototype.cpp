@@ -39,6 +39,7 @@
 #include "fighter_anim.hpp"
 #include "camp_fire.hpp"
 #include "camp_cook.hpp"
+#include "player_camp.hpp"
 #include "travellers.hpp"
 #include "freeze.hpp"
 #include "wagon_actor.hpp"
@@ -3584,6 +3585,13 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
         g_spotNodesReady = false;
         svc_log->info(mod_ctx, "talk marker hook unavailable; the convoy people and guards keep quiet");
     }
+    // Link's own camp (Midna's "Set up camp"): optional, the rest of the mod runs without it
+    if (const ModResult camp = player_camp::install(); camp != MOD_OK) {
+        char buf[120];
+        std::snprintf(buf, sizeof(buf), "Link's camp could not be set up (result %d); Midna has no camp to offer",
+                      static_cast<int>(camp));
+        svc_log->warn(mod_ctx, buf);
+    }
     spot_picker::initialize();
     svc_log->info(mod_ctx, "Dynamic Travelers ready: travellers walk the Hyrule Field road network");
     return MOD_OK;
@@ -3596,6 +3604,7 @@ MOD_EXPORT ModResult mod_update(ModError*) {
     talkTick();
     psr_tent_beedle::talkTick();
     convoys::update();
+    player_camp::update();
     clearRockPile();
     camp_music::tick();
     shop_stage::tick();

@@ -14,6 +14,8 @@
 #define PSR_TENT_NAME "PsrTent"
 
 enum PsrTentKind : u8 { PSR_TENT_A = 0, PSR_TENT_WALL = 1, PSR_TENT_BEEDLE = 2, PSR_TENT_GUARD = 3, PSR_TENT_KIND_NUM };
+// Parameter bit: Link's own tent (player_camp.cpp), not a travellers' bed.
+constexpr u32 PSR_TENT_PLAYER = 0x100;
 
 class psrTent_c : public fopAc_ac_c {
 public:

@@ -7,6 +7,7 @@
 #include "tent_actor.hpp"
 #include "travellers.hpp"
 #include "shop_stage.hpp"
+#include "player_camp.hpp"
 
 #include "SSystem/SComponent/c_math.h"
 #include "d/d_bg_s_gnd_chk.h"
@@ -119,6 +120,8 @@ cPhs_Step psrTent_c::create() {
     if (mKind >= PSR_TENT_KIND_NUM) {
         mKind = PSR_TENT_A;
     }
+    // Link's own tent keeps moving through his camp's scenes (its flaps shut, it lights up)
+    if (fopAcM_GetParam(this) & PSR_TENT_PLAYER) fopAcM_OnStatus(this, fopAcStts_NOPAUSE_e);
     // Sit on the ground before the tent's own collision exists, so the probe can't hit the roof.
     snapToGround();
     if (!fopAcM_entrySolidHeap(this, createHeapCallBack, kHeapSize)) {
@@ -269,10 +272,17 @@ int psrTent_c::Execute() {
     if (mpFlap[0] != NULL) {
         // Bedtime: the flaps stay open while anyone is crawling in or out, and shut once they're in.
         // Lit from inside at night while someone sleeps there.
-        int asleep = 0, busy = 0;
-        travellers::tentBeds(current.pos, &asleep, &busy);
-        setFlaps(asleep == 0 || busy > 0);
-        mLit = asleep > 0 && isNight() && mpLit[0] != NULL;
+        if (fopAcM_GetParam(this) & PSR_TENT_PLAYER) {
+            // Link's own tent (player_camp.cpp): shut and lit from inside while he sleeps in it
+            const bool sleeping = player_camp::sleeping();
+            setFlaps(!sleeping);
+            mLit = sleeping && mpLit[0] != NULL;
+        } else {
+            int asleep = 0, busy = 0;
+            travellers::tentBeds(current.pos, &asleep, &busy);
+            setFlaps(asleep == 0 || busy > 0);
+            mLit = asleep > 0 && isNight() && mpLit[0] != NULL;
+        }
         if (mpLit[0] != NULL) mpLit[0]->setBaseTRMtx(mDoMtx_stack_c::get());
         // ease toward open or shut over about two thirds of a second
         const f32 step = 1.0f / 20.0f;
