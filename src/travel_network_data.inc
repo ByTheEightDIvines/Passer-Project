@@ -76,7 +76,7 @@ constexpr Node kNodes[] = {
     {0, 0, 4, 34197.0f, -299.0f, -28095.0f, 0},  // spot 900
     {0, 0, 5, 35197.0f, -299.0f, -25095.0f, 0},  // spot 902
     {1, 17, 3, -45407.0f, -1908.0f, 10667.0f, 0},  // spot 903
-    {0, 0, 6, 35197.0f, -260.0f, -13795.3f, 45793},  // node 68: the guards' camp (field end of the Bridge of Eldin), off the roads
+    {0, 0, 6, 38000.0f, -260.0f, -13150.0f, 44400},  // node 68: the guards' camp (east of the Bridge of Eldin's field end, off the Bulblins' ground; facing the bridge), off the roads
 };
 
 // flags: 1 escort only, 2 needs the Eldin-side bridge repaired, 4 no Beedle, 8 loading-screen hand-off, 16 camp spur
@@ -934,7 +934,7 @@ constexpr Camp kCamps[] = {
     {32, -41703.0f, -9117.9f, 75804.7f, 17888, 650.0f, 2.1f, 0.00244f, 0.03634f},  // camp spot 32
     {41, -12303.0f, -5700.0f, 55204.7f, 26400, 650.0f, 0.0f, 0.00000f, -0.00000f},  // camp spot 41
     {53, -12803.0f, -1075.4f, 25404.7f, 41791, 650.0f, 0.0f, 0.00019f, -0.00052f},  // camp spot 53
-    {68, 35197.0f, -260.0f, -13795.3f, 45793, 650.0f, 0.0f, 0.00000f, 0.00000f},  // the guards' camp
+    {68, 38000.0f, -260.0f, -13150.0f, 44400, 650.0f, 0.0f, 0.00000f, 0.00000f},  // the guards' camp (moved off the Bulblins' ground, 2026-11-19)
 };
 
 }  // namespace travel_data
