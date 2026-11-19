@@ -1,7 +1,27 @@
 # Dynamic Travelers — handover 2026-11-18 (b)
 
-Repo: ByTheEightDIvines/Passer-Project, main @ 6c39476. Dusklight v2.0.3.
-Installed: `mods\Dynamic Travelers.dusk` = `builds\DT_6c39476.dusk` (md5 0166cc19b32df1463248de260d3d3eef, verified on the PC).
+Repo: ByTheEightDIvines/Passer-Project, main @ de6ae54. Dusklight v2.0.3.
+Installed: `mods\Dynamic Travelers.dusk` = `builds\DT_de6ae54.dusk` (md5 36b05a607799530265a0eaa1e719bcf0, verified on the PC).
+UNTESTED in game: Beedle's real shop (below). Test it first.
+
+## Built at the end of this session (de6ae54): Beedle's tent as a real game shop
+- `src/tent_beedle.cpp/.hpp`: `psrTentBeedle_c` is now a `dShopSystem_c` (daNpcT_c) shopkeeper, built on Malver's (clerkB) code and implementing the plan below. It compiles and CI links it on every platform, but it has not been run in game yet.
+  - Seat: shop frame (55, 78.5, -370). Position held in `setAttnPos`, gravity 0.
+  - Motions by name through the `setMotionAnm` override. Each message's `talk_anim` picks the motion: 1-4 talk, 5 praise.
+  - Drawn with `daNpcT_c::draw` (game NPC lighting), no shadow.
+  - Five `TAG_SHOPITM` tags (group 1, posIDs 1..5) on the cushions in the `chooseItem5` layout. Two `TAG_SHOPCAM` actors: `kCamEye` [0] (55,190,-150) and [1] (-310,330,60). Ware-view centre `kWareLook` (40,60,60), written into `mShopCamAction.field_0x54` every frame.
+  - The shop opens only once every tag has its display: the game's shop reads display IDs when it finds the tags.
+  - Bought or empty slots: `onFlag` + `onSoldOutItemFlag`, the display hidden (`daItemBase_c::hide`, not deleted, because SELECT_WAIT waits for it to settle home), and the tag deleted (it would show the display again every frame).
+- `src/beedle_field.cpp`: the shop flows, i.e. greet G / keeper G+1 (q25 → "Anything else?" or psr_beedle_bye → "GOODBYE!"), and per ware M (can-buy → e13 select → offer + await_choice → options → yes → psr_beedle_buy → "THANK YOU!") with M+1 its description. Each ware has its own shop title and description. If a G/G+1 or M/M+1 pair is not back to back, a line goes to `travellers_diag.log` ("not back to back").
+- Old marker talk removed (`tagPre`/`tagPost` return false, `talkTick` is empty).
+- **Things to watch in the first test:**
+  1. Talking to him opens the shop camera and the welcome.
+  2. The stick moves the cursor over the wares, and the descriptions show.
+  3. A gives the offer and Yes/No. Yes takes Rupees, gives the ware, says THANK YOU! with the praise anim, and the ware vanishes.
+  4. B says GOODBYE! with the voice, and the camera returns.
+  5. **Camera framing:** both views are untested. My render check failed (see camview.py) and needs fixing first. Tune `kCamEye`, `kWareLook` and `kMasterLookY`.
+  6. Whether he sits at the right height (the seat came from the old actor).
+  7. Lighting.
 The previous full handover (`HANDOVER_2026-11-18.md`, `DT_handover_2026-11-18.zip`) still holds the overall design and the asset pipeline. This file covers what came after it.
 
 ## Done this session (all built into DT_6c39476)
