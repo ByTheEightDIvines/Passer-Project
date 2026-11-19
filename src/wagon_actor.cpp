@@ -36,12 +36,14 @@ const char* kBurntRoyal[8] = {"royal_body_burnt.bmd", "royal_harness_burnt.bmd",
                               "royal_b_l_wheel_burnt.bmd", "royal_b_r_wheel_burnt.bmd", "royal_cargo_burnt.bmd"};
 const char* kBurntTrav[8] = {"trav_coach_burnt.bmd", "trav_harness_burnt.bmd", "trav_cover_burnt.bmd",
                              nullptr, nullptr, nullptr, nullptr, "trav_cargo_burnt.bmd"};
-// the lanterns: our copy of the game's lantern (materials renamed, see shop_lamps.cpp), hung by the
-// handle at the cover's front corners in the wagon's frame, 1.6 times its size (as the shop's)
+// the lanterns: our copy of the game's lantern (materials renamed, see shop_lamps.cpp), 1.6 times its
+// size (as the shop's), each hanging by its handle from the end of the side wall's top beam where it
+// sticks out at the front corner (the same on both wagons: x to 120, its underside at y 151, z 90..108;
+// the handle's loop over it)
 constexpr const char* kLampModel = "psr_wgn_kntr.bmd";
 constexpr f32 kLampScale = 1.6f;
-constexpr f32 kLampX = 128.0f, kLampHandleY = 212.0f, kLampZ = 112.0f;
-constexpr f32 kLampHandle = 44.0f;   // its handle above its base
+constexpr f32 kLampX = 113.0f, kLampHandleY = 155.0f, kLampZ = 99.0f;
+constexpr f32 kLampHandle = 44.2f;   // the top of its handle above its base
 constexpr f32 kLampWick = 12.0f;     // the flame above its base (the glass runs 9.5..27)
 constexpr int kBlazeFrames = 30 * 10;   // destroyed: it burns at full blaze this long, then smoulders
 constexpr int kCharAfter = 45;          // ...and turns to the burnt-out wreck this far in (the fire at its height)
