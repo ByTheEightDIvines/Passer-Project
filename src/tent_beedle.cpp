@@ -113,6 +113,7 @@ cPhs_Step psrTentBeedle_c::create() {
     if (phase != cPhs_COMPLEATE_e) return static_cast<cPhs_Step>(phase);
 
     mFlowNodeNo = beedle_field::shopGreetNode();
+    beedle_field::newVisit();
     mTwilight = false;
     for (int i = 0; i < kSlots; ++i) { mWare[i] = -1; mTag[i] = fpcM_ERROR_PROCESS_ID_e; }
     mCam[0] = mCam[1] = fpcM_ERROR_PROCESS_ID_e;

@@ -7,7 +7,7 @@
 class daNpcPasser_c;
 class fopAc_ac_c;
 namespace beedle_field {
-bool installSounds();   // his two voice clips (res/voices/beedle_*.wav)
+bool installSounds();   // his voice clips (res/voices/beedle_*.wav)
 // his shop's talk (one offer per ware, the check, the purchase, his answers), into the talk graph
 // Beedle's shop talk is off (its graph failed to register).
 void markUnready();
@@ -25,6 +25,7 @@ u16 tentOfferNode(int ware);
 u16 tentHelloNode();
 // the tent as a real shop: his welcome flow (G; G+1 his cursor flow) and each ware's (M; M+1 its description)
 u16 shopGreetNode();
+void newVisit();   // Link has come into the tent: his next talk gets the OHHHHH welcome
 u16 shopWareNode(int ware);
 int boughtSerial();
 int lastBought();

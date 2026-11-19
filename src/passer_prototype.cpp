@@ -3328,7 +3328,7 @@ MOD_EXPORT ModResult mod_initialize(ModError* error) {
         svc_log->info(mod_ctx, "voice clips could not be registered; travellers stay quiet");
     }
     if (!beedle_field::installSounds()) {
-        svc_log->info(mod_ctx, "Beedle's THANK YOU / GOODBYE could not be registered; he sells quietly");
+        svc_log->info(mod_ctx, "Beedle's voice clips (OHHHHH / THANK YOU / GOODBYE) could not all be registered; he may sell quietly");
     }
     if (!psr_freeze::install()) {
         svc_log->info(mod_ctx, "actor update hook unavailable; the old women can't freeze monsters");

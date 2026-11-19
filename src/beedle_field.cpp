@@ -78,9 +78,14 @@ template <class B> void descText(B& b, const char* d) {
     }
 }
 
-// his voice: programs 0xEC/0xED (the travellers' voices use 0x88-0xDF, the camp songs 0xE0-0xEB)
-constexpr u8 kPrgGoodbye = 0xEC, kPrgThanks = 0xED;
-u32 g_goodbye = 0, g_thanks = 0;
+// his voice (Wind Waker's shop bank, shop_0.aw: OHHHHH 36, 'Bye 37, Thank you 38): programs 0xEC-0xEE
+// (the travellers' voices use 0x88-0xDF, the camp songs 0xE0-0xEB)
+constexpr u8 kPrgGoodbye = 0xEC, kPrgThanks = 0xED, kPrgOhh = 0xEE;
+u32 g_goodbye = 0, g_thanks = 0, g_ohh = 0;
+// As in Wind Waker (daNpc_Bs1_c::getMsg): the first time Link talks to him on each visit he gets the
+// "OHHHHH! A customer!" welcome with its voice; after that, the shorter line. A visit starts when the
+// tent's Beedle is made (each time Link comes into the tent).
+bool g_greeted = false;
 
 std::array<u16, kWareCount> g_offerNode{};
 std::array<u16, kWareCount> g_tentOfferNode{};   // the same, for a ware on a cushion in his tent
@@ -88,6 +93,8 @@ u16 g_tentHelloNode = 0xFFFF;
 std::array<u16, kWareCount> g_shopWare{};   // the tent shop: each ware's offer (M; its description is M+1)
 u16 g_shopGreet = 0xFFFF;                   // ...and his welcome (G; G+1 is the cursor back on him)
 FlowEventId g_eBye{};
+FlowEventId g_eOhh{};
+FlowQueryId g_qGreeted{};
 int g_boughtSerial = 0;   // counts purchases (the tent sees one happen)
 u16 g_nothingNode = 0xFFFF;
 bool g_ready = false;
@@ -206,6 +213,14 @@ void onBuy(ModContext*, const FlowEventContext* e, void*) {
 void onBye(ModContext*, const FlowEventContext* e, void*) {
     playVoice(g_goodbye, static_cast<const fopAc_ac_c*>(e->speaker_actor));
 }
+void onOhh(ModContext*, const FlowEventContext* e, void*) {
+    playVoice(g_ohh, static_cast<const fopAc_ac_c*>(e->speaker_actor));
+}
+u16 onGreeted(ModContext*, const FlowQueryContext*, void*) {   // 0: first talk this visit (and now greeted)
+    if (g_greeted) return 1;
+    g_greeted = true;
+    return 0;
+}
 }  // namespace
 
 namespace beedle_field {
@@ -221,7 +236,10 @@ bool installSounds() {
     if (mod_sounds::loadWave(kPrgThanks, "res/voices/beedle_thanks.wav", false, 0)) {
         g_thanks = mod_sounds::addSound(SE_CATEGORY_CHARA_VOICE, kPrgThanks, &info);
     }
-    return g_goodbye != 0 && g_thanks != 0;
+    if (mod_sounds::loadWave(kPrgOhh, "res/voices/beedle_ohh.wav", false, 0)) {
+        g_ohh = mod_sounds::addSound(SE_CATEGORY_CHARA_VOICE, kPrgOhh, &info);
+    }
+    return g_goodbye != 0 && g_thanks != 0 && g_ohh != 0;
 }
 
 ModResult g_lastErr = MOD_OK;
@@ -290,16 +308,30 @@ ModResult registerFlows(mods::flow::GraphBuilder& graph, const MessageLanguage* 
     // offer, A pressed on it; M+1: its description while the cursor is on it). Custom flow nodes pass
     // straight through the game's flow lookup, so the pairs only need to be back to back.
     if (ModResult r = svc_flow->register_event(mod_ctx, "psr_beedle_bye", onBye, nullptr, &g_eBye); r != MOD_OK) return r;
+    if (ModResult r = svc_flow->register_event(mod_ctx, "psr_beedle_ohh", onOhh, nullptr, &g_eOhh); r != MOD_OK) return r;
+    if (ModResult r = svc_flow->register_query(mod_ctx, "psr_beedle_greeted", onGreeted, nullptr, &g_qGreeted); r != MOD_OK) return r;
     auto shopWait = [](auto& b) {   // as Malo's: the box stays up while Link browses (the shop's send control)
         const u8 none[1] = {0};
         b.raw_tag(0, 0x1b, std::span<const u8>(none, 0)).raw_tag(0, 0x15, std::span<const u8>(none, 0)).auto_advance(0);
     };
     {
-        const int greet = node([&](auto& b) {
+        // G: first talk this visit? -> OHHHHH (voice, then his welcome) | the shorter line (Wind Waker's)
+        const int welcome = node([&](auto& b) {
             b.talk_anim(1);
-            b.text("OHHHHH! A customer! Welcome to\nBeedle's tent shop, Mr. Customer!\nHave a look around! ");
+            b.text("OHHHHH! A customer! Welcome to\nBeedle's tent shop! I deal in pretty\nmuch anything and everything! ");
             shopWait(b);
         }, mods::flow::kEnd);
+        const int again = node([&](auto& b) {
+            b.talk_anim(2);
+            b.text("What are you looking for, huh?\nIs there nothing you want to buy?\nSpeak to me! I must know! ");
+            shopWait(b);
+        }, mods::flow::kEnd);
+        if (welcome < 0 || again < 0) return g_lastErr != MOD_OK ? g_lastErr : MOD_ERROR;
+        auto ohh = graph.add_event(g_eOhh, {0, 0, 0, 0});
+        ohh.next(static_cast<u16>(welcome));
+        auto first = graph.add_branch(g_qGreeted, 0);
+        first.results({ohh.id(), static_cast<u16>(again)});
+        const int greet = first.id();
         auto keeper = graph.add_branch(static_cast<FlowQueryId>(FLOW_QUERY_SHOP_CLERK), 0);
         if (greet < 0 || keeper.id() != greet + 1) {
             travellers::diagLine("beedle  shop flows not back to back (%d, %d)", greet, keeper.id());
@@ -398,6 +430,7 @@ u8 wareDisplayItem(int ware) {
 }
 
 u16 tentOfferNode(int ware) { return g_ready && ware >= 0 && ware < kWareCount ? g_tentOfferNode[ware] : 0xFFFF; }
+void newVisit() { g_greeted = false; }
 u16 shopGreetNode() { return g_ready ? g_shopGreet : 0xFFFF; }
 u16 shopWareNode(int ware) { return g_ready && ware >= 0 && ware < kWareCount ? g_shopWare[ware] : 0xFFFF; }
 u16 tentHelloNode() { return g_ready ? g_tentHelloNode : 0xFFFF; }
