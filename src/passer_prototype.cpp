@@ -45,6 +45,7 @@
 #include "convoys.hpp"
 #include "dialogue_marks.hpp"
 #include "beedle_field.hpp"
+#include "people.hpp"
 
 #include <algorithm>
 #include <array>
@@ -342,6 +343,7 @@ mods::flow::Graph g_talkGraph;
 std::deque<mods::flow::RegisteredMessage> g_spotMessages;   // the convoy and guard lines, alive as long as the mod
 mods::flow::Graph g_spotGraph;
 mods::flow::Graph g_beedleGraph;
+mods::flow::Graph g_peopleGraph;
 uint16_t g_talkNode = 0xFFFF;
 constexpr int kCookLineCount = 4;
 std::array<mods::flow::RegisteredMessage, kCookLineCount> g_cookLines;
@@ -3029,6 +3031,13 @@ HookAction onTalkTagExecutePre(ModContext*, void* args, void*, void*) {
                 if (auto* state = findState(who, false)) state->talking = true;
                 beedle_field::talkStarted(who);
             }
+        } else if (const int slot = travellers::slotIndex(who); people::isPerson(slot) && people::talkNode() != 0xFFFF) {
+            // one of the camp travellers: their own talk (an introduction the first time they meet Link)
+            people::talkStarted(slot);
+            tag->mFlowNodeNo = people::talkNode();
+            g_talkWith = fopAcM_GetID(who);
+            fopAcM_OnStatus(who, fopAcStts_NOPAUSE_e);
+            if (auto* state = findState(who, false)) state->talking = true;
         } else if (n > 0) {
             // each person their own line, moving on one each time he's talked to: the people of one wagon
             // don't all say the same thing, and nobody repeats himself back to back
@@ -3192,6 +3201,16 @@ ModResult registerGreetingFlow() {
                 report("Beedle's shop (the graph)", g_beedleGraph.result());
                 beedle_field::markUnready();
             }
+        }
+    }
+    {
+        mods::flow::GraphBuilder graph{kTalkFlowGroup};
+        if (const ModResult r = people::registerTalk(graph, kTalkFlowGroup, kLanguages.data(), static_cast<int>(kLanguages.size()));
+            r != MOD_OK) {
+            report("the travellers' own talk (a message or its text)", r);
+        } else {
+            g_peopleGraph = graph.commit();
+            if (!g_peopleGraph) report("the travellers' own talk (the graph)", g_peopleGraph.result());
         }
     }
     const bool any = static_cast<bool>(g_talkGraph) || g_spotNodesReady || static_cast<bool>(g_beedleGraph);
@@ -3407,6 +3426,7 @@ MOD_EXPORT ModResult mod_shutdown(ModError*) {
     g_spotGraph.reset();
     g_spotMessages.clear();
     g_beedleGraph.reset();
+    g_peopleGraph.reset();
     g_spotNodesReady = false;
     g_greeting = {};
     g_talkNode = 0xFFFF;

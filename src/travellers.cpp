@@ -6,6 +6,7 @@
 #include "camp_fire.hpp"
 #include "spot_picker.hpp"
 #include "traveller_gear.hpp"
+#include "people.hpp"
 
 #include "d/actor/d_a_npc_passer.h"
 #include "d/d_bg_s_gnd_chk.h"
@@ -353,6 +354,7 @@ struct Traveller {
     bool stayUp = false;   // tonight it stays up by the fire
     int sleepFrames = 0;
     int homeCamp = -1;     // a bard's own fire: he travels by day and is back to play there every night
+    int home = -1;         // the camp it calls home (its camp node), -1: a wanderer (or Beedle, a guard, crew)
     bool guard = false;    // one of the guards: lives at the guards' camp, never takes to the road
     u8 style = 0;          // a guard's arms: 1 spear and tall shield, 2 sword and small shield, 3 that and the royal bow
     // Convoy people (riders, escorts, the folk by the parked wagons): the convoys put them in and take
@@ -511,6 +513,12 @@ void fillPath(PathStore& store, const std::vector<cXyz>& pts) {
 bool fighterType(int type);
 void placeTraveller(int s);   // (below: populate's own placement, also used when the field first opens)
 
+int campIndex(int node) {
+    for (int i = 0; i < kCampCount; ++i) if (kCamps[i].node == node) return i;
+    return -1;
+}
+f32 routeLength(const std::vector<Leg>& r);
+
 // --- camp seats ---------------------------------------------------------------------------------
 // The amphitheater camp just outside Castle Town (the one camp in the Castle Town field area).
 int amphitheaterNode() {
@@ -618,6 +626,41 @@ int nearestGate(int from) {
 
 bool beedleNodeOk(int n) { return !(kNodes[n].stage == 1 && kNodes[n].room == 8); }
 
+// --- home: how far a local goes from its home camp ---------------------------------------------------
+// A local keeps within its home's reach: by road, no further than the third nearest camp from home (about
+// two or three camps' worth of road). Worked out again whenever the story opens more of the field.
+constexpr int kHomeReachCamps = 3;
+struct Reach { u32 rooms = 0xFFFFFFFFu; f32 reach = 0.0f; std::vector<f32> dist; };
+std::array<Reach, kCampCount> g_reach{};
+const Reach& reachOf(int homeNode) {
+    const int ci = campIndex(homeNode);
+    static Reach none;
+    if (ci < 0) return none;
+    Reach& r = g_reach[ci];
+    if (r.rooms == g_openRooms && !r.dist.empty()) return r;
+    r.rooms = g_openRooms;
+    r.dist.assign(kNodeCount, 1e30f);
+    // road distance from home to every spot (one pass of the route planner from home)
+    for (int n = 0; n < kNodeCount; ++n) {
+        if (n == homeNode) { r.dist[n] = 0.0f; continue; }
+        auto route = plan(homeNode, n, false);
+        if (!route.empty()) r.dist[n] = routeLength(route);
+    }
+    std::vector<f32> camps;
+    for (int c = 0; c < kCampCount; ++c) {
+        const int n = kCamps[c].node;
+        if (n != homeNode && kNodes[n].kind == NK_CAMP && r.dist[n] < 1e29f) camps.push_back(r.dist[n]);
+    }
+    std::sort(camps.begin(), camps.end());
+    r.reach = camps.empty() ? 1e30f : camps[std::min<size_t>(kHomeReachCamps, camps.size()) - 1];
+    return r;
+}
+bool nearHome(const Traveller& t, int node) {
+    if (t.home < 0) return true;
+    const Reach& r = reachOf(t.home);
+    return r.dist.empty() || r.dist[node] <= r.reach + 1.0f;
+}
+
 int randomDestination(const Traveller& t, int from) {
     PlanAs as(t.beedle);
     std::vector<int> dests;
@@ -631,8 +674,14 @@ int randomDestination(const Traveller& t, int from) {
         }
         return -1;
     }
+    // a local far from home heads back that way; otherwise it stays within reach of home (when home can be
+    // reached from here at all: cut off from it, it roams like a wanderer until the way opens)
+    const bool leash = t.home >= 0 && reachOf(t.home).dist.size() == static_cast<size_t>(kNodeCount) &&
+                       reachOf(t.home).dist[from] < 1e29f;
+    if (leash && !nearHome(t, from) && t.home != from) return t.home;
     for (int n = 0; n < kNodeCount; ++n) {
         if (n == from) continue;
+        if (leash && !nearHome(t, n)) continue;
         const u8 k = kNodes[n].kind;
         if (k == NK_GATE) {
             dests.push_back(n);
@@ -655,6 +704,13 @@ int nightDestination(Traveller& t, int from) {
     if (t.beedle) return randomDestination(t, from);   // no camping: he keeps on wandering
     if (t.homeCamp >= 0 && canSit(t, t.homeCamp) && (t.homeCamp == from || !plan(from, t.homeCamp, false).empty())) {
         return t.homeCamp;   // a bard goes back to his own fire
+    }
+    // home for the night, if it can be reached and has a seat (a local a long way off sleeps nearer, and
+    // heads home over the next days)
+    if (t.home >= 0 && canSit(t, t.home)) {
+        if (t.home == from) return t.home;
+        auto r = plan(from, t.home, false);
+        if (!r.empty() && routeLength(r) <= std::max(reachOf(t.home).reach, 1.0f)) return t.home;
     }
     if (kNodes[from].stage == 1) {
         const int amphi = amphitheaterNode();
@@ -701,6 +757,16 @@ void newRoute(Traveller& t, int from) {
     }
 }
 
+// the camp it sleeps at tonight (kept with the save: tomorrow it wakes there)
+void noteSlept(Traveller& t, int node) {
+    const int slot = static_cast<int>(&t - g_t.data());
+    people::Person* p = people::get(slot);
+    const int ci = campIndex(node);
+    if (p == nullptr || ci < 0 || p->slept == ci) return;
+    p->slept = static_cast<s8>(ci);
+    people::markChanged();
+}
+
 void arrive(Traveller& t, int node) {
     t.node = node;
     t.route.clear();
@@ -727,6 +793,7 @@ void arrive(Traveller& t, int node) {
                 t.sleep = t.spawned ? 1 : 2;
                 t.sleepFrames = 0;
                 t.timer = rndRange(900, 2400);
+                noteSlept(t, node);
                 break;
             }
             // the fire is full: a short breather, then on to somewhere else
@@ -738,6 +805,7 @@ void arrive(Traveller& t, int node) {
         t.state = ST_REST;
         t.restUntilMorning = isEvening();
         t.timer = rndRange(900, 2400);
+        if (t.restUntilMorning) noteSlept(t, node);
         break;
     default:
         t.state = ST_REST;
@@ -1011,6 +1079,9 @@ void eveningReroute(Traveller& t) {
     }
 }
 
+void castPerson(int s, bool newcomer);
+void becomePerson(Traveller& t, int s);
+
 void stepVirtual(Traveller& t) {
     if (t.state == ST_WALK) {
         if (t.route.empty()) { newRoute(t, t.node); return; }
@@ -1064,8 +1135,15 @@ void stepRestOrTown(Traveller& t) {
         newRoute(t, g);
     } else if (t.state == ST_GONE) {
         if (--t.timer <= 0) {
-            // a new traveller arrives on the road out of Castle Town
-            if (t.homeCamp < 0 && !t.beedle) t.type = kWalkCast[rnd() % kWalkCast.size()];   // a bard stays his fire's bard
+            // a new traveller arrives on the road out of Castle Town: someone new in the fallen one's place
+            // (a bard stays his fire's bard, but he's a new man)
+            if (!t.beedle) {
+                const int slot = static_cast<int>(&t - g_t.data());
+                castPerson(slot, true);
+                const int at = t.node;
+                becomePerson(t, slot);
+                t.node = at;
+            }
             t.dead = false;
             t.life = -1;
             t.state = ST_TOWN;
@@ -1332,10 +1410,6 @@ bool bedTime() { const int h = hour(); return h >= 19 || h < 4; }
 bool lateNight() { const int h = hour(); return h >= 22 || h < 4; }
 bool oldWomanType(int type) { return type == 20 || type == 27; }
 constexpr int kBardType = 4;
-int campIndex(int node) {
-    for (int i = 0; i < kCampCount; ++i) if (kCamps[i].node == node) return i;
-    return -1;
-}
 int bedsAt(int campNode) {
     if (campNode < 0 || kNodes[campNode].kind != NK_CAMP) return 0;
     return kCampTents * kBedsPerTent;
@@ -1601,6 +1675,57 @@ void refreshBridge() {
     return dComIfGs_isSaveSwitch(kFieldSaveTable, no);
 }
 
+// A part of the field has just opened (its twilight lifted): one or two travellers set out to see it,
+// walking the new road to a camp there (or a spot there, if it has no camp). Wanderers first, then
+// whoever is nearest; not anyone out in the world in front of Link.
+void sendExplorers(u32 newRooms) {
+    std::vector<int> targets;
+    for (int c = 0; c < kCampCount; ++c) {
+        const int n = kCamps[c].node;
+        if (kNodes[n].kind == NK_CAMP && (roomBit(kNodes[n].stage, kNodes[n].room) & newRooms)) targets.push_back(n);
+    }
+    if (targets.empty()) {
+        for (int n = 0; n < kNodeCount; ++n) {
+            if (kNodes[n].kind == NK_ROAD && (roomBit(kNodes[n].stage, kNodes[n].room) & newRooms)) targets.push_back(n);
+        }
+    }
+    if (targets.empty()) return;
+    struct Pick { int slot; f32 len; bool wanderer; std::vector<Leg> route; int to; };
+    std::vector<Pick> picks;
+    for (int s = 0; s < kPopulation && s < kSlots; ++s) {
+        Traveller& t = g_t[s];
+        if (!t.used || t.spawned || t.beedle || t.dead || t.homeCamp >= 0 || t.state == ST_GONE || t.state == ST_TOWN) continue;
+        const int from = t.state == ST_WALK && t.leg < static_cast<int>(t.route.size()) ? legEnd(t.route[t.leg]) : t.node;
+        for (int to : targets) {
+            if (to == from) continue;
+            auto r = plan(from, to, false);
+            if (r.empty()) continue;
+            picks.push_back({s, routeLength(r), t.home < 0, std::move(r), to});
+            break;
+        }
+    }
+    std::sort(picks.begin(), picks.end(), [](const Pick& a, const Pick& b) {
+        return a.wanderer != b.wanderer ? a.wanderer : a.len < b.len;
+    });
+    const int want = std::min<int>(rndRange(1, 2), static_cast<int>(picks.size()));
+    for (int k = 0; k < want; ++k) {
+        Pick& pk = picks[k];
+        Traveller& t = g_t[pk.slot];
+        releaseSeat(t);
+        releaseBed(t);
+        if (kNodes[pk.to].kind == NK_CAMP) takeSeat(t, pk.to);
+        if (t.state == ST_WALK && t.leg < static_cast<int>(t.route.size())) {
+            t.node = legEnd(t.route[t.leg]);
+        }
+        t.route = std::move(pk.route);
+        t.leg = 0;
+        t.dist = 0.0f;
+        t.state = ST_WALK;
+        t.restUntilMorning = false;
+        diag("story   %s sets out to see the newly opened field (spot %d)", people::name(pk.slot), pk.to);
+    }
+}
+
 // Which rooms and blockers the story has opened (read from the save, so right wherever Link is).
 void refreshStory() {
     u32 rooms = 0;
@@ -1619,6 +1744,7 @@ void refreshStory() {
     if (rooms != g_openRooms || blocks != g_openBlocks) {
         diag("story   open rooms %05x (was %05x) blockers gone %x (was %x)", rooms, g_openRooms, blocks, g_openBlocks);
         const bool firstOpen = g_openRooms == 0 && rooms != 0 && g_started;
+        const u32 newlyOpen = g_openRooms != 0 ? (rooms & ~g_openRooms) : 0u;
         g_openRooms = rooms;
         g_openBlocks = blocks;
         // the field has just opened (a save loaded after everyone was placed with it shut): those parked
@@ -1636,6 +1762,7 @@ void refreshStory() {
             }
             diag("story   field open: %d travellers placed", placed);
         }
+        if (newlyOpen != 0 && g_started) sendExplorers(newlyOpen);
     }
 }
 
@@ -1658,13 +1785,18 @@ int randomOpenNode(bool beedle = false) {
 void rehomeStranded() {
     for (int s = 0; s < kPopulation && s < kSlots; ++s) {
         Traveller& t = g_t[s];
-        if (!t.used || t.spawned || t.guard || t.crew || t.dead || t.homeCamp >= 0) continue;
+        if (!t.used || t.spawned || t.guard || t.crew || t.dead) continue;
+        if (t.state == ST_REST && !t.beedle) continue;   // at a camp the story hasn't opened: it waits there
         PlanAs as(t.beedle);
         bool stuck = !nodeOpen(t.node) || (t.beedle && !beedleNodeOk(t.node));
         if (!stuck && t.state == ST_WALK && t.leg < static_cast<int>(t.route.size())) {
             stuck = !edgeAllowed(t.route[t.leg].edge, false);
         }
         if (!stuck) continue;
+        if (!t.beedle) {   // back to the camp it last slept at (or home), as if it had turned round
+            placeTraveller(s);
+            continue;
+        }
         const int n = randomOpenNode(t.beedle);
         if (n < 0) return;   // nothing open yet (the start of the game): they wait
         releaseSeat(t);
@@ -1673,43 +1805,151 @@ void rehomeStranded() {
     }
 }
 
-// One traveller placed somewhere open: some on the roads, some at camps; the first few are the bards,
-// one to each fire; everyone else from the rest of the cast.
-void placeTraveller(int s) {
+// --- the people: who lives where ---------------------------------------------------------------------
+// Each camp traveller is a person (people.cpp): a name, traits, a home camp or none (a wanderer, about one
+// in five), and the camp it last slept at, all kept with the save. The first slots are the bards, one to
+// each fire; then the walkers from the cast; the last slot is Beedle.
+std::vector<int> fireNodes() {
     std::vector<int> fires;
     for (int c = 0; c < kCampCount; ++c) if (kNodes[kCamps[c].node].kind == NK_CAMP) fires.push_back(kCamps[c].node);
-    {
-        Traveller& t = g_t[s];
-        t = Traveller{};
-        t.used = true;
-        if (s == kBeedleSlot) {
-            t.type = kBeedleType;
-            t.beedle = true;
-        } else if (s < static_cast<int>(fires.size())) {
-            t.type = kBardType;
-            t.homeCamp = fires[s];
-        } else {
-            t.type = kWalkCast[s % kWalkCast.size()];
+    return fires;
+}
+constexpr int kWandererOneIn = 5;
+
+// A home camp for a newcomer of this body: the fire with the most room for locals (its seats less its
+// bard, and no more than two fighters to a fire), at random among the roomiest. -1 if none has room.
+int pickHome(int slot, u8 type) {
+    std::vector<int> best;
+    int bestRoom = 0;
+    for (int fire : fireNodes()) {
+        int locals = 0, fighters = 0;
+        for (int s = 0; s < people::kCount && s < kPopulation; ++s) {
+            if (s == slot || !g_t[s].used || g_t[s].home != fire) continue;
+            ++locals;
+            if (fighterType(g_t[s].type)) ++fighters;
         }
-        int start = randomOpenNode(t.beedle);   // where the story has opened the field
-        for (int tries = 0; start < 0 && tries < 20; ++tries) {
-            const int n = static_cast<int>(rnd() % kNodeCount);
-            if (kNodes[n].kind == NK_ROAD || kNodes[n].kind == NK_CAMP) start = n;
-        }
-        if (start < 0) start = 0;
-        // keep everyone out of the escort-only valley
-        const int camp0 = nearestCamp(t, start, false);
-        bool reachable = camp0 >= 0 && !plan(start, camp0, false).empty();
-        if (!reachable && !t.beedle) start = kCamps[0].node;
-        newRoute(t, start);
+        if (fighterType(type) && fighters >= kMaxCampFighters) continue;
+        const int room = campSeats(fire) - locals;   // (the bard counts as one of its locals)
+        if (room <= 0) continue;
+        if (room > bestRoom) { best.clear(); bestRoom = room; }
+        if (room == bestRoom) best.push_back(fire);
+    }
+    return best.empty() ? -1 : best[rnd() % best.size()];
+}
+
+// Who this slot is: its body and home from its person (or, for Beedle, his own).
+void becomePerson(Traveller& t, int s) {
+    t = Traveller{};
+    t.used = true;
+    if (s == kBeedleSlot) {
+        t.type = kBeedleType;
+        t.beedle = true;
+        return;
+    }
+    const people::Person* p = people::get(s);
+    if (p == nullptr) return;
+    t.type = p->type;
+    t.home = p->home >= 0 && p->home < kCampCount ? kCamps[p->home].node : -1;
+    if (t.type == kBardType && t.home >= 0) t.homeCamp = t.home;   // a bard plays at his own fire
+}
+
+// A new person for slot s (a new game, or a newcomer taking a fallen traveller's place).
+void castPerson(int s, bool newcomer) {
+    if (s == kBeedleSlot || s >= people::kCount) return;
+    const std::vector<int> fires = fireNodes();
+    u8 type;
+    int home;
+    if (s < static_cast<int>(fires.size())) {   // a bard, at his own fire
+        type = kBardType;
+        home = fires[s];
+    } else {
+        type = newcomer ? kWalkCast[rnd() % kWalkCast.size()] : kWalkCast[s % kWalkCast.size()];
+        g_t[s].home = -1;
+        home = rndRange(1, kWandererOneIn) == 1 ? -1 : pickHome(s, type);
+    }
+    s8 homeIdx = static_cast<s8>(home >= 0 ? campIndex(home) : -1);
+    people::make(s, type, homeIdx, fighterType(type));
+    if (people::Person* p = people::get(s); p != nullptr && p->slept < 0) {
+        // a wanderer has slept somewhere: any fire
+        p->slept = static_cast<s8>(campIndex(fires[rnd() % fires.size()]));
+    }
+}
+
+// The camp a person wakes at: where it slept, else home, else the nearest open fire.
+int wakeCamp(int s) {
+    const people::Person* p = people::get(s);
+    if (p == nullptr) return -1;
+    if (p->slept >= 0 && p->slept < kCampCount) return kCamps[p->slept].node;
+    if (p->home >= 0 && p->home < kCampCount) return kCamps[p->home].node;
+    return -1;
+}
+
+// One traveller put where it is when the game starts or a save loads: everyone is at a camp (nobody is
+// dropped on a road): out of bed and about to set off by day, by the fire or in bed at night. A camp the
+// story hasn't opened yet keeps its people there, out of sight, until it opens.
+void placeTraveller(int s) {
+    Traveller& t = g_t[s];
+    becomePerson(t, s);
+    if (!t.used) return;
+    if (t.beedle) {   // Beedle wanders: anywhere open along the roads
+        const int start = randomOpenNode(true);
+        newRoute(t, start >= 0 ? start : kCamps[0].node);
         if (t.state == ST_WALK && !t.route.empty()) {
             t.dist = static_cast<f32>(rnd() % 1000) / 1000.0f * edgeLength(t.route[0].edge);
+        }
+        return;
+    }
+    int camp = wakeCamp(s);
+    if (camp < 0) camp = fireNodes().front();
+    releaseSeat(t);
+    releaseBed(t);
+    t.node = camp;
+    t.route.clear();
+    const int h = hour();
+    if (h >= 6 && h < 16) {
+        // daytime: up already; they set off over the next while, not all at once
+        takeSeat(t, camp);
+        t.state = ST_REST;
+        t.restUntilMorning = false;
+        t.timer = rndRange(60, 5400);
+    } else {
+        arrive(t, camp);   // the evening at the fire, or bed
+        if (t.state == ST_REST && t.campNode != camp && t.bedCamp != camp) {
+            // the fire is full and it's late: a bed if there is one, else it rests by the fire till morning
+            if (!takeBed(t, camp)) takeSeat(t, camp);
+            t.restUntilMorning = true;
         }
     }
 }
 
+// Everyone cast anew (a new game, a save from before the people), then placed.
+void castAll() {
+    for (int s = 0; s < kPopulation && s < kSlots; ++s) { g_t[s].used = false; g_t[s].home = -1; }
+    for (int s = 0; s < kPopulation && s < kSlots && s < people::kCount; ++s) {
+        castPerson(s, false);
+        becomePerson(g_t[s], s);   // (pickHome counts those already given homes)
+    }
+}
+void placeAll() {
+    for (int s = 0; s < kPopulation && s < kSlots; ++s) {
+        if (g_t[s].spawned) continue;   // (out in the world: it carries on from where it is)
+        placeTraveller(s);
+    }
+}
+// SaveService: a new game or a save without people (people.cpp calls these)
+void onPeopleFresh() {
+    castAll();
+    placeAll();
+    diag("people  cast and placed");
+}
+void onPeopleLoaded() {
+    placeAll();
+    diag("people  placed from the save");
+}
+
 void populate() {
-    for (int s = 0; s < kPopulation && s < kSlots; ++s) placeTraveller(s);
+    castAll();   // (until a save is loaded: then its own people, or a new cast)
+    placeAll();
     // the guards, at their own fire for good
     const int guards = guardCampNode();
     for (int k = 0; guards >= 0 && k < static_cast<int>(kGuardCast.size()) && kPopulation + k < kSlots; ++k) {
@@ -1731,6 +1971,7 @@ void populate() {
 // --- public -----------------------------------------------------------------------------------
 void initialize() {
     buildNetwork();
+    people::install(onPeopleFresh, onPeopleLoaded);
     char line[160];
     std::snprintf(line, sizeof(line), "travellers: network %d spots, %d roads, %d camps", kNodeCount, kEdgeCount, kCampCount);
     svc_log->info(mod_ctx, line);
@@ -2075,6 +2316,7 @@ void update() {
         refreshStory();
         rehomeStranded();
     }
+    people::tick();
     const int stage = currentStage();
     auto* player = dComIfGp_getPlayer(0);
     // No travellers in a province still covered by twilight (they keep travelling virtually).
