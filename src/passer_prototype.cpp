@@ -1000,8 +1000,10 @@ void setDamageable(daNpcPasser_c* passer) {
     // the escort wagon's, only caught Bulblin arrows and Link's own sword.)
     // While Link is a wolf, fighters also take his bites (group 0x2, one of the groups his attacks
     // aim at): he can hurt them, never kill them, and they run (see the hit handler).
-    // And a soldier fighting Link over his bombs takes Link's blows too (guard_grudge: never killed).
-    passer->mCyl.SetTgSPrm((daPy_py_c::checkNowWolf() && travellers::isFighter(passer)) || grudge::hostile(passer) ? 0x7 : 0x5);
+    // Link's own blows (group 0x2) reach everyone too: they only flinch (see the hit handler), except a
+    // soldier fighting him over his bombs, who takes them (guard_grudge: never killed). The wolf's
+    // bites only reach the fighters, as before.
+    passer->mCyl.SetTgSPrm(!daPy_py_c::checkNowWolf() || travellers::isFighter(passer) ? 0x7 : 0x5);
     passer->mCyl.SetTgHitMark(CcG_Tg_UNK_MARK_1);
     passer->mCyl.SetTgSe(dCcD_SE_SOFT_BODY);
 }
@@ -2860,6 +2862,18 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         // a soldier fighting Link over his bombs: Link's blows count (but never kill: see below)
         const bool byLink = attacker != nullptr && attacker == dComIfGp_getPlayer(0) && !daPy_py_c::checkNowWolf() &&
                             grudge::hostile(passer);
+        // Link's sword (or anything of his) on anyone else: a flinch, never harm
+        if (!byWolf && !byLink && attacker != nullptr && attacker == dComIfGp_getPlayer(0)) {
+            const int slot = travellers::slotIndex(passer);
+            if (convoys::isRider(slot) || travellers::isBeedle(passer) || traveller_gear::sitting(slot)) return HOOK_CONTINUE;
+            state->invuln = kHurtInvulnFrames;
+            fighter_anim::hit(passer, attacker->current.pos);   // the stagger, facing him
+            state->voiceWait = 0;
+            callOut(passer, *state, kVoiceYelp, 30);
+            say(passer, *state, psr_bubble::kScared);
+            travellers::noteAct(passer, "flinched from Link's sword (unhurt)");
+            return HOOK_CONTINUE;
+        }
         if (!byWolf && !byLink && (attacker == nullptr || !fopAcM_IsActor(attacker) ||
                         fopAcM_GetGroup(attacker) != fopAc_ENEMY_e)) {
             return HOOK_CONTINUE;
