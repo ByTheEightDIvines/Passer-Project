@@ -6,6 +6,10 @@ class fopAc_ac_c;
 #include "global.h"
 
 namespace traveller_gear {
+// Recoloured outfits (hair and clothes; never skin) for the bodies that more than one traveller wears:
+// how many this body type has besides its own (0 for most). A person's look 0 is the body as it is,
+// 1..lookVariants(type) one of the recolours (PV<tt><v>.arc in the overlay).
+int lookVariants(int type);
 // The food or drink it takes out for a meal (1 food held by one end, 2 bottle, 3 goblet, 4 food in the
 // palm, 5 tankard; 0 puts it away): one of that kind at random.
 // Picks this meal's item and returns the loop to play (1 eat, 2 drink, 3 sip, 4 nibble, 5 quaff,

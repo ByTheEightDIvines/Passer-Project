@@ -41,6 +41,7 @@ struct Person {
     s8 slept = -1;        // camp it last slept at, -1: none yet
     bool metLink = false;
     u16 since = 0;        // game date it joined the roster (a newcomer replaces someone who fell)
+    u8 look = 0;          // outfit: 0 the body as it is, 1.. one of its recolours (traveller_gear)
 };
 
 Person* get(int slot);          // nullptr unless slot is a person

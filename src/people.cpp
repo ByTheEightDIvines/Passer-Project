@@ -12,6 +12,7 @@
 #include "mods/svc/message.h"
 #include "mods/svc/save.h"
 #include "travellers.hpp"
+#include "traveller_gear.hpp"
 
 namespace people {
 namespace {
@@ -73,11 +74,26 @@ u32 rnd() {
     return g_seed;
 }
 
+// The outfit least worn by the others of the same body (so two people of one body differ, and the six
+// bards each wear their own); ties go to the body as it is.
+u8 pickLook(int slot, u8 type) {
+    const int n = traveller_gear::lookVariants(type);
+    int best = 0, bestUses = 1 << 30;
+    for (int v = 0; v <= n; ++v) {
+        int uses = 0;
+        for (int s = 0; s < kCount; ++s) {
+            if (s != slot && g_people[s].used && g_people[s].type == type && g_people[s].look == v) ++uses;
+        }
+        if (uses < bestUses) { best = v; bestUses = uses; }
+    }
+    return static_cast<u8>(best);
+}
+
 // --- the save blob ----------------------------------------------------------------------------------
 constexpr const char* kBlob = "dt_people";
 constexpr u32 kMagic = 0x44545050u;   // "DTPP"
-constexpr u16 kVersion = 1;
-constexpr int kRecord = 10;            // bytes per person
+constexpr u16 kVersion = 2;            // 2: + each person's outfit
+constexpr int kRecord = 11;            // bytes per person (10 in version 1)
 void encode(std::vector<u8>& out) {
     out.clear();
     auto put32 = [&](u32 v) { for (int k = 3; k >= 0; --k) out.push_back(static_cast<u8>(v >> (8 * k))); };
@@ -94,6 +110,7 @@ void encode(std::vector<u8>& out) {
         out.push_back(static_cast<u8>(p.slept));
         out.push_back(p.metLink ? 1 : 0);
         put16(p.since);
+        out.push_back(p.look);
     }
 }
 bool decode(const u8* d, size_t n) {
@@ -101,7 +118,8 @@ bool decode(const u8* d, size_t n) {
     const u32 magic = (u32(d[0]) << 24) | (u32(d[1]) << 16) | (u32(d[2]) << 8) | d[3];
     const u16 ver = static_cast<u16>((d[4] << 8) | d[5]);
     const u16 count = static_cast<u16>((d[6] << 8) | d[7]);
-    if (magic != kMagic || ver != kVersion || count != kCount || n < 8 + size_t(kRecord) * kCount) return false;
+    const int rec = ver == 1 ? 10 : kRecord;
+    if (magic != kMagic || (ver != 1 && ver != kVersion) || count != kCount || n < 8 + size_t(rec) * kCount) return false;
     const u8* r = d + 8;
     for (Person& p : g_people) {
         p.used = r[0] != 0;
@@ -112,7 +130,18 @@ bool decode(const u8* d, size_t n) {
         p.slept = static_cast<s8>(r[6]);
         p.metLink = r[7] != 0;
         p.since = static_cast<u16>((r[8] << 8) | r[9]);
-        r += kRecord;
+        p.look = ver >= 2 ? r[10] : 0;
+        r += rec;
+    }
+    if (ver == 1) {
+        // a save from before the recolours: hand out outfits now
+        for (int s = 0; s < kCount; ++s) {
+            if (g_people[s].used) g_people[s].look = pickLook(s, g_people[s].type);
+        }
+        g_dirty = true;
+    }
+    for (Person& p : g_people) {
+        if (p.look > traveller_gear::lookVariants(p.type)) p.look = 0;
     }
     return true;
 }
@@ -261,13 +290,14 @@ void make(int slot, u8 type, s8 home, bool fighter) {
         }
         if (!clash) p.traits |= t;
     }
+    p.look = pickLook(slot, type);
     g_people[slot] = p;
     std::string traits;
     for (int b = 0; b < kTraitCount; ++b) {
         if (p.traits & (1u << b)) { if (!traits.empty()) traits += ", "; traits += kTraitNames[b]; }
     }
-    travellers::diagLine("people  slot %d: %s (body %d), %s, home camp %d", slot, nameAt(p.name), type,
-                         traits.c_str(), home);
+    travellers::diagLine("people  slot %d: %s (body %d, outfit %d), %s, home camp %d", slot, nameAt(p.name), type,
+                         p.look, traits.c_str(), home);
     g_ready = true;
     markChanged();
 }

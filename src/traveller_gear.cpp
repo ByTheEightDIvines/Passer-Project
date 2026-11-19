@@ -40,6 +40,8 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <cctype>
+#include "people.hpp"
 
 
 
@@ -74,7 +76,13 @@ const Kit kKits[] = {
 const Kit* kitFor(const Look* look) {
     if (look == nullptr) return nullptr;
     for (const Kit& k : kKits) {
-        if (std::strcmp(k.model, look->arc + 2) == 0) return &k;   // "P_MON_a" -> "MON_a"
+        // "MON_a" against "mon_a.bmd" (the recolours have their own archive names, the same model file)
+        const size_t n = std::strlen(k.model);
+        bool same = look->bmd != nullptr && std::strlen(look->bmd) > n && look->bmd[n] == '.';
+        for (size_t i = 0; same && i < n; ++i) {
+            same = std::tolower(static_cast<unsigned char>(k.model[i])) == std::tolower(static_cast<unsigned char>(look->bmd[i]));
+        }
+        if (same) return &k;
     }
     return nullptr;
 }
@@ -111,6 +119,34 @@ const Look* lookFor(int type) {
     return &kLooks[type];
 }
 
+// The recoloured outfits (tools/looks: recolor.py, pack_variants.py; approved renders 2026-11-19).
+// Each is the same model, eye animation and pack as its body, from its own archive PV<tt><v>.
+struct Variants { int type; const char* arcs[5]; };
+constexpr Variants kVariants[] = {
+    {3, {"PV031"}}, {4, {"PV041", "PV042", "PV043", "PV044", "PV045"}}, {6, {"PV061"}}, {7, {"PV071"}},
+    {13, {"PV131"}}, {14, {"PV141"}}, {15, {"PV151"}}, {20, {"PV201"}}, {27, {"PV271"}}, {28, {"PV281"}},
+    {29, {"PV291"}},
+};
+const Variants* variantsOf(int type) {
+    for (const Variants& v : kVariants) if (v.type == type) return &v;
+    return nullptr;
+}
+int variantCount(const Variants* v) {
+    int n = 0;
+    while (v != nullptr && n < 5 && v->arcs[n] != nullptr) ++n;
+    return n;
+}
+// A person's look: the body's own, or one of its recolours.
+const Look* lookFor(int type, int variant) {
+    const Look* base = lookFor(type);
+    const Variants* vs = variantsOf(type);
+    if (base == nullptr || variant <= 0 || variant > variantCount(vs)) return base;
+    static Look s_looks[30][5] = {};
+    Look& l = s_looks[type][variant - 1];
+    if (l.arc == nullptr) l = Look{vs->arcs[variant - 1], base->bmd, base->btp, base->pack};
+    return &l;
+}
+
 // The camp cook (camp_cook.cpp): #9's own model and clothes, straight from the game.
 const Look kCookLook = {"MAD_a2", "mad_a2.bmd", "mad_a2.btp", nullptr};
 
@@ -124,7 +160,8 @@ const Look* travellerLook(daNpcCd2_c* npc) {
     if (npc != nullptr && !npc->mIsDarkWorld && cook::isBody(npc)) return &kCookLook;
     if (npc == nullptr || npc->mIsDarkWorld || !travellers::isTraveller(npc)) return nullptr;
     if (travellers::isBeedle(npc)) return &kBeedleLook;
-    return lookFor(npc->m_type);
+    const people::Person* p = people::get(travellers::slotIndex(npc));
+    return lookFor(npc->m_type, p != nullptr && p->type == npc->m_type ? p->look : 0);
 }
 
 const char* generalArc(int type) { return type < 16 ? "Mgeneral" : "Wgeneral"; }
@@ -775,6 +812,7 @@ HookAction onArrowDrawPre(ModContext*, void* args, void* retval, void*) {
 }  // namespace
 
 namespace traveller_gear {
+int lookVariants(int type) { return variantCount(variantsOf(type)); }
 
 bool shootArrow(daNpcPasser_c* passer, fopAc_ac_c* target) {
     Gear* g = travellerLook(passer) != nullptr ? gearFor(passer) : nullptr;
