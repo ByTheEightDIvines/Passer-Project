@@ -34,22 +34,24 @@ namespace {
 enum Kind : u8 { K_ARROWS, K_BOMBS, K_WATER, K_POKE, K_BOTTLE, K_SHIELD, K_LARVA, K_SEEDS };
 struct Ware {
     const char* name;   // as he says it
+    const char* title;  // as his shop shows it
+    const char* desc;   // its description in his shop
     u16 price;          // the usual price - 5
     Kind kind;
     u8 item;            // the item given (bottles: the bottle's contents)
 };
 constexpr std::array<Ware, 11> kWares{{
-    {"10 Arrows", 5, K_ARROWS, dItemNo_ARROW_10_e},              // 10 (Death Mountain's hot spring shop)
-    {"10 Bombs", 25, K_BOMBS, dItemNo_BOMB_10_e},                // 30 (Barnes)
-    {"5 Water Bombs", 25, K_WATER, dItemNo_WATER_BOMB_5_e},      // 30 (Barnes)
-    {"5 Bomblings", 25, K_POKE, dItemNo_BOMB_INSECT_5_e},        // 30 (Barnes)
-    {"a Red Potion", 25, K_BOTTLE, dItemNo_RED_BOTTLE_e},        // 30
-    {"a Blue Potion", 95, K_BOTTLE, dItemNo_BLUE_BOTTLE_e},      // 100
-    {"Lantern Oil", 15, K_BOTTLE, dItemNo_OIL_BOTTLE_e},         // 20
-    {"Milk", 15, K_BOTTLE, dItemNo_MILK_BOTTLE_e},               // 20
-    {"a Wooden Shield", 45, K_SHIELD, dItemNo_WOOD_SHIELD_e},    // 50
-    {"Bee Larva", 5, K_LARVA, dItemNo_BEE_CHILD_e},              // 10 (Sera's Sundries), a bottle of 10
-    {"50 Seeds", 5, K_SEEDS, dItemNo_PACHINKO_SHOT_e},           // (no shop sells them: 10, as a pack of arrows)
+    {"10 Arrows", "Arrows (10)", "Arrows for your bow. Never run dry\nin the middle of a fight!", 5, K_ARROWS, dItemNo_ARROW_10_e},              // 10 (Death Mountain's hot spring shop)
+    {"10 Bombs", "Bombs (10)", "Boom! Blasts rocks, walls and\nmonsters alike. Handle with care!", 25, K_BOMBS, dItemNo_BOMB_10_e},                // 30 (Barnes)
+    {"5 Water Bombs", "Water Bombs (5)", "Bombs that sink and blow up\nunderwater, Zora style!", 25, K_WATER, dItemNo_WATER_BOMB_5_e},      // 30 (Barnes)
+    {"5 Bomblings", "Bomblings (5)", "Little bombs that scurry along\nthe ground on their own legs!", 25, K_POKE, dItemNo_BOMB_INSECT_5_e},        // 30 (Barnes)
+    {"a Red Potion", "Red Potion", "Restores 8 hearts of life energy.\nNeeds an empty bottle!", 25, K_BOTTLE, dItemNo_RED_BOTTLE_e},        // 30
+    {"a Blue Potion", "Blue Potion", "Restores all your hearts! The\nreal deal. Needs an empty bottle!", 95, K_BOTTLE, dItemNo_BLUE_BOTTLE_e},      // 100
+    {"Lantern Oil", "Lantern Oil", "Keeps your lantern burning.\nNeeds an empty bottle!", 15, K_BOTTLE, dItemNo_OIL_BOTTLE_e},         // 20
+    {"Milk", "Milk", "Fresh from Ordon! Two drinks of\nthree hearts each. Needs a bottle!", 15, K_BOTTLE, dItemNo_MILK_BOTTLE_e},               // 20
+    {"a Wooden Shield", "Wooden Shield", "A sturdy wooden shield. It burns,\nso mind the fire!", 45, K_SHIELD, dItemNo_WOOD_SHIELD_e},    // 50
+    {"Bee Larva", "Bee Larva", "Bait for fishing, or a snack in a\npinch. Needs an empty bottle!", 5, K_LARVA, dItemNo_BEE_CHILD_e},              // 10 (Sera's Sundries), a bottle of 10
+    {"50 Seeds", "Slingshot Seeds", "Ammo for your slingshot!", 5, K_SEEDS, dItemNo_PACHINKO_SHOT_e},           // (no shop sells them: 10, as a pack of arrows)
 }};
 constexpr int kWareCount = static_cast<int>(kWares.size());
 
@@ -60,6 +62,9 @@ u32 g_goodbye = 0, g_thanks = 0;
 std::array<u16, kWareCount> g_offerNode{};
 std::array<u16, kWareCount> g_tentOfferNode{};   // the same, for a ware on a cushion in his tent
 u16 g_tentHelloNode = 0xFFFF;
+std::array<u16, kWareCount> g_shopWare{};   // the tent shop: each ware's offer (M; its description is M+1)
+u16 g_shopGreet = 0xFFFF;                   // ...and his welcome (G; G+1 is the cursor back on him)
+FlowEventId g_eBye{};
 int g_boughtSerial = 0;   // counts purchases (the tent sees one happen)
 u16 g_nothingNode = 0xFFFF;
 bool g_ready = false;
@@ -175,6 +180,9 @@ void onBuy(ModContext*, const FlowEventContext* e, void*) {
     playVoice(g_thanks, at);
     beedle_field::praise();
 }
+void onBye(ModContext*, const FlowEventContext* e, void*) {
+    playVoice(g_goodbye, static_cast<const fopAc_ac_c*>(e->speaker_actor));
+}
 }  // namespace
 
 namespace beedle_field {
@@ -254,6 +262,79 @@ ModResult registerFlows(mods::flow::GraphBuilder& graph, const MessageLanguage* 
         if (offer2 < 0) return g_lastErr != MOD_OK ? g_lastErr : MOD_ERROR;
         g_tentOfferNode[i] = static_cast<u16>(offer2);
     }
+    // --- his tent as a real shop (dShopSystem_c, see tent_beedle.cpp) ---------------------------------
+    // The game's shop finds its talk by flow number: the shopkeeper's own (G: his welcome; G+1: the
+    // cursor back on him: "anything else?", or GOODBYE when Link backs out), and each ware's (M: the
+    // offer, A pressed on it; M+1: its description while the cursor is on it). Custom flow nodes pass
+    // straight through the game's flow lookup, so the pairs only need to be back to back.
+    if (ModResult r = svc_flow->register_event(mod_ctx, "psr_beedle_bye", onBye, nullptr, &g_eBye); r != MOD_OK) return r;
+    auto shopWait = [](auto& b) {   // as Malo's: the box stays up while Link browses (the shop's send control)
+        const u8 none[1] = {0};
+        b.raw_tag(0, 0x1b, std::span<const u8>(none, 0)).raw_tag(0, 0x15, std::span<const u8>(none, 0)).auto_advance(0);
+    };
+    {
+        const int greet = node([&](auto& b) {
+            b.talk_anim(1);
+            b.text("Welcome to Beedle's tent shop!\nHave a look! Something here's bound\nto catch your eye! ");
+            shopWait(b);
+        }, mods::flow::kEnd);
+        auto keeper = graph.add_branch(static_cast<FlowQueryId>(FLOW_QUERY_SHOP_CLERK), 0);
+        if (greet < 0 || keeper.id() != greet + 1) {
+            travellers::diagLine("beedle  shop flows not back to back (%d, %d)", greet, keeper.id());
+        }
+        const int more = node([&](auto& b) {
+            b.talk_anim(2);
+            b.text("Anything else catch your eye? ");
+            shopWait(b);
+        }, mods::flow::kEnd);
+        const int bye = node([](auto& b) {
+            b.talk_anim(3);
+            b.text("GOODBYE!\nCome back soon, OK?");
+        }, mods::flow::kEnd);
+        auto byeEv = graph.add_event(g_eBye, {0, 0, 0, 0});
+        byeEv.next(static_cast<u16>(bye));
+        keeper.results({static_cast<u16>(more), byeEv.id()});
+        if (more < 0 || bye < 0) return g_lastErr != MOD_OK ? g_lastErr : MOD_ERROR;
+        g_shopGreet = static_cast<u16>(greet);
+    }
+    const int sThanks = node([](auto& b) { b.talk_anim(5); b.text("THANK YOU!"); }, mods::flow::kEnd);
+    const int sPoor = node([](auto& b) { b.talk_anim(4); b.text("Huh? You don't have enough Rupees!\nCome back when you do!"); }, mods::flow::kEnd);
+    const int sFull = node([](auto& b) { b.talk_anim(4); b.text("Looks like you can't carry any more\nof that! Next time, then!"); }, mods::flow::kEnd);
+    if (sThanks < 0 || sPoor < 0 || sFull < 0) return g_lastErr != MOD_OK ? g_lastErr : MOD_ERROR;
+    for (int i = 0; i < kWareCount; ++i) {
+        const Ware& w = kWares[i];
+        char price[24];
+        std::snprintf(price, sizeof(price), "%u Rupee%s", static_cast<unsigned>(w.price), w.price == 1 ? "" : "s");
+        // M: can he buy it? -> the choice (the game's vertical select, B = no) -> the offer -> yes/no
+        auto entry = graph.add_branch(g_qCanBuy, static_cast<u16>(i));
+        const int desc = node([&](auto& b) {   // M+1
+            b.speaker(3).draw_type(MESSAGE_DRAW_INSTANT);
+            b.text_color(MESSAGE_COLOR_ORANGE).text(w.title).text(": ");
+            b.text_color(MESSAGE_COLOR_PURPLE).text(price).text("\n").text_color(MESSAGE_COLOR_DEFAULT);
+            b.text(w.desc);
+        }, mods::flow::kEnd);
+        if (desc < 0) return g_lastErr != MOD_OK ? g_lastErr : MOD_ERROR;
+        if (desc != entry.id() + 1) {
+            travellers::diagLine("beedle  ware %d flows not back to back (%d, %d)", i, entry.id(), desc);
+        }
+        auto buyEv = graph.add_event(g_eBuy, {0, 0, static_cast<u8>(i >> 8), static_cast<u8>(i)});
+        buyEv.next(static_cast<u16>(sThanks));
+        auto yesNo = graph.add_branch(FLOW_QUERY_SELECT_2, 0);
+        yesNo.results({buyEv.id(), mods::flow::kEnd});
+        const int opts = node([](auto& b) { b.options("I'll take it!", "No thanks"); }, yesNo.id());
+        const int offer = node([&](auto& b) {
+            b.talk_anim(static_cast<u8>(1 + (i & 3)));
+            b.text_color(MESSAGE_COLOR_ORANGE).text(w.name).text_color(MESSAGE_COLOR_DEFAULT).text("? Good eye!\nJust ");
+            b.text_color(MESSAGE_COLOR_PURPLE).text(price).text_color(MESSAGE_COLOR_DEFAULT).text(". Want it?");
+            b.await_choice();
+        }, static_cast<u16>(opts));
+        if (opts < 0 || offer < 0) return g_lastErr != MOD_OK ? g_lastErr : MOD_ERROR;
+        auto select = graph.add_event(static_cast<FlowEventId>(FLOW_EVENT_SELECT_VERTICAL), {0, 0, 0, 2});
+        select.next(static_cast<u16>(offer));
+        entry.results({select.id(), static_cast<u16>(sPoor), static_cast<u16>(sFull)});
+        g_shopWare[i] = entry.id();
+    }
+
     const int hello = node([](auto& b) {
         b.text("Welcome to Beedle's tent shop!\nHave a look at the cushions, and if\nanything catches your eye, just ask!");
     }, mods::flow::kEnd);
@@ -295,6 +376,8 @@ u8 wareDisplayItem(int ware) {
 }
 
 u16 tentOfferNode(int ware) { return g_ready && ware >= 0 && ware < kWareCount ? g_tentOfferNode[ware] : 0xFFFF; }
+u16 shopGreetNode() { return g_ready ? g_shopGreet : 0xFFFF; }
+u16 shopWareNode(int ware) { return g_ready && ware >= 0 && ware < kWareCount ? g_shopWare[ware] : 0xFFFF; }
 u16 tentHelloNode() { return g_ready ? g_tentHelloNode : 0xFFFF; }
 int boughtSerial() { return g_boughtSerial; }
 int lastBought() { return g_lastBought; }

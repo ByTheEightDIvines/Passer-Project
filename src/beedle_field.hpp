@@ -23,6 +23,9 @@ int tentWares(int* out, int maxOut);
 u8 wareDisplayItem(int ware);
 u16 tentOfferNode(int ware);
 u16 tentHelloNode();
+// the tent as a real shop: his welcome flow (G; G+1 his cursor flow) and each ware's (M; M+1 its description)
+u16 shopGreetNode();
+u16 shopWareNode(int ware);
 int boughtSerial();
 int lastBought();
 void sayGoodbye(const fopAc_ac_c* at);

@@ -6,9 +6,12 @@
 
 #include "SSystem/SComponent/c_lib.h"
 #include "SSystem/SComponent/c_math.h"
+#include "d/actor/d_a_itembase.h"
 #include "d/actor/d_a_player.h"
 #include "d/actor/d_a_tag_kmsg.h"
+#include "d/actor/d_a_tag_shop_item.h"
 #include "d/d_com_inf_game.h"
+#include "d/d_item_data.h"
 #include "f_op/f_op_actor_mng.h"
 #include "f_pc/f_pc_draw_priority.h"
 #include "f_pc/f_pc_manager.h"
@@ -16,133 +19,173 @@
 #include "m_Do/m_Do_mtx.h"
 #include "mods/service.hpp"
 
+// How the game's shops work (d_shop_system.cpp, d_a_npc_clerkb.cpp, and Malo Mart's talk in zel_02):
+// the shopkeeper's flow number G (home.angle.x) is his welcome and G+1 the cursor back on him; each
+// TAG_SHOPITM's flow number M (its home.angle.x) is the offer when Link presses A on it and M+1 its
+// description while the cursor is on it. Our flows are custom nodes, which the game's flow lookup
+// passes straight through (dMsgFlow_c::getInitNodeIndex), so this is the game's own shop at work.
 namespace {
 constexpr const char* kArc = "P_Beedl";
 constexpr const char* kModel = "beedle_tent.bmd";
-// His anims (Wind Waker's, on his own skeleton): sitting, his four ways of talking, his "THANK YOU".
-constexpr const char* kWait = "psr_bs_wait01.bck";
-constexpr const char* kTalks[4] = {"psr_bs_talk01.bck", "psr_bs_talk02.bck", "psr_bs_talk03.bck", "psr_bs_talk04.bck"};
-constexpr const char* kPraise = "psr_bs_praise.bck";
-constexpr u32 kHeapSize = 0x80000000;   // auto-sized
+constexpr u32 kGroup = 1;   // our shop's group (the high nibble of the keeper's, items' and cameras' params)
+
+// his motions (Wind Waker's, on his own skeleton), picked by the motion sequences below; a message's
+// talk_anim byte chooses the sequence (daNpcT_c::ctrlMsgAnm), so his lines pick how he talks
+struct Motion { const char* bck; bool loop; };
+constexpr Motion kMotions[] = {
+    {"psr_bs_wait01.bck", true}, {"psr_bs_talk01.bck", true}, {"psr_bs_talk02.bck", true},
+    {"psr_bs_talk03.bck", true}, {"psr_bs_talk04.bck", true}, {"psr_bs_praise.bck", false},
+};
+
+DUSK_CONSTEXPR daNpcT_evtData_c l_evtList[3] = {{"", 0}, {"DEFAULT_GETITEM", 0}, {"NO_RESPONSE", 0}};
+char DUSK_CONST* l_resNameList[2] = {"", "P_Beedl"};
+DUSK_CONSTEXPR s8 l_loadResPtrn0[2] = {1, -1};
+// no face animations (his face is in his body animations)
+DUSK_CONSTEXPR daNpcT_faceMotionAnmData_c l_faceMotionAnmData[1] = {{-1, 0, 0, -1, 0, 0, 0}};
+// (unused: setMotionAnm loads his animations by name)
+DUSK_CONSTEXPR daNpcT_motionAnmData_c l_motionAnmData[6] = {
+    {-1, 2, 1, -1, 0, 0, 0, 0}, {-1, 2, 1, -1, 0, 0, 0, 0}, {-1, 2, 1, -1, 0, 0, 0, 0},
+    {-1, 2, 1, -1, 0, 0, 0, 0}, {-1, 2, 1, -1, 0, 0, 0, 0}, {-1, 0, 1, -1, 0, 0, 0, 0},
+};
+DUSK_CONSTEXPR daNpcT_MotionSeqMngr_c::sequenceStepData_c l_faceMotionSequenceData[24] = {
+    {0, -1, 0}, {-1, 0, 0}, {-1, 0, 0}, {-1, 0, 0}, {0, -1, 0}, {-1, 0, 0}, {-1, 0, 0}, {-1, 0, 0},
+    {0, -1, 0}, {-1, 0, 0}, {-1, 0, 0}, {-1, 0, 0}, {0, -1, 0}, {-1, 0, 0}, {-1, 0, 0}, {-1, 0, 0},
+    {0, -1, 0}, {-1, 0, 0}, {-1, 0, 0}, {-1, 0, 0}, {0, -1, 0}, {-1, 0, 0}, {-1, 0, 0}, {-1, 0, 0},
+};
+// 0 sitting; 1-4 his four ways of talking; 5 his "THANK YOU" flourish, then sitting again
+DUSK_CONSTEXPR daNpcT_MotionSeqMngr_c::sequenceStepData_c l_motionSequenceData[24] = {
+    {0, -1, 0}, {-1, 0, 0}, {-1, 0, 0}, {-1, 0, 0}, {1, -1, 0}, {-1, 0, 0}, {-1, 0, 0}, {-1, 0, 0},
+    {2, -1, 0}, {-1, 0, 0}, {-1, 0, 0}, {-1, 0, 0}, {3, -1, 0}, {-1, 0, 0}, {-1, 0, 0}, {-1, 0, 0},
+    {4, -1, 0}, {-1, 0, 0}, {-1, 0, 0}, {-1, 0, 0}, {5, -1, 1}, {0, -1, 0}, {-1, 0, 0}, {-1, 0, 0},
+};
 
 // In the shop's own frame (tools/tents/interior2.py; +z toward the door): cross-legged on the mat on
-// the counter (its top 98 up; the mat 1.5 over it; his lowest point is 21 over his origin), between
-// the lamp pot and the candlestick. And the six cushioned tables (STANDS: the cushion tops).
+// the counter, between the lamp pot and the candlestick.
 const cXyz kSeat(55.0f, 78.5f, -370.0f);
-const cXyz kStand[psrTentBeedle_c::kStands] = {
+// The five wares, laid out for the game's five-ware cursor (dShopSystem_c::chooseItem5): 1 2 on the
+// far row, 3 4 5 on the near row, Beedle (0) to the left. Seen from the ware camera on the -x side
+// looking across the tent (screen right = toward the door), the far row is the +x cushions and the
+// near row the -x ones; the middle far cushion stays empty.
+const cXyz kSlot[psrTentBeedle_c::kSlots] = {
+    cXyz(130.0f, 72.0f, -120.0f), cXyz(130.0f, 72.0f, 240.0f),
     cXyz(-130.0f, 72.0f, -120.0f), cXyz(-130.0f, 72.0f, 60.0f), cXyz(-130.0f, 72.0f, 240.0f),
-    cXyz(130.0f, 72.0f, -120.0f),  cXyz(130.0f, 72.0f, 60.0f),  cXyz(130.0f, 72.0f, 240.0f),
 };
-constexpr f32 kItemReach = 170.0f;     // Link this near a ware: the marker's on it
-constexpr f32 kBeedleReach = 340.0f;   // ...or this near him (at the counter's front)
+// the shop cameras: [0] the eye looking at Beedle, [1] the eye looking over the wares; and where the
+// ware view looks (the game's five-ware camera aims at a fixed spot of Malo Mart's otherwise)
+const cXyz kCamEye[2] = {cXyz(55.0f, 190.0f, -150.0f), cXyz(-310.0f, 330.0f, 60.0f)};
+const cXyz kWareLook(40.0f, 60.0f, 60.0f);
+constexpr f32 kMasterLookY = 75.0f;   // over his seat: his chest
 
 bool g_pending = false;
 psrTentBeedle_c* g_live = nullptr;
 cXyz g_centre;
 s16 g_yaw = 0;
 
-// today's sales, by cushion (kept while the game runs; a new day brings new wares anyway)
+// today's sales, by slot (kept while the game runs; a new day brings new wares anyway)
 int g_soldDate = -1;
 u8 g_soldMask = 0;
-
-// the talk marker
-fpc_ProcID g_tag = fpcM_ERROR_PROCESS_ID_e;
-int g_target = -1;         // -1 nobody; 0 Beedle; 1..6 the ware on that cushion
-bool g_talking = false;
-int g_talkTarget = -1;
-int g_serial = 0;
 
 cXyz shopToWorld(const cXyz& p) {
     const f32 c = cM_scos(g_yaw), s = cM_ssin(g_yaw);
     return cXyz(g_centre.x + p.x * c + p.z * s, g_centre.y + p.y, g_centre.z - p.x * s + p.z * c);
 }
 
-void play(psrTentBeedle_c* b, const char* file, bool loop, int which) {
-    if (b == nullptr || b->mpMorf == nullptr || b->mAnim == which) return;
-    auto* anm = static_cast<J3DAnmTransform*>(dComIfG_getObjectRes(kArc, file));
-    if (anm == nullptr) return;
-    b->mpMorf->setAnm(anm, loop ? J3DFrameCtrl::EMode_LOOP : J3DFrameCtrl::EMode_NONE, 8.0f, 1.0f, 0.0f, -1.0f);
-    b->mAnim = which;
-}
-
-cXyz targetPos(int t) {
-    if (t == 0) return shopToWorld(cXyz(kSeat.x, 0.0f, kSeat.z + 90.0f));   // at the counter's front
-    return shopToWorld(kStand[t - 1]);
-}
-
-void dropTag() {
-    if (g_tag != fpcM_ERROR_PROCESS_ID_e && !fpcM_IsCreating(g_tag)) {
-        if (auto* t = fopAcM_SearchByID(g_tag)) fopAcM_delete(t);
+void deleteProc(fpc_ProcID& id) {
+    if (id != fpcM_ERROR_PROCESS_ID_e && !fpcM_IsCreating(id)) {
+        if (auto* a = fopAcM_SearchByID(id)) fopAcM_delete(a);
     }
-    g_tag = fpcM_ERROR_PROCESS_ID_e;
+    id = fpcM_ERROR_PROCESS_ID_e;
 }
 }  // namespace
 
 psrTentBeedle_c::~psrTentBeedle_c() {
-    for (fpc_ProcID& id : mItem) {
-        if (id != fpcM_ERROR_PROCESS_ID_e && !fpcM_IsCreating(id)) {
-            if (auto* a = fopAcM_SearchByID(id)) fopAcM_delete(a);
-        }
-        id = fpcM_ERROR_PROCESS_ID_e;
-    }
+    for (fpc_ProcID& id : mTag) deleteProc(id);
+    for (fpc_ProcID& id : mCam) deleteProc(id);
     if (g_live == this) g_live = nullptr;
-    g_talking = false;
-    g_tag = fpcM_ERROR_PROCESS_ID_e;   // (the stage change takes the marker too)
-    dComIfG_resDelete(&mPhase, kArc);
+    if (heap != nullptr && mpMorf[0] != nullptr) mpMorf[0]->stopZelAnime();
+    deleteRes(l_loadResPtrn0, (const char**)l_resNameList);
 }
 
 cPhs_Step psrTentBeedle_c::create() {
-    fopAcM_ct(this, psrTentBeedle_c);
-    const cPhs_Step step = dComIfG_resLoad(&mPhase, kArc);
-    if (step != cPhs_COMPLEATE_e) return step;
-    mpMorf = nullptr;
-    mAnim = -1;
-    mPraise = 0;
-    for (int i = 0; i < kStands; ++i) {
-        mWare[i] = -1;
-        mItem[i] = fpcM_ERROR_PROCESS_ID_e;
-    }
-    if (!fopAcM_entrySolidHeap(this, createHeapCallBack, kHeapSize)) {
+    daNpcT_ct(this, psrTentBeedle_c, l_faceMotionAnmData, l_motionAnmData, l_faceMotionSequenceData, 4,
+              l_motionSequenceData, 4, l_evtList, l_resNameList);
+    const int phase = loadRes(l_loadResPtrn0, (const char**)l_resNameList);
+    if (phase != cPhs_COMPLEATE_e) return static_cast<cPhs_Step>(phase);
+
+    mFlowNodeNo = beedle_field::shopGreetNode();
+    mTwilight = false;
+    for (int i = 0; i < kSlots; ++i) { mWare[i] = -1; mTag[i] = fpcM_ERROR_PROCESS_ID_e; }
+    mCam[0] = mCam[1] = fpcM_ERROR_PROCESS_ID_e;
+    if (!fopAcM_entrySolidHeap(this, createHeapCallBack, 0x80000000)) {
         g_pending = false;
         travellers::diagLine("shop    Beedle could not be made (his model or heap)");
         return cPhs_ERROR_e;
     }
-    mDoMtx_stack_c::transS(current.pos.x, current.pos.y, current.pos.z);
-    mDoMtx_stack_c::YrotM(shape_angle.y);
-    cMtx_copy(mDoMtx_stack_c::get(), mMtx);
-    fopAcM_SetMtx(this, mMtx);
-    fopAcM_setCullSizeBox(this, -120.0f, -20.0f, -120.0f, 120.0f, 200.0f, 120.0f);
-    attention_info.flags = 0;
-    g_live = this;
-    g_pending = false;
-    play(this, kWait, true, 0);
+    fopAcM_SetMtx(this, mpMorf[0]->getModel()->getBaseTRMtx());
+    fopAcM_setCullSizeBox(this, -150.0f, -50.0f, -150.0f, 150.0f, 250.0f, 150.0f);
+    mSound.init(&current.pos, &eyePos, 3, 1);
+    mAcch.Set(fopAcM_GetPosition_p(this), fopAcM_GetOldPosition_p(this), this, 1, &mAcchCir,
+              fopAcM_GetSpeed_p(this), fopAcM_GetAngle_p(this), fopAcM_GetShapeAngle_p(this));
+    mCcStts.Init(255, 0, this);
+    mAcch.CrrPos(dComIfG_Bgsp());
+    mGndChk = mAcch.m_gnd;
+    mGroundH = mAcch.GetGroundH();
+    if (mGroundH != -G_CM3D_F_INF) {
+        setEnvTevColor();
+        setRoomNo();
+    }
+    initialize();
+    setAngle(home.angle.y);
+    current.pos = home.pos;
 
-    // today's wares on the cushions (those sold today stay gone)
+    // today's wares on the slots (those sold today stay gone); the game's shop items and cameras
     if (g_soldDate != dComIfGs_getDate()) {
         g_soldDate = dComIfGs_getDate();
         g_soldMask = 0;
     }
-    int wares[kStands];
-    const int n = beedle_field::tentWares(wares, kStands);
-    for (int i = 0; i < n; ++i) {
-        if (g_soldMask & (1u << i)) continue;
-        mWare[i] = wares[i];
-        const cXyz at = shopToWorld(kStand[i]);
-        const csXyz angle(0, static_cast<s16>(g_yaw + 0x8000), 0);   // turned toward the aisle... roughly
-        mItem[i] = fopAcM_create(fpcNm_ShopItem_e, beedle_field::wareDisplayItem(wares[i]), &at,
-                                 fopAcM_GetRoomNo(this), &angle, nullptr, -1);
+    int wares[kSlots];
+    const int n = beedle_field::tentWares(wares, kSlots);
+    int shown = 0;
+    for (int i = 0; i < kSlots; ++i) {
+        const int ware = i < n ? wares[i] : -1;
+        mWare[i] = ware >= 0 && !(g_soldMask & (1u << i)) ? ware : -1;
+        if (mWare[i] >= 0) ++shown;
+        // an empty slot still gets its tag (the game's shop counts five), shown nothing (soldTick)
+        const int w = ware >= 0 ? ware : (n > 0 ? wares[0] : 0);
+        const u16 flow = beedle_field::shopWareNode(w);
+        const u32 param = (kGroup << 28) | (static_cast<u32>(i + 1) << 24) | beedle_field::wareDisplayItem(w);
+        const cXyz at = shopToWorld(kSlot[i]);
+        const csXyz angle(static_cast<s16>(flow), static_cast<s16>(g_yaw + (kSlot[i].x > 0 ? -0x4000 : 0x4000)),
+                          static_cast<s16>(0xFFFF));   // no save switches: the game's are not ours
+        mTag[i] = fopAcM_create(fpcNm_TAG_SHOPITM_e, param, &at, fopAcM_GetRoomNo(this), &angle, nullptr, -1);
     }
-    travellers::diagLine("shop    Beedle on his counter, %d wares out", n);
-    return step;
+    for (int k = 0; k < 2; ++k) {
+        const cXyz at = shopToWorld(kCamEye[k]);
+        mCam[k] = fopAcM_create(fpcNm_TAG_SHOPCAM_e, (kGroup << 28) | static_cast<u32>(k), &at,
+                                fopAcM_GetRoomNo(this), nullptr, nullptr, -1);
+    }
+    mSerial = beedle_field::boughtSerial();
+    g_live = this;
+    g_pending = false;
+    travellers::diagLine("shop    Beedle on his counter, %d wares out (flow %d)", shown, mFlowNodeNo);
+
+    mCreating = true;
+    Execute();
+    mCreating = false;
+    return cPhs_COMPLEATE_e;
 }
 
 int psrTentBeedle_c::CreateHeap() {
     auto* data = static_cast<J3DModelData*>(dComIfG_getObjectRes(kArc, kModel));
-    auto* wait = static_cast<J3DAnmTransform*>(dComIfG_getObjectRes(kArc, kWait));
     if (data == nullptr) return 0;
-    mpMorf = JKR_NEW mDoExt_McaMorfSO(data, nullptr, nullptr, wait, J3DFrameCtrl::EMode_LOOP, 1.0f, 0, -1, nullptr,
-                                      0x80000, 0x11000084);
-    return mpMorf != nullptr && mpMorf->getModel() != nullptr ? 1 : 0;
+    mpMorf[0] = JKR_NEW mDoExt_McaMorfSO(data, nullptr, nullptr, nullptr, -1, 1.0f, 0, -1, &mSound, 0, 0x11020285);
+    if (mpMorf[0] != nullptr && mpMorf[0]->getModel() == nullptr) {
+        mpMorf[0]->stopZelAnime();
+        mpMorf[0] = nullptr;
+    }
+    if (mpMorf[0] == nullptr) return 0;
+    mpMorf[0]->getModel()->setUserArea(reinterpret_cast<uintptr_t>(this));
+    return setMotionAnm(0, 0.0f, FALSE) ? 1 : 0;
 }
 
 int psrTentBeedle_c::createHeapCallBack(fopAc_ac_c* a) { return static_cast<psrTentBeedle_c*>(a)->CreateHeap(); }
@@ -152,25 +195,187 @@ int psrTentBeedle_c::Delete() {
     return 1;
 }
 
-int psrTentBeedle_c::Execute() {
-    if (mpMorf == nullptr) return 1;
-    // his "THANK YOU" flourish, then back to talking (or sitting)
-    if (mPraise > 0 && --mPraise == 0) {
-        mAnim = -1;
-        play(this, g_talking ? kTalks[0] : kWait, true, g_talking ? 1 : 0);
+bool psrTentBeedle_c::setMotionAnm(int idx, f32 morf, BOOL restart) {
+    if (idx < 0 || idx >= static_cast<int>(sizeof(kMotions) / sizeof(kMotions[0]))) idx = 0;
+    mAnmFlags &= ~(ANM_PAUSE_MORF | ANM_PAUSE_BTK | ANM_PAUSE_BRK | ANM_PAUSE_BPK | ANM_PLAY_MORF |
+                   ANM_PLAY_BTK | ANM_PLAY_BRK | ANM_PLAY_BPK);
+    auto* bck = static_cast<J3DAnmTransformKey*>(dComIfG_getObjectRes(kArc, kMotions[idx].bck));
+    if (bck == nullptr || mpMorf[0] == nullptr) return false;
+    if (restart && bck == mpMorf[0]->getAnm()) {
+        mAnmFlags |= ANM_PLAY_MORF;
+        mMorfLoops = 0;
+        return true;
     }
-    mpMorf->play(0, 0);
-    mpMorf->getModel()->setBaseTRMtx(mMtx);
-    mpMorf->modelCalc();
+    if (!setMcaMorfAnm(bck, 1.0f, morf, kMotions[idx].loop ? J3DFrameCtrl::EMode_LOOP : J3DFrameCtrl::EMode_NONE, 0, -1)) {
+        return false;
+    }
+    mAnmFlags |= ANM_PAUSE_MORF | ANM_PLAY_MORF;
+    mMorfLoops = 0;
+    return true;
+}
+
+void psrTentBeedle_c::setParam() {
+    if (mCamReset) {   // the shop's over: the camera back to Link's (as Malver's)
+        if (mShopProcess == 2) mShopCamAction.Reset();
+        else mShopCamAction.EventRecoverNotime();
+        mCamReset = false;
+    }
+    if (mShopProcess == 2 && !mInShop) {   // (after an item-get scene the game reopens the talk)
+        mSpeakEvent = true;
+        field_0xe33 = true;
+    }
+    attention_info.distances[fopAc_attn_LOCK_e] = daNpcT_getDistTableIdx(5, 6);
+    attention_info.distances[fopAc_attn_TALK_e] = attention_info.distances[fopAc_attn_LOCK_e];
+    attention_info.distances[fopAc_attn_SPEAK_e] = daNpcT_getDistTableIdx(4, 6);
+    attention_info.flags = daPy_py_c::checkNowWolf() ? 0 : (fopAc_AttnFlag_SPEAK_e | fopAc_AttnFlag_TALK_e);
+    scale.set(1.0f, 1.0f, 1.0f);
+    mCylH = 120.0f;
+    mWallR = 30.0f;
+    mAttnFovY = 110.0f;
+    mAcchCir.SetWallR(mWallR);
+    mAcchCir.SetWallH(35.0f);
+    mRealShadowSize = 0.0f;
+    gravity = 0.0f;   // he sits on his counter: no falling
+    speedF = 0.0f;
+    speed.setall(0.0f);
+    mExpressionMorfFrame = 4.0f;
+    mMorfFrames = 8.0f;
+}
+
+BOOL psrTentBeedle_c::evtTalk() {
+    if (mInShop) {
+        shopStep();
+        return TRUE;
+    }
+    mPreItemNo = 0;
+    if (dComIfGp_event_chkTalkXY()) {   // an item shown to him: no answer
+        if (!dComIfGp_evmng_ChkPresentEnd()) return TRUE;
+        mEvtNo = 2;
+        evtChange();
+        return TRUE;
+    }
+    if (!mShopFlag || mFlowNodeNo < 0 || static_cast<u32>(mFlowNodeNo) == 0xFFFF) {
+        dComIfGp_event_reset();
+        return TRUE;
+    }
+    mShopCamAction.shop_cam_action_init();
+    mInShop = true;
+    mShopEnter = true;
+    shopStep();
+    return TRUE;
+}
+
+// the game's shop, a frame of it (as Malver's shop(): the talk, the cursor, the wares)
+void psrTentBeedle_c::shopStep() {
+    if (mShopEnter) {
+        if (mShopProcess == 2) {
+            shop_init(true);
+        } else {
+            mShopCamAction.Save();
+            initTalk(mFlowNodeNo, nullptr);
+            shop_init(false);
+        }
+        mShopEnter = false;
+    }
+    mShopProcess = shop_process(this, &mFlow);
+    if (mShopProcess != 0) {
+        mPlayerActorMngr.entry(daPy_getPlayerActorClass());
+        dComIfGp_event_reset();
+        mInShop = false;
+        mCamReset = true;
+    }
+    cXyz look = current.pos;
+    look.y += kMasterLookY;
+    mShopCamAction.setMasterCamCtrPos(&look);
+}
+
+void psrTentBeedle_c::setAttnPos() {
+    // he stays on his mat (no ground under him but the counter, and he's lower than its top)
+    current.pos = home.pos;
+    old.pos = home.pos;
+    setAngle(home.angle.y);
+    setMtx();
+    eyePos = current.pos;
+    eyePos.y += 95.0f;
+    attention_info.position = current.pos;
+    attention_info.position.y += 140.0f;
+}
+
+void psrTentBeedle_c::drawOtherMdl() {
+    if (mShopFlag) {
+        cXyz pos(0.0f, 0.0f, 0.0f);
+        itemRotate();
+        itemZoom(&pos);
+        drawCursor();
+    }
+}
+
+void psrTentBeedle_c::cameraTick() {
+    // the game's five-ware camera looks at a fixed spot of Malo Mart's: ours looks across the cushions
+    const cXyz look = shopToWorld(kWareLook);
+    mShopCamAction.field_0x54.x = look.x;
+    mShopCamAction.field_0x54.y = look.y;
+    mShopCamAction.field_0x54.z = look.z;
+}
+
+void psrTentBeedle_c::soldTick() {
+    // a purchase: the ware under the cursor leaves its cushion for the day
+    if (beedle_field::boughtSerial() != mSerial) {
+        mSerial = beedle_field::boughtSerial();
+        const int k = static_cast<int>(mCursorPos) - 1;
+        if (k >= 0 && k < kSlots && mWare[k] == beedle_field::lastBought()) {
+            mWare[k] = -1;
+            g_soldMask |= static_cast<u8>(1u << k);
+        }
+    }
+    for (int k = 0; k < kSlots; ++k) {
+        if (mWare[k] >= 0) continue;
+        onFlag(k);              // the cursor passes it by
+        onSoldOutItemFlag(k);
+        // the display hidden (not deleted: the shop still waits for it to settle back home), and its tag
+        // gone (the tag would show it again every frame)
+        if (auto* item = static_cast<daItemBase_c*>(fopAcM_SearchByID(mItemCtrl.getItemIndex(k)))) {
+            item->hide();
+            deleteProc(mTag[k]);
+        }
+    }
+}
+
+int psrTentBeedle_c::Execute() {
+    // the shop opens once its tags have their displays (the game's shop reads them as it finds them)
+    if (!mCreating && !mShopFlag && !checkShopOpen()) {
+        bool ready = true;
+        for (int k = 0; k < kSlots; ++k) {
+            auto* tag = mTag[k] != fpcM_ERROR_PROCESS_ID_e && !fpcM_IsCreating(mTag[k])
+                            ? static_cast<daTag_ShopItem_c*>(fopAcM_SearchByID(mTag[k])) : nullptr;
+            if (tag == nullptr || tag->getProcessID() == fpcM_ERROR_PROCESS_ID_e || fpcM_IsCreating(tag->getProcessID())) {
+                ready = false;
+            }
+        }
+        for (int k = 0; k < 2; ++k) {
+            if (mCam[k] == fpcM_ERROR_PROCESS_ID_e || fpcM_IsCreating(mCam[k])) ready = false;
+        }
+        if (ready) {
+            initShopSystem();
+            setSellItemMax(kSlots);
+            field_0xf60 = -1;   // the ordinary shop (items found by their tags)
+            mShopCamAction.setCamDataIdx(0);
+            mShopCamAction.setCamAction(nullptr);
+            mShopFlag = true;
+        }
+    }
+    execute();
+    if (mShopFlag && searchItemActor()) {
+        cameraTick();
+        mShopCamAction.move();
+        soldTick();
+    }
     return 1;
 }
 
 int psrTentBeedle_c::Draw() {
-    if (mpMorf == nullptr) return 1;
-    g_env_light.settingTevStruct(0, &current.pos, &tevStr);
-    g_env_light.setLightTevColorType_MAJI(mpMorf->getModel(), &tevStr);
-    mpMorf->entryDL();
-    return 1;
+    if (mpMorf[0] == nullptr) return 1;
+    return draw(FALSE, FALSE, mRealShadowSize, nullptr, 0.0f, FALSE, TRUE, FALSE);
 }
 
 namespace {
@@ -187,9 +392,10 @@ const ActorProfileDesc psrTentBeedle_c::sProfile = {
     .name = PSR_TENT_BEEDLE_NAME,
     .priority_group = 7,
     .process_size = sizeof(psrTentBeedle_c),
-    .draw_priority = fpcDwPi_OBJ_LBOX_e,
-    .status = fopAcStts_UNK_0x40000_e | fopAcStts_UNK_0x4000_e | fopAcStts_CULL_e | fopAcStts_NOPAUSE_e,
-    .group = fopAc_ACTOR_e,
+    .draw_priority = fpcDwPi_NPC_CLERKB_e,
+    .status = fopAcStts_UNK_0x40000_e | fopAcStts_UNK_0x4000_e | fopAcStts_CULL_e | fopAcStts_UNK_0x4_e |
+              fopAcStts_UNK_0x2_e | fopAcStts_UNK_0x1_e,
+    .group = fopAc_NPC_e,
     .cull_type = fopAc_CULLBOX_CUSTOM_e,
     .create_function = psrTentBeedle_Create,
     .delete_function = psrTentBeedle_Delete,
@@ -203,99 +409,20 @@ bool present() { return g_live != nullptr || g_pending; }
 
 void spawn(const cXyz& shopCentre, s16 shopYaw, int room) {
     if (psrTentBeedle_c::sProcName < 0 || present()) return;
+    const u16 greet = beedle_field::shopGreetNode();
+    if (greet == 0xFFFF) return;   // his talk isn't ready (yet)
     g_centre = shopCentre;
     g_yaw = shopYaw;
     const cXyz at = shopToWorld(kSeat);
-    const csXyz angle(0, shopYaw, 0);
-    const fpc_ProcID id = fopAcM_create(psrTentBeedle_c::sProcName, 0, &at, room, &angle, nullptr, -1);
+    const csXyz angle(static_cast<s16>(greet), shopYaw, 0);   // home.angle.x: his flow (the game's shop reads it)
+    const fpc_ProcID id = fopAcM_create(psrTentBeedle_c::sProcName, kGroup << 28, &at, room, &angle, nullptr, -1);
     g_pending = id != fpcM_ERROR_PROCESS_ID_e;
 }
 
-void reset() {
-    g_pending = false;
-    g_tag = fpcM_ERROR_PROCESS_ID_e;
-    g_talking = false;
-    g_target = -1;
-}
-
-void talkTick() {
-    psrTentBeedle_c* b = g_live;
-    if (b == nullptr) return;
-    if (g_talking) {
-        // a purchase while he's being talked to: his flourish, and the ware leaves its cushion
-        if (beedle_field::boughtSerial() != g_serial) {
-            g_serial = beedle_field::boughtSerial();
-            b->mAnim = -1;
-            play(b, kPraise, false, 2);
-            b->mPraise = 75;
-            const int k = g_talkTarget - 1;
-            if (k >= 0 && k < psrTentBeedle_c::kStands && b->mWare[k] == beedle_field::lastBought()) {
-                if (b->mItem[k] != fpcM_ERROR_PROCESS_ID_e && !fpcM_IsCreating(b->mItem[k])) {
-                    if (auto* a = fopAcM_SearchByID(b->mItem[k])) fopAcM_delete(a);
-                }
-                b->mItem[k] = fpcM_ERROR_PROCESS_ID_e;
-                b->mWare[k] = -1;
-                g_soldMask |= static_cast<u8>(1u << k);
-            }
-        }
-        if (!dComIfGp_event_runCheck()) {
-            g_talking = false;
-            beedle_field::sayGoodbye(b);
-            b->mAnim = -1;
-            if (b->mPraise == 0) play(b, kWait, true, 0);
-        }
-        return;
-    }
-    auto* link = dComIfGp_getPlayer(0);
-    if (link == nullptr || dComIfGp_event_runCheck()) return;
-    // who the marker's on: the ware Link is at, else Beedle if he's at the counter
-    int want = -1;
-    f32 best = kItemReach;
-    for (int i = 0; i < psrTentBeedle_c::kStands; ++i) {
-        if (b->mWare[i] < 0) continue;
-        const f32 d = targetPos(i + 1).absXZ(link->current.pos);
-        if (d < best) { best = d; want = i + 1; }
-    }
-    if (want < 0 && targetPos(0).absXZ(link->current.pos) < kBeedleReach) want = 0;
-    g_target = want;
-    const bool gone = g_tag == fpcM_ERROR_PROCESS_ID_e || (!fpcM_IsCreating(g_tag) && fopAcM_SearchByID(g_tag) == nullptr);
-    if (gone && want >= 0) {
-        constexpr u32 kParams = 0x0080A000u | (6u << 5) | 3u;   // as the passers' marker (see passer_prototype)
-        const csXyz angle(0xFF, 0, static_cast<s16>(0xFFFF));
-        cXyz at = targetPos(want);
-        g_tag = fopAcM_create(fpcNm_TAG_KMSG_e, kParams, &at, dComIfGp_roomControl_getStayNo(), &angle, nullptr, -1);
-    }
-}
-
-bool tagPre(daTag_KMsg_c* tag) {
-    if (g_tag == fpcM_ERROR_PROCESS_ID_e || tag == nullptr || fopAcM_GetID(tag) != g_tag) return false;
-    tag->home.roomNo = static_cast<s8>(dComIfGp_roomControl_getStayNo());
-    const int t = g_talking ? g_talkTarget : g_target;
-    if (t >= 0) {
-        const cXyz at = targetPos(t);
-        tag->current.pos = at;
-        tag->home.pos = at;
-    }
-    if (!g_talking) tag->mFlowNodeNo = beedle_field::tentHelloNode();   // never an empty line
-    if (!g_talking && t >= 0 && g_live != nullptr && tag->eventInfo.checkCommandTalk()) {
-        const u16 node = t == 0 ? beedle_field::tentHelloNode() : beedle_field::tentOfferNode(g_live->mWare[t - 1]);
-        if (node != 0xFFFF) {
-            tag->mFlowNodeNo = node;
-            g_talking = true;
-            g_talkTarget = t;
-            g_serial = beedle_field::boughtSerial();
-            g_live->mAnim = -1;
-            play(g_live, kTalks[static_cast<int>(cM_rndF(4.0f)) & 3], true, 1);
-        }
-    }
-    return true;
-}
-
-bool tagPost(daTag_KMsg_c* tag) {
-    if (g_tag == fpcM_ERROR_PROCESS_ID_e || tag == nullptr || fopAcM_GetID(tag) != g_tag) return false;
-    if ((g_target < 0 && !g_talking) || g_live == nullptr || daPy_py_c::checkNowWolf()) tag->attention_info.flags = 0;
-    return true;
-}
+void reset() { g_pending = false; }
+void talkTick() {}
+bool tagPre(daTag_KMsg_c*) { return false; }
+bool tagPost(daTag_KMsg_c*) { return false; }
 
 ModResult registerActor() {
     return svc_actor->register_actor(mod_ctx, &psrTentBeedle_c::sProfile, &psrTentBeedle_c::sProcName,
