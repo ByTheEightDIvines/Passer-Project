@@ -1,6 +1,7 @@
 #include "people.hpp"
 
 #include <array>
+#include <bit>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -250,7 +251,7 @@ void make(int slot, u8 type, s8 home, bool fighter) {
     }
     // two or three traits, never a pair of opposites; fighters are never cowards
     const int want = 2 + static_cast<int>(rnd() % 2u);
-    for (int tries = 0; tries < 40 && __builtin_popcount(p.traits) < want; ++tries) {
+    for (int tries = 0; tries < 40 && std::popcount(static_cast<unsigned>(p.traits)) < want; ++tries) {
         const u16 t = static_cast<u16>(1u << (rnd() % kTraitCount));
         if (p.traits & t) continue;
         if (fighter && t == T_COWARD) continue;
