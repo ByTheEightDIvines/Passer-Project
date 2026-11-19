@@ -53,6 +53,8 @@ public:
     bool mLoose = false;            // the horse broke loose and runs on its own
     cXyz mHarnessPos;               // where the harness was left when the horse broke loose
     s16 mHarnessYaw = 0;
+    bool mOnRoad = false;           // driveOnRoad: the harness and the rear are given
+    s16 mRoadHarnessYaw = 0;
     JPABaseEmitter* mFx[10] = {};   // (unused: Telma's coach fire only exists in her own stage)
     u32 mFlames[8][3] = {};          // the common fire (the camp fires'), at up to 8 spots on the wagon
     LIGHT_INFLUENCE mFireLight{};
@@ -80,6 +82,11 @@ public:
 
     // Set by the convoy each frame while driven: where the horse is and which way it faces.
     void driveTo(const cXyz& horse, s16 yaw, f32 speed);
+    // On a road: the horse here, and the spots on the road behind it where the hitch and the rear
+    // axle are, so the whole wagon follows the road's own bends (never cutting them into a wall).
+    void driveOnRoad(const cXyz& horse, s16 yaw, const cXyz& hitch, const cXyz& rear, f32 speed);
+    static f32 hitchBack();   // how far behind the horse the hitch is
+    static f32 rearBack();    // ...and the rear axle behind the hitch
     // Spots on the wagon in the world: the driver's bench (seat 0 left, 1 right) and the hitch.
     cXyz benchSeat(int seat) const;
     cXyz middle() const;          // the middle of the wagon's bed

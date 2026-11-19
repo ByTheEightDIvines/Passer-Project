@@ -208,6 +208,20 @@ void psrWagon_c::driveTo(const cXyz& horse, s16 yaw, f32 speed) {
     current.pos = horse;
     shape_angle.y = current.angle.y = yaw;
     mSpeed = speed;
+    mOnRoad = false;
+}
+
+f32 psrWagon_c::hitchBack() { return -kHitchZ; }
+f32 psrWagon_c::rearBack() { return -kRearAxleZ; }
+
+void psrWagon_c::driveOnRoad(const cXyz& horse, s16 yaw, const cXyz& hitch, const cXyz& rear, f32 speed) {
+    current.pos = horse;
+    shape_angle.y = current.angle.y = yaw;
+    mSpeed = speed;
+    // the shafts run from the hitch to the horse; the wagon from the rear axle to the hitch
+    mRoadHarnessYaw = cM_atan2s(horse.x - hitch.x, horse.z - hitch.z);
+    mRear.set(rear.x, hitch.y + kHitchY, rear.z);
+    mOnRoad = true;
 }
 
 cXyz psrWagon_c::middle() const {
@@ -347,7 +361,7 @@ cXyz psrWagon_c::benchSeat(int seat) const {
 void psrWagon_c::placeParts() {
     if (!mLoose) {
         mHarnessPos = current.pos;
-        mHarnessYaw = shape_angle.y;
+        mHarnessYaw = mOnRoad ? mRoadHarnessYaw : shape_angle.y;
     }
     const f32 sy = cM_ssin(mHarnessYaw), cy = cM_scos(mHarnessYaw);
     const cXyz hitch(mHarnessPos.x + sy * kHitchZ, mHarnessPos.y + kHitchY, mHarnessPos.z + cy * kHitchZ);

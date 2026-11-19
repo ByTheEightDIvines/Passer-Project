@@ -496,7 +496,14 @@ void tickConvoy(Convoy& c) {
         const f32 v = kSpeed;
         c.s += v;
         roadAt(c.road, c.reverse, c.s, &pos, &yaw, &room);
-        w->driveTo(pos, yaw, v);
+        // the hitch and the rear axle on the road behind the horse (so the wagon takes the road's own
+        // bends and never swings wide into a cliff); the horse faces along the road where it is
+        cXyz hitch, rear, ahead;
+        roadAt(c.road, c.reverse, c.s - psrWagon_c::hitchBack(), &hitch, nullptr, nullptr);
+        roadAt(c.road, c.reverse, c.s - psrWagon_c::hitchBack() - psrWagon_c::rearBack(), &rear, nullptr, nullptr);
+        roadAt(c.road, c.reverse, c.s + 120.0f, &ahead, nullptr, nullptr);
+        const s16 face = cM_atan2s(ahead.x - hitch.x, ahead.z - hitch.z);
+        w->driveOnRoad(pos, face, hitch, rear, v);
     } else if (!c.real) {
         c.s += kSpeed;   // on paper it keeps going
     }
