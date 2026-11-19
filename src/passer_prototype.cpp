@@ -2021,7 +2021,13 @@ constexpr f32 kGuardLeashRadius = 5000.0f;  // ...and they chase it this far
 constexpr f32 kStrikeReach = 150.0f;
 constexpr f32 kLimpSpeed = 0.6f;
 constexpr f32 kHurtFleeSpeed = 0.65f;       // fleeing on the last heart: this much of a full run
-constexpr s16 kGuardTurn = 0x300;           // turning on guard: about 4 degrees a frame, shuffling
+constexpr s16 kGuardTurn = 0x600;           // turning on guard: about 8 degrees a frame, shuffling
+// The soldiers (camp guards and the royal escorts): they see trouble from much farther off than the
+// travellers' fighters, reach higher (a Kargarok swooping, a rider up on his boar), and the spear
+// reaches further.
+constexpr f32 kSoldierSight = 2200.0f;
+constexpr f32 kSoldierReachAbove = 280.0f;
+constexpr f32 kSpearReach = 200.0f;
 constexpr s16 kTurnShuffle = 0x800;         // more than ~11 degrees off: shuffle round to face it            // limping on the last heart, part of a walk
 constexpr f32 kBowRange = 2500.0f;          // the bowman shoots at monsters this far off (birds overhead too)
 constexpr f32 kBowNear = 400.0f;            // ... closer than this: bow on his back, sword out
@@ -2050,6 +2056,22 @@ const dCcD_SrcSph kStrikeSrc = {
     },
     {{{0.0f, 0.0f, 0.0f}, 70.0f}},
 };
+
+bool soldier(const daNpcPasser_c* passer) {
+    return passer != nullptr && (travellers::guardStyle(passer) != 0 || travellers::isGuard(passer));
+}
+f32 reachOf(const daNpcPasser_c* passer) {
+    return travellers::guardStyle(passer) == travellers::kStyleSpear ? kSpearReach : kStrikeReach;
+}
+// Where a soldier goes to fight it: not all onto the same spot, but round it, each from its own side
+// (by its slot), at striking distance.
+cXyz flankSpot(const daNpcPasser_c* passer, const fopAc_ac_c* foe) {
+    const int slot = travellers::slotIndex(passer);
+    const s16 toMe = cLib_targetAngleY(&foe->current.pos, &passer->current.pos);
+    const s16 side = static_cast<s16>(toMe + ((slot % 5) - 2) * 0x1800);   // spread over ~135 degrees
+    const f32 r = reachOf(passer) * 0.75f;
+    return cXyz(foe->current.pos.x + cM_ssin(side) * r, foe->current.pos.y, foe->current.pos.z + cM_scos(side) * r);
+}
 
 void guardAnim(daNpcPasser_c* passer, PasserState& state, u8 anm, f32 morf = 8.0f) {
     if (state.anim == anm && !traveller_gear::sitting(travellers::slotIndex(passer))) return;
@@ -2092,8 +2114,23 @@ void strike(daNpcPasser_c* passer, PasserState& state) {
     at.x += cM_ssin(passer->shape_angle.y) * 90.0f;
     at.y += 80.0f;
     at.z += cM_scos(passer->shape_angle.y) * 90.0f;
-    // a Bulblin up on his boar: the blow goes up at him (at boar height it only ever hit the boar)
-    if (!state.vsWolf) {
+    // a soldier's blow goes where the foe is (still turning to face it, the blow didn't), as far as
+    // his weapon reaches, and up at one overhead (a Kargarok swooping)
+    if (!state.vsWolf && soldier(passer)) {
+        const f32 reach = reachOf(passer);
+        if (fopAc_ac_c* foe = nearestEnemyAt(passer->current.pos, reach + 120.0f, kSoldierReachAbove + 60.0f)) {
+            cXyz d = foe->current.pos - passer->current.pos;
+            d.y = 0.0f;
+            const f32 len = d.absXZ();
+            const f32 r = std::min(len, reach - 40.0f);
+            if (len > 1.0f) {
+                at.x = passer->current.pos.x + d.x / len * r;
+                at.z = passer->current.pos.z + d.z / len * r;
+            }
+            at.y = std::clamp(foe->current.pos.y + 40.0f, passer->current.pos.y + 60.0f, passer->current.pos.y + 300.0f);
+        }
+    } else if (!state.vsWolf) {
+        // a Bulblin up on his boar: the blow goes up at him (at boar height it only ever hit the boar)
         if (fopAc_ac_c* foe = nearestEnemyAt(passer->current.pos, 260.0f); mountedRider(foe)) {
             cXyz d = foe->current.pos - passer->current.pos;
             d.y = 0.0f;
@@ -2106,6 +2143,7 @@ void strike(daNpcPasser_c* passer, PasserState& state) {
             at.y = std::min(foe->current.pos.y + 40.0f, passer->current.pos.y + 260.0f);
         }
     }
+    if (soldier(passer)) sph.SetR(travellers::guardStyle(passer) == travellers::kStyleSpear ? 85.0f : 75.0f);
     sph.SetC(at);
     dComIfG_Ccsp()->Set(&sph);
     state.blowPending = true;
@@ -2405,7 +2443,7 @@ bool campGuard(daNpcPasser_c* passer, PasserState& state) {
     const bool guard = travellers::isGuard(passer);
     const f32 guardRadius = guard ? (state.defending ? kGuardLeashRadius : kGuardWakeRadius)
                                   : (state.defending ? kCampLeashRadius : kCampGuardRadius);
-    auto* enemy = nearestEnemyAt(center, guardRadius, fighter && !guard ? kReachAbove : 1.0e9f);
+    auto* enemy = nearestEnemyAt(center, guardRadius, guard ? kSoldierReachAbove : fighter ? kReachAbove : 1.0e9f);
     // the wolf at the fire: the fighters go for him; everyone else cowers as from any monster
     enemy = nearerFoe(center, enemy, wolfLinkNear(center, guardRadius));
     if (fighter && wolfShy(passer) && enemy == dComIfGp_getPlayer(0)) enemy = nullptr;
@@ -2434,13 +2472,15 @@ bool campGuard(daNpcPasser_c* passer, PasserState& state) {
             const f32 dx = enemy->current.pos.x - passer->current.pos.x;
             const f32 dz = enemy->current.pos.z - passer->current.pos.z;
             const f32 dist = std::sqrt(dx * dx + dz * dz);
-            state.chasing = dist > kStrikeReach;
+            const f32 reach = guard ? reachOf(passer) : kStrikeReach;
+            state.chasing = dist > reach;
             state.onGuard = true;
             if (fighter_anim::busy(passer)) {
                 // startled, drawing or mid-swing: it stays where it is until that's done
-            } else if (dist > kStrikeReach) {
+            } else if (dist > reach) {
                 guardAnim(passer, state, kAnmRun);
-                stepToward(passer, enemy->current.pos, Cd2_HIO_maxSpeed(passer->m_type) * (guard ? 1.9f : 1.5f));
+                stepToward(passer, guard ? flankSpot(passer, enemy) : enemy->current.pos,
+                           Cd2_HIO_maxSpeed(passer->m_type) * (guard ? 1.9f : 1.5f));
             } else {
                 guardAnim(passer, state, kAnmIdle);
                 const s16 yaw = cLib_targetAngleY(&passer->current.pos, &enemy->current.pos);
@@ -2644,7 +2684,10 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
     // Fighters stop, face the enemy and stand their ground while they're healthy.
     if (!campHandled && !state->talking && !state->cowering &&
         !travellers::campInfo(passer, nullptr, nullptr, nullptr)) {
-        auto* enemy = holdsGround(passer) ? nearestEnemyAt(passer->current.pos, kThreatRadius, kReachAbove) : nullptr;
+        const bool soldierHere = soldier(passer);
+        auto* enemy = holdsGround(passer) ? nearestEnemyAt(passer->current.pos, soldierHere ? kSoldierSight : kThreatRadius,
+                                                           soldierHere ? kSoldierReachAbove : kReachAbove)
+                                          : nullptr;
         if (holdsGround(passer) && !wolfShy(passer)) {
             enemy = nearerFoe(passer->current.pos, enemy, wolfLinkNear(passer->current.pos, kThreatRadius));
         }
@@ -2691,8 +2734,9 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
             state->onGuard = true;
             // out of reach: charge at it (not at wolf Link: him it only squares up to)
             state->shooting = shoot;
+            const f32 reach = soldierHere ? reachOf(passer) : kStrikeReach;
             const bool charge = !shoot && !state->vsWolf && !fighter_anim::busy(passer) &&
-                                passer->current.pos.absXZ(enemy->current.pos) > kStrikeReach;
+                                passer->current.pos.absXZ(enemy->current.pos) > reach;
             if (charge && !state->chasing) {
                 say(passer, *state, psr_bubble::kAttack);
                 travellers::noteAct(passer, "charges");
@@ -2701,7 +2745,8 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
             state->chasing = charge;
             if (charge) {
                 guardAnim(passer, *state, kAnmRun);
-                stepToward(passer, enemy->current.pos, Cd2_HIO_maxSpeed(passer->m_type) * 1.5f);
+                stepToward(passer, soldierHere ? flankSpot(passer, enemy) : enemy->current.pos,
+                           Cd2_HIO_maxSpeed(passer->m_type) * (soldierHere ? 1.8f : 1.5f));
                 state->turning = false;
             } else {
                 passer->speedF = 0.0f;
@@ -2732,7 +2777,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
                 const s16 off = static_cast<s16>(cLib_targetAngleY(&passer->current.pos, &enemy->current.pos) -
                                                  passer->shape_angle.y);
                 if (fighter_anim::aimed(passer) && std::abs(off) < kBowFacing) state->swingReq = true;
-            } else if (dx * dx + dz * dz <= kStrikeReach * kStrikeReach) {
+            } else if (dx * dx + dz * dz <= reach * reach) {
                 if (--state->strikeTimer <= 0 && swingOrStrike(passer, *state)) {
                     state->strikeTimer = kStrikeEvery;
                 }
