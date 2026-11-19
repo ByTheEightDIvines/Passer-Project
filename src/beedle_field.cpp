@@ -348,7 +348,7 @@ void markUnready() { g_ready = false; }
 
 // --- his tent's shop ------------------------------------------------------------------------------
 int tentWares(int* out, int maxOut) {
-    // today's six: those Link can use, in an order the day shuffles (the seeds have no shop model)
+    // today's wares (as many as his tables hold): those Link can use, in an order the day shuffles (the seeds have no shop model)
     int can[kWareCount];
     int n = 0;
     for (int i = 0; i < kWareCount; ++i) {

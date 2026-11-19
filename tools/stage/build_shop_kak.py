@@ -68,6 +68,10 @@ set_count(dzs, 'SCLS', 1)
 _, _, rt = C['RTBL']
 r0 = struct.unpack_from('>I', dzs, rt)[0]
 dzs[r0 + 2] = TIME_PASS
+# the field's message group (8, as F_SP122), not Kakariko's (2): the mod's talk (Beedle's shop flows
+# included) is registered in group 8, and Dusklight only finds a custom flow node in its own group
+_, _, so = C['STAG']
+dzs[so + 0x28] = 8
 # append the field tables (nothing else moves, so no offset inside the file changes) and point every
 # layer's Env/Col/PAL/VRB header at them
 placed = {}

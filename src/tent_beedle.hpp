@@ -6,8 +6,8 @@
 class daTag_KMsg_c;
 
 // Beedle in his tent (R_PSR00): a real game shopkeeper (dShopSystem_c, as Malver and Malo are),
-// sitting cross-legged on the mat on his counter with his Wind Waker shop animations. Today's five
-// wares sit on the cushioned tables as the game's own shop items (TAG_SHOPITM, each with its
+// sitting cross-legged on the mat on his counter with his Wind Waker shop animations. Today's four
+// wares sit on the four cushioned tables as the game's own shop items (TAG_SHOPITM, each with its
 // daShopItem_c display) and the game's shop does the rest: its camera, its cursor hopping between
 // the wares, the description box, the offer and its choice. Our part is the talk (beedle_field.cpp):
 // his welcome, the offer, the purchase (the usual price - 5), "THANK YOU!", and "GOODBYE!" when Link
@@ -16,7 +16,7 @@ class daTag_KMsg_c;
 
 class psrTentBeedle_c : public dShopSystem_c {
 public:
-    static constexpr int kSlots = 5;
+    static constexpr int kSlots = 4;
 
     psrTentBeedle_c(daNpcT_faceMotionAnmData_c const* a, daNpcT_motionAnmData_c const* b,
                     daNpcT_MotionSeqMngr_c::sequenceStepData_c const* c, int d,
@@ -41,7 +41,6 @@ public:
 
     void shopStep();
     void soldTick();
-    void cameraTick();
 
     int mWare[kSlots];                 // the ware on each slot (-1: none today / sold)
     fpc_ProcID mTag[kSlots];           // its TAG_SHOPITM

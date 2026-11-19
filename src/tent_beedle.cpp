@@ -12,6 +12,7 @@
 #include "d/actor/d_a_tag_shop_item.h"
 #include "d/d_com_inf_game.h"
 #include "d/d_item_data.h"
+#include "d/d_msg_object.h"
 #include "f_op/f_op_actor_mng.h"
 #include "f_pc/f_pc_draw_priority.h"
 #include "f_pc/f_pc_manager.h"
@@ -62,18 +63,17 @@ DUSK_CONSTEXPR daNpcT_MotionSeqMngr_c::sequenceStepData_c l_motionSequenceData[2
 // In the shop's own frame (tools/tents/interior2.py; +z toward the door): cross-legged on the mat on
 // the counter, between the lamp pot and the candlestick.
 const cXyz kSeat(55.0f, 78.5f, -370.0f);
-// The five wares, laid out for the game's five-ware cursor (dShopSystem_c::chooseItem5): 1 2 on the
-// far row, 3 4 5 on the near row, Beedle (0) to the left. Seen from the ware camera on the -x side
-// looking across the tent (screen right = toward the door), the far row is the +x cushions and the
-// near row the -x ones; the middle far cushion stays empty.
+// The four wares on the four tables at the corners of the aisle, laid out for the game's four-ware cursor
+// (dShopSystem_c::chooseItem4: one row, Beedle (0) to the left of 1). Seen from the ware camera inside
+// the doorway looking up the aisle toward Beedle, the row runs left to right: near left, far left, far
+// right, near right.
 const cXyz kSlot[psrTentBeedle_c::kSlots] = {
+    cXyz(-130.0f, 72.0f, 240.0f), cXyz(-130.0f, 72.0f, -120.0f),
     cXyz(130.0f, 72.0f, -120.0f), cXyz(130.0f, 72.0f, 240.0f),
-    cXyz(-130.0f, 72.0f, -120.0f), cXyz(-130.0f, 72.0f, 60.0f), cXyz(-130.0f, 72.0f, 240.0f),
 };
-// the shop cameras: [0] the eye looking at Beedle, [1] the eye looking over the wares; and where the
-// ware view looks (the game's five-ware camera aims at a fixed spot of Malo Mart's otherwise)
-const cXyz kCamEye[2] = {cXyz(55.0f, 190.0f, -150.0f), cXyz(-310.0f, 330.0f, 60.0f)};
-const cXyz kWareLook(40.0f, 60.0f, 60.0f);
+// the shop cameras: [0] the eye looking at Beedle, [1] the eye looking over the wares (just inside the
+// doorway; with four wares the game aims it at the middle of the far pair itself)
+const cXyz kCamEye[2] = {cXyz(55.0f, 190.0f, -150.0f), cXyz(0.0f, 170.0f, 470.0f)};
 constexpr f32 kMasterLookY = 75.0f;   // over his seat: his chest
 
 bool g_pending = false;
@@ -150,7 +150,7 @@ cPhs_Step psrTentBeedle_c::create() {
         const int ware = i < n ? wares[i] : -1;
         mWare[i] = ware >= 0 && !(g_soldMask & (1u << i)) ? ware : -1;
         if (mWare[i] >= 0) ++shown;
-        // an empty slot still gets its tag (the game's shop counts five), shown nothing (soldTick)
+        // an empty slot still gets its tag (the game's shop counts four), shown nothing (soldTick)
         const int w = ware >= 0 ? ware : (n > 0 ? wares[0] : 0);
         const u16 flow = beedle_field::shopWareNode(w);
         const u32 param = (kGroup << 28) | (static_cast<u32>(i + 1) << 24) | beedle_field::wareDisplayItem(w);
@@ -167,7 +167,10 @@ cPhs_Step psrTentBeedle_c::create() {
     mSerial = beedle_field::boughtSerial();
     g_live = this;
     g_pending = false;
-    travellers::diagLine("shop    Beedle on his counter, %d wares out (flow %d)", shown, mFlowNodeNo);
+    // his talk is registered in the field's message group (8); the shop stage must load that group, or the
+    // game finds none of his flow nodes (the camera turns to him and nothing is said)
+    travellers::diagLine("shop    Beedle on his counter, %d wares out (flow %d, message group %d%s)", shown, mFlowNodeNo,
+                         dMsgObject_getGroupID(), dMsgObject_getGroupID() == 8 ? "" : ": NOT 8, his talk won't be found");
 
     mCreating = true;
     Execute();
@@ -310,14 +313,6 @@ void psrTentBeedle_c::drawOtherMdl() {
     }
 }
 
-void psrTentBeedle_c::cameraTick() {
-    // the game's five-ware camera looks at a fixed spot of Malo Mart's: ours looks across the cushions
-    const cXyz look = shopToWorld(kWareLook);
-    mShopCamAction.field_0x54.x = look.x;
-    mShopCamAction.field_0x54.y = look.y;
-    mShopCamAction.field_0x54.z = look.z;
-}
-
 void psrTentBeedle_c::soldTick() {
     // a purchase: the ware under the cursor leaves its cushion for the day
     if (beedle_field::boughtSerial() != mSerial) {
@@ -366,7 +361,6 @@ int psrTentBeedle_c::Execute() {
     }
     execute();
     if (mShopFlag && searchItemActor()) {
-        cameraTick();
         mShopCamAction.move();
         soldTick();
     }
