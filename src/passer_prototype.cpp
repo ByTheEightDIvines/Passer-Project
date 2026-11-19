@@ -2033,6 +2033,7 @@ constexpr f32 kBowRange = 2500.0f;          // the bowman shoots at monsters thi
 constexpr f32 kBowNear = 400.0f;            // ... closer than this: bow on his back, sword out
 constexpr f32 kBowFar = 550.0f;             // ... and back to the bow once it's this far off again
 constexpr s16 kBowFacing = 0x600;           // looses once facing it this nearly
+constexpr f32 kBowBackOff = 750.0f;         // a monster closer than this while he has the bow out: he backs away to shoot
 constexpr int kStrikeEvery = 40;            // frames between swings (each swing is two blows)
 constexpr u8 kStrikePower = 2;              // a sword hit (10 damage to an enemy: a Bokoblin takes 4)
 constexpr u8 kAnmIdle = 0, kAnmWalk = 2, kAnmRun = 4, kAnmCower = 0x26;
@@ -2772,7 +2773,16 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
             const f32 dx = enemy->current.pos.x - passer->current.pos.x;
             const f32 dz = enemy->current.pos.z - passer->current.pos.z;
             if (shoot) {
-                // the bowman: drawn and facing it, he looses (the arrow leaves on the shot's own frame)
+                // the bowman: keeps his distance, backing off from one that comes near (still facing it)
+                const f32 flat = passer->current.pos.absXZ(enemy->current.pos);
+                if (flat < kBowBackOff && enemy->current.pos.y - passer->current.pos.y < kReachAbove) {
+                    const s16 away = cLib_targetAngleY(&enemy->current.pos, &passer->current.pos);
+                    const f32 step = Cd2_HIO_walkMaxSpeed(passer->m_type) * 0.8f;
+                    passer->current.pos.x += cM_ssin(away) * step;
+                    passer->current.pos.z += cM_scos(away) * step;
+                    passer->mAcch.CrrPos(dComIfG_Bgsp());
+                }
+                // drawn and facing it, he looses (the arrow leaves on the shot's own frame)
                 state->bowTarget = fopAcM_GetID(enemy);
                 const s16 off = static_cast<s16>(cLib_targetAngleY(&passer->current.pos, &enemy->current.pos) -
                                                  passer->shape_angle.y);

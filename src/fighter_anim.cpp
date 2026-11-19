@@ -106,7 +106,8 @@ constexpr f32 kBowArrowIn = 10.0f;
 constexpr f32 kBowCreak = 20.0f;
 constexpr f32 kBowNock = 22.0f;
 constexpr f32 kBowLoose = 2.0f;
-constexpr int kBowHold = 12;          // frames aimed before it may loose
+constexpr int kBowHold = 30;          // frames aimed (held still, sighting) before it may loose
+constexpr f32 kBowDrawRate = 0.7f;    // the draw played slower than authored: a heavy pull, not a twitch
 bool bowPhase(Phase p) { return p == Phase::BowDraw || p == Phase::BowAim || p == Phase::BowShoot; }
 
 struct Slot {
@@ -275,9 +276,9 @@ void play(daNpcPasser_c* passer, J3DAnmTransformKey* a, bool loop, f32 morf) {
     passer->mpMorf->setAnm(a, loop ? J3DFrameCtrl::EMode_LOOP : J3DFrameCtrl::EMode_NONE, morf, 1.0f, 0, -1);
 }
 // Start it from the top even if it is already on (a second swing).
-void restart(daNpcPasser_c* passer, J3DAnmTransformKey* a, bool loop, f32 morf) {
+void restart(daNpcPasser_c* passer, J3DAnmTransformKey* a, bool loop, f32 morf, f32 rate = 1.0f) {
     if (a == nullptr || passer->mpMorf == nullptr) return;
-    passer->mpMorf->setAnm(a, loop ? J3DFrameCtrl::EMode_LOOP : J3DFrameCtrl::EMode_NONE, morf, 1.0f, 0, -1);
+    passer->mpMorf->setAnm(a, loop ? J3DFrameCtrl::EMode_LOOP : J3DFrameCtrl::EMode_NONE, morf, rate, 0, -1);
 }
 
 bool finished(daNpcPasser_c* passer) { return passer->mpMorf->isStop(); }
@@ -309,12 +310,12 @@ void hop(daNpcPasser_c* passer, Slot& s) {
 }
 
 // Start a one-shot for a phase (the phase then waits for it to finish).
-void startPhase(daNpcPasser_c* passer, Slot& s, Phase ph, J3DAnmTransformKey* a, f32 morf) {
+void startPhase(daNpcPasser_c* passer, Slot& s, Phase ph, J3DAnmTransformKey* a, f32 morf, f32 rate = 1.0f) {
     s.phase = ph;
     s.oneShot = a;
     s.phaseFrames = 0;
     s.prevFrame = 0.0f;
-    restart(passer, a, false, morf);
+    restart(passer, a, false, morf, rate);
 }
 
 void giveBack(daNpcPasser_c* passer, Slot& s);
@@ -342,7 +343,7 @@ void startSheathe(daNpcPasser_c* passer, Slot& s, const Body* b) {
 // from the start of the draw, as the Bulblin's).
 void startBow(daNpcPasser_c* passer, Slot& s) {
     s.aimFrames = 0;
-    startPhase(passer, s, Phase::BowDraw, anm(kBowDraw), 5.0f);
+    startPhase(passer, s, Phase::BowDraw, anm(kBowDraw), 8.0f, kBowDrawRate);
 }
 
 
@@ -780,7 +781,7 @@ int update(daNpcPasser_c* passer, Want want, bool swing, bool turning) {
             } else {
                 play(passer, anm(kBowAim), true, 3.0f);
                 ++s.aimFrames;
-                if (swing && s.aimFrames >= kBowHold) startPhase(passer, s, Phase::BowShoot, anm(kBowShoot), 1.0f);
+                if (swing && s.aimFrames >= kBowHold) startPhase(passer, s, Phase::BowShoot, anm(kBowShoot), 3.0f);
             }
             break;
 
