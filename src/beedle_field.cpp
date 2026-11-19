@@ -78,9 +78,9 @@ template <class B> void descText(B& b, const char* d) {
     }
 }
 
-// his voice (Wind Waker's shop bank, shop_0.aw: OHHHHH 36, 'Bye 37, Thank you 38): programs 0xEC-0xEE
-// (the travellers' voices use 0x88-0xDF, the camp songs 0xE0-0xEB)
-constexpr u8 kPrgGoodbye = 0xEC, kPrgThanks = 0xED, kPrgOhh = 0xEE;
+// his voice (Wind Waker's shop bank, shop_0.aw: OHHHHH 36, 'Bye 37, Thank you 38): programs 0xF5-0xF7.
+// Taken programs: the travellers' voices 0x88-0xDF, the bard's songs 0xE0-0xF4 (7 songs x 3 stems).
+constexpr u8 kPrgGoodbye = 0xF5, kPrgThanks = 0xF6, kPrgOhh = 0xF7;
 u32 g_goodbye = 0, g_thanks = 0, g_ohh = 0;
 // As in Wind Waker (daNpc_Bs1_c::getMsg): the first time Link talks to him on each visit he gets the
 // "OHHHHH! A customer!" welcome with its voice; after that, the shorter line. A visit starts when the
@@ -250,6 +250,9 @@ bool installSounds() {
     AudioSoundTableEffectInfo info = *svc_audio_res->default_effect_info;
     info.volume = 1.0f;
     info.always_max_priority = true;
+    for (u8 prg : {kPrgGoodbye, kPrgThanks, kPrgOhh}) {
+        if (mod_sounds::hasWave(prg)) travellers::diagLine("beedle  sound program %02X is already taken!", prg);
+    }
     if (mod_sounds::loadWave(kPrgGoodbye, "res/voices/beedle_goodbye.wav", false, 0)) {
         g_goodbye = mod_sounds::addSound(SE_CATEGORY_CHARA_VOICE, kPrgGoodbye, &info);
     }
