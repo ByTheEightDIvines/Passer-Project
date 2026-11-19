@@ -417,6 +417,22 @@ int psrWagon_c::Draw() {
     } else {
         list[n++] = mpHarness;
         list[n++] = mpCoach;
+        // The coach shows its damage through its materials' K colours, as Telma's coach drives them
+        // (d_a_npc_coach.cpp: undamaged 255 / 255 / 125; the canvas chars first, then the wood). Left
+        // alone they read as burnt: the black cover.
+        J3DModelData* cd = mpCoach->getModelData();
+        if (cd->getMaterialNum() >= 2) {
+            const int dmg = mDamage, half = kMaxDamage / 2;
+            const u8 burnt = static_cast<u8>(dmg * 0xFF / kMaxDamage);
+            cd->getMaterialNodePointer(0)->getTevKColor(1)->a = static_cast<u8>(0xFF - burnt);
+            if (dmg < half) {
+                cd->getMaterialNodePointer(1)->getTevKColor(1)->a = static_cast<u8>(0xFF - ((dmg * 0xFF / kMaxDamage) << 1));
+                cd->getMaterialNodePointer(1)->getTevKColor(2)->a = 125;
+            } else {
+                cd->getMaterialNodePointer(1)->getTevKColor(1)->a = 0;
+                cd->getMaterialNodePointer(1)->getTevKColor(2)->a = static_cast<u8>(125.0f + (dmg - half) * 20.0f / half);
+            }
+        }
     }
     J3DModel* cargo = burnt && mpBurnt[7] != nullptr ? mpBurnt[7] : mpCargo;
     if (cargo != nullptr) {
