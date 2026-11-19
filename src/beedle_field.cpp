@@ -94,7 +94,8 @@ std::array<u16, kWareCount> g_shopWare{};   // the tent shop: each ware's offer 
 u16 g_shopGreet = 0xFFFF;                   // ...and his welcome (G; G+1 is the cursor back on him)
 FlowEventId g_eBye{};
 FlowEventId g_eOhh{};
-FlowQueryId g_qGreeted{};
+FlowQueryId g_qGreeted{}, g_qFieldGreeted{}, g_qTwilight{}, g_qWare{};
+u16 g_fieldStart = 0xFFFF;
 int g_boughtSerial = 0;   // counts purchases (the tent sees one happen)
 u16 g_nothingNode = 0xFFFF;
 bool g_ready = false;
@@ -216,10 +217,29 @@ void onBye(ModContext*, const FlowEventContext* e, void*) {
 void onOhh(ModContext*, const FlowEventContext* e, void*) {
     playVoice(g_ohh, static_cast<const fopAc_ac_c*>(e->speaker_actor));
 }
-u16 onGreeted(ModContext*, const FlowQueryContext*, void*) {   // 0: first talk this visit (and now greeted)
+u16 onGreeted(ModContext*, const FlowQueryContext* q, void*) {   // 0: first talk this visit (and now greeted)
     if (g_greeted) return 1;
-    g_greeted = true;
+    if (q->phase == FLOW_QUERY_PHASE_EXECUTE) g_greeted = true;   // (a look-ahead only asks)
     return 0;
+}
+// Out in the field the same, per meeting: the first talk with this Beedle (he is made anew each time
+// he comes to where Link is) gets the OHHHHH welcome.
+fpc_ProcID g_fieldGreeted = fpcM_ERROR_PROCESS_ID_e;
+u16 onFieldGreeted(ModContext*, const FlowQueryContext* q, void*) {
+    auto* at = static_cast<const fopAc_ac_c*>(q->speaker_actor);
+    const fpc_ProcID id = at != nullptr ? fopAcM_GetID(at) : fpcM_ERROR_PROCESS_ID_e;
+    if (id != fpcM_ERROR_PROCESS_ID_e && id == g_fieldGreeted) return 1;
+    if (q->phase == FLOW_QUERY_PHASE_EXECUTE) g_fieldGreeted = id;
+    return 0;
+}
+// how far the twilight still reaches: 0 Eldin and Lanayru (only Faron is lit), 1 Lanayru, 2 none on the
+// way to his tent (Lanayru lit: the tent near Castle Town is up)
+u16 onTwilight(ModContext*, const FlowQueryContext*, void*) {
+    if (travellers::lanayruCleared()) return 2;
+    return travellers::eldinCleared() ? 1 : 0;
+}
+u16 onTodaysWare(ModContext*, const FlowQueryContext*, void*) {
+    return static_cast<u16>(g_talkWare >= 0 ? g_talkWare : kWareCount);
 }
 }  // namespace
 
@@ -249,6 +269,10 @@ ModResult registerFlows(mods::flow::GraphBuilder& graph, const MessageLanguage* 
     if (svc_flow == nullptr) return MOD_ERROR;
     if (ModResult r = svc_flow->register_query(mod_ctx, "psr_beedle_can_buy", onCanBuy, nullptr, &g_qCanBuy); r != MOD_OK) return r;
     if (ModResult r = svc_flow->register_event(mod_ctx, "psr_beedle_buy", onBuy, nullptr, &g_eBuy); r != MOD_OK) return r;
+    if (ModResult r = svc_flow->register_event(mod_ctx, "psr_beedle_ohh", onOhh, nullptr, &g_eOhh); r != MOD_OK) return r;
+    if (ModResult r = svc_flow->register_query(mod_ctx, "psr_beedle_field_greeted", onFieldGreeted, nullptr, &g_qFieldGreeted); r != MOD_OK) return r;
+    if (ModResult r = svc_flow->register_query(mod_ctx, "psr_beedle_twilight", onTwilight, nullptr, &g_qTwilight); r != MOD_OK) return r;
+    if (ModResult r = svc_flow->register_query(mod_ctx, "psr_beedle_todays_ware", onTodaysWare, nullptr, &g_qWare); r != MOD_OK) return r;
     auto node = [&](auto&& fill, u16 next) -> int {   // a message node going on to `next`
         mods::flow::MessageBuilder b;
         b.box_kind(MESSAGE_BOX_TALK);
@@ -281,10 +305,10 @@ ModResult registerFlows(mods::flow::GraphBuilder& graph, const MessageLanguage* 
         auto choose = graph.add_branch(FLOW_QUERY_SELECT_2, 0);
         choose.results({check.id(), static_cast<u16>(bye)});
         const int offer = node([&](auto& b) {
-            b.text("OHHH! Mr. Customer! Today's special:\n");
+            b.text("Today's special, Mr. Customer:\n");
             b.text_color(MESSAGE_COLOR_ORANGE).text(w.name).text_color(MESSAGE_COLOR_DEFAULT).text(" for just ");
             b.text_color(MESSAGE_COLOR_PURPLE).text(price).text_color(MESSAGE_COLOR_DEFAULT);
-            b.text("!\nWill you buy it?");
+            b.text("!\nWill you buy it? Buy it!");
             b.options("I'll take it!", "No thanks");
         }, choose.id());
         if (offer < 0) return g_lastErr != MOD_OK ? g_lastErr : MOD_ERROR;
@@ -302,13 +326,48 @@ ModResult registerFlows(mods::flow::GraphBuilder& graph, const MessageLanguage* 
         if (offer2 < 0) return g_lastErr != MOD_OK ? g_lastErr : MOD_ERROR;
         g_tentOfferNode[i] = static_cast<u16>(offer2);
     }
+    // --- his talk out in the field -----------------------------------------------------------------
+    // first talk this meeting? -> OHHHHH (voice) -> his welcome, by how far the twilight still reaches
+    // (he doesn't know what it is: only how it looks, and that it's scary) -> today's ware | "back again"
+    // -> today's ware. Today's ware: its offer, or "nothing you can use today".
+    {
+        std::vector<u16> wares(g_offerNode.begin(), g_offerNode.end());
+        wares.push_back(g_nothingNode);
+        auto ware = graph.add_branch(g_qWare, 0);
+        ware.results(std::span<const u16>(wares.data(), wares.size()));
+        auto say = [&](const char* text, u16 next) {
+            return node([&](auto& b) { b.text(text); }, next);
+        };
+        const u16 w = ware.id();
+        // only Faron lit: the road on is swallowed by darkness
+        const int a3 = say("I don't know what that thing is, but\njust looking at it gives me the\nshivers! So for now, I sell out here!", w);
+        const int a2 = say("I was on my way to Castle Town to set\nup my tent shop, but the road ahead is\nswallowed by a wall of eerie darkness!", static_cast<u16>(a3));
+        const int a1 = say("OHHHHH! A customer! Way out here!\nI'm Beedle, traveling merchant! I deal\nin pretty much anything and everything!", static_cast<u16>(a2));
+        // Eldin lit too: the wall still stands before Castle Town
+        const int b3 = say("Ooh, I get goosebumps just thinking\nabout it! So for now, I sell right\nhere on the road!", w);
+        const int b2 = say("My tent shop is waiting to go up by\nCastle Town, but that creepy wall of\ndarkness is still blocking the way!", static_cast<u16>(b3));
+        const int b1 = say("OHHHHH! A customer! Way out here!\nI'm Beedle, traveling merchant! I deal\nin pretty much anything and everything!", static_cast<u16>(b2));
+        // Lanayru lit: the tent is up
+        const int c2 = say("Come find it near Castle Town! I've\ngot lots more to sell there! Out here,\nI only carry one thing a day.", w);
+        const int c1 = say("OHHHHH! A customer! Have you heard?\nThat spooky wall of darkness is gone,\nso my tent shop is finally open!", static_cast<u16>(c2));
+        const int back = say("Back again, Mr. Customer?\nOoh, I like you!", w);
+        if (a1 < 0 || a2 < 0 || a3 < 0 || b1 < 0 || b2 < 0 || b3 < 0 || c1 < 0 || c2 < 0 || back < 0) {
+            return g_lastErr != MOD_OK ? g_lastErr : MOD_ERROR;
+        }
+        auto twilight = graph.add_branch(g_qTwilight, 0);
+        twilight.results({static_cast<u16>(a1), static_cast<u16>(b1), static_cast<u16>(c1)});
+        auto ohh = graph.add_event(g_eOhh, {0, 0, 0, 0});
+        ohh.next(twilight.id());
+        auto first = graph.add_branch(g_qFieldGreeted, 0);
+        first.results({ohh.id(), static_cast<u16>(back)});
+        g_fieldStart = first.id();
+    }
     // --- his tent as a real shop (dShopSystem_c, see tent_beedle.cpp) ---------------------------------
     // The game's shop finds its talk by flow number: the shopkeeper's own (G: his welcome; G+1: the
     // cursor back on him: "anything else?", or GOODBYE when Link backs out), and each ware's (M: the
     // offer, A pressed on it; M+1: its description while the cursor is on it). Custom flow nodes pass
     // straight through the game's flow lookup, so the pairs only need to be back to back.
     if (ModResult r = svc_flow->register_event(mod_ctx, "psr_beedle_bye", onBye, nullptr, &g_eBye); r != MOD_OK) return r;
-    if (ModResult r = svc_flow->register_event(mod_ctx, "psr_beedle_ohh", onOhh, nullptr, &g_eOhh); r != MOD_OK) return r;
     if (ModResult r = svc_flow->register_query(mod_ctx, "psr_beedle_greeted", onGreeted, nullptr, &g_qGreeted); r != MOD_OK) return r;
     auto shopWait = [](auto& b) {   // as Malo's: the box stays up while Link browses (the shop's send control)
         const u8 none[1] = {0};
@@ -444,7 +503,7 @@ u16 talkNode() {
     if (g_talkWare >= 0) {
         travellers::diagLine("beedle  today (day %d): %s", dComIfGs_getDate(), kWares[g_talkWare].name);
     }
-    return g_talkWare >= 0 ? g_offerNode[g_talkWare] : g_nothingNode;
+    return g_fieldStart;
 }
 
 // --- his talking ---------------------------------------------------------------------------------
