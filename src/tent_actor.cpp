@@ -12,6 +12,7 @@
 #include "d/d_bg_s_gnd_chk.h"
 #include "d/d_com_inf_game.h"
 #include "d/d_kankyo.h"
+#include "d/d_particle_name.h"
 #include "f_op/f_op_actor_mng.h"
 #include "f_pc/f_pc_draw_priority.h"
 #include "f_pc/f_pc_manager.h"
@@ -82,6 +83,10 @@ psrTent_c::~psrTent_c() {
     }
     dComIfG_resDelete(&mPhase, kArcName);
     if (mHasFlame) svc_actor->delete_actor(mod_ctx, mFlame);
+    if (mGlowLit) {
+        const int gi = (mLampGlow.mIndex < 0 ? -mLampGlow.mIndex : mLampGlow.mIndex) & 0xFFF;
+        if (gi >= 1 && gi <= 50 && g_env_light.pointlight[gi - 1] == &mLampGlow) dKy_plight_cut(&mLampGlow);
+    }
     if ((fopAcM_GetParam(this) & 0xFF) == PSR_TENT_BEEDLE) {
         dComIfG_resDelete(&mPhaseLamp, "PsrPack");
         dComIfG_resDelete(&mPhaseRoom, kRoomArc);
@@ -304,33 +309,38 @@ int psrTent_c::Execute() {
         // the entry lantern is lit at night: the game's own flame (fireWd2, as in the Kakariko houses and
         // the shop's lanterns), placed in it at dusk and taken away in the morning
         const bool night = isNight();
-        if (night && !mHasFlame && mStageNum > 0) {
+        if (night && mStageNum > 0 && mpStage[0] != nullptr) {
+            // Link's lantern fire on the wick (the glass runs 9.5..27 up the lantern), from the lantern's own
+            // matrix, as big as the lantern is: the game's fireWd2 was too big and not in the glass
             const StageProp& lamp = kStage[0];
-            const f32 k = psr_tent::kScale[mKind];
-            const f32 ly = (lamp.y + 12.0f * lamp.scale) * k - 15.0f;   // on the wick (glass 9.5..27); the flame sits 15 above the actor
-            const f32 lz = lamp.z * k;
-            const f32 c = cM_scos(shape_angle.y), sn = cM_ssin(shape_angle.y);
-            ActorSpawnParams p{};
-            p.parameters = 0xFF0101FF;   // lit, with its point light, no switch (as the game's Kakariko flames)
-            p.argument = -1;
-            p.room_num = static_cast<s8>(fopAcM_GetRoomNo(this));
-            p.position.x = current.pos.x + sn * lz;
-            p.position.y = current.pos.y + ly;
-            p.position.z = current.pos.z + c * lz;
-            p.scale.x = p.scale.y = p.scale.z = 1.0f;
-            mHasFlame = svc_actor->create_actor_from_name(mod_ctx, "fireWd2", &p, &mFlame) == MOD_OK;
-            travellers::diagLine("tent    Beedle's lantern %s", mHasFlame ? "lit" : "could not be lit");
-        } else if (!night && mHasFlame) {
-            if (svc_actor->delete_actor(mod_ctx, mFlame) == MOD_OK) mHasFlame = false;
-        }
-        if (night && mHasFlame && mStageNum > 0) {
-            // the game's flame lights only people: the canvas and the ground round the door too
-            const StageProp& lamp = kStage[0];
-            const f32 k = psr_tent::kScale[mKind];
-            const f32 c = cM_scos(shape_angle.y), sn = cM_ssin(shape_angle.y);
-            const cXyz at(current.pos.x + sn * lamp.z * k, current.pos.y + (lamp.y + 28.0f * lamp.scale) * k,
-                          current.pos.z + c * lamp.z * k);
-            mod_lights::offer(at, 80.0f);
+            const f32 k = psr_tent::kScale[mKind] * lamp.scale;
+            cXyz flame;
+            const cXyz wick(0.0f, 12.0f, 0.0f);
+            mDoMtx_stack_c::copy(mpStage[0]->getBaseTRMtx());
+            mDoMtx_stack_c::multVec(&wick, &flame);
+            const cXyz scale(k, k, k);
+            mLampFlame = dComIfGp_particle_set(mLampFlame, ID_ZI_J_KANTERA_FIRE, &flame, nullptr, nullptr, &scale, 0xFF,
+                                               nullptr, -1, nullptr, nullptr, nullptr);
+            // its warm light, on Link and the travellers, and on the canvas and the ground round the door
+            mLampGlow.mPosition.set(flame.x, flame.y + 10.0f, flame.z);
+            mLampGlow.mColor.r = 0xBC;
+            mLampGlow.mColor.g = 0x66;
+            mLampGlow.mColor.b = 0x42;
+            mLampGlow.mPow = 400.0f;
+            mLampGlow.mFluctuation = 1.0f;
+            if (!mGlowLit) {
+                dKy_plight_set(&mLampGlow);
+                mGlowLit = true;
+                travellers::diagLine("tent    Beedle's lantern lit");
+            }
+            mod_lights::offer(mLampGlow.mPosition, 80.0f);
+        } else {
+            mLampFlame = 0;   // (a level emitter not set again goes out by itself)
+            if (mGlowLit) {
+                const int gi = (mLampGlow.mIndex < 0 ? -mLampGlow.mIndex : mLampGlow.mIndex) & 0xFFF;
+                if (gi >= 1 && gi <= 50 && g_env_light.pointlight[gi - 1] == &mLampGlow) dKy_plight_cut(&mLampGlow);
+                mGlowLit = false;
+            }
         }
         // Link at the curtain (the back of the entry, where its collision stops him): into the shop.
         if (auto* link = dComIfGp_getPlayer(0)) {

@@ -5,6 +5,7 @@
 #include "SSystem/SComponent/c_phase.h"
 #include "d/d_bg_w.h"
 #include "d/d_bg_s_acch.h"
+#include "d/d_kankyo.h"
 
 // The camp tents: one actor, the tent kind is the low byte of its parameters.
 //   0 = small A-tent, 1 = big wall tent, 2 = Beedle's tent (with its night glow).
@@ -27,8 +28,11 @@ public:
     J3DModel* mpFlap[2];        // small tent only: the door flaps, left and right (the right is the left mirrored)
     J3DModel* mpLit[3];         // small tent at night with someone inside: lit from within (tent, both flaps)
     bool mLit = false;
-    ActorId mFlame = 0;         // Beedle's tent at night: the game's flame (fireWd2) in the entry lantern
+    ActorId mFlame = 0;         // (old: the game's fireWd2 in the entry lantern; no longer made)
     bool mHasFlame = false;
+    u32 mLampFlame = 0;         // Beedle's tent at night: Link's lantern fire on the entry lantern's wick
+    LIGHT_INFLUENCE mLampGlow{};
+    bool mGlowLit = false;
     f32 mFlapOpen = 1.0f;       // 1 = tied back open, 0 = shut
     f32 mFlapTarget = 1.0f;
     void setFlaps(bool open) { mFlapTarget = open ? 1.0f : 0.0f; }
