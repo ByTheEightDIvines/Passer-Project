@@ -9,3 +9,5 @@ __pycache__/
 /overlay/
 /textures/
 /rom_input/
+# game-derived archives never go in the repo, wherever a tool writes them
+*.arc
