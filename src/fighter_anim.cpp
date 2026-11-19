@@ -379,6 +379,10 @@ struct Layer {
     J3DAnmTransformKey* meal = nullptr; // this body's own eat/drink/sip loop
     f32 mealFrame = 0.0f;
     f32 mealW = 0.0f;
+    // a guard on the move in a fight: both arms keep his fighting pose (shield up, spear or sword
+    // ready) over the run, instead of swinging his weapons about with the run's arms
+    J3DAnmTransformKey* fight = nullptr;
+    f32 fightW = 0.0f;
 };
 std::array<Layer, travellers::kSlots> g_layer{};
 constexpr f32 kLegFade = 1.0f / 6.0f;
@@ -387,7 +391,8 @@ constexpr f32 kMovingSpeed = 0.9f;      // faster than this (smoothed) counts as
 
 // Joint roles per skeleton (men 19, women 21 joints), found by name: parents and which are legs
 // and which the light arm.
-enum : u8 { kRoleNone, kRoleLeg, kRoleArm, kRoleHead };   // (the head only follows the eat/drink loops)
+enum : u8 { kRoleNone, kRoleLeg, kRoleArm, kRoleHead, kRoleArmR };   // (the head only follows the eat/drink loops;
+                                                                    //  the right arm only a guard's fighting arms)
 struct Skel {
     const J3DModelData* data = nullptr;
     int n = 0;
@@ -433,12 +438,14 @@ const Skel* skelFor(J3DModelData* data) {
         static const char* const kLegs[] = {"waist", "legL1", "legL2", "footL", "legR1",
                                             "legR2", "footR", "skirtL", "skirtR"};
         static const char* const kArm[] = {"shoulderL", "armL1", "armL2", "handL"};
+        static const char* const kArmR[] = {"shoulderR", "armR1", "armR2", "handR"};
         JUTNameTab* names = data->getJointName();
         for (int i = 0; i < k.n && names != nullptr; ++i) {
             const char* nm = names->getName(static_cast<u16>(i));
             if (nm == nullptr) continue;
             for (const char* l : kLegs) if (std::strcmp(nm, l) == 0) k.role[i] = kRoleLeg;
             for (const char* a : kArm) if (std::strcmp(nm, a) == 0) k.role[i] = kRoleArm;
+            for (const char* a : kArmR) if (std::strcmp(nm, a) == 0) k.role[i] = kRoleArmR;
             if (std::strcmp(nm, "neck") == 0 || std::strcmp(nm, "head") == 0) k.role[i] = kRoleHead;
         }
         return &k;
@@ -525,13 +532,16 @@ void applyLayer(daNpcCd2_c* npc, J3DModel* model, int jnt) {
     const int slot = travellers::slotIndex(npc);
     if (slot < 0 || slot >= static_cast<int>(g_layer.size())) return;
     const Layer& L = g_layer[slot];
-    if (L.owner != fopAcM_GetID(npc) || (L.legW <= 0.001f && L.armW <= 0.001f && L.mealW <= 0.001f)) return;
+    if (L.owner != fopAcM_GetID(npc) ||
+        (L.legW <= 0.001f && L.armW <= 0.001f && L.mealW <= 0.001f && L.fightW <= 0.001f)) return;
     const Skel* k = skelFor(model->getModelData());
     if (k == nullptr || jnt >= k->n || k->parent[jnt] < 0) return;
     const u8 role = k->role[jnt];
     const bool leg = role == kRoleLeg && L.legW > 0.001f && L.loco != nullptr;
     const bool eating = (role == kRoleArm || role == kRoleHead) && L.mealW > 0.001f && L.meal != nullptr;
-    J3DAnmTransformKey* torch = eating ? L.meal : (role == kRoleArm && L.armW > 0.001f ? L.hold : nullptr);
+    const bool fightArm = (role == kRoleArm || role == kRoleArmR) && L.fightW > 0.001f && L.fight != nullptr;
+    J3DAnmTransformKey* torch = fightArm ? L.fight
+                                : eating ? L.meal : (role == kRoleArm && L.armW > 0.001f ? L.hold : nullptr);
     if (!leg && torch == nullptr) return;
     Mtx P, Pinv, La, Lo, Lb, out;
     std::memcpy(P, model->getAnmMtx(k->parent[jnt]), sizeof(Mtx));
@@ -544,8 +554,8 @@ void applyLayer(daNpcCd2_c* npc, J3DModel* model, int jnt) {
         w = L.legW;
         t = {La[0][3], La[1][3], La[2][3]};      // its own bone lengths (the game never uses the animation's)
     } else {
-        animLocal(torch, eating ? L.mealFrame : 0.0f, jnt, Lo);   // fitted to this very body
-        w = eating ? L.mealW : L.armW;
+        animLocal(torch, eating && !fightArm ? L.mealFrame : 0.0f, jnt, Lo);   // fitted to this very body
+        w = fightArm ? L.fightW : eating ? L.mealW : L.armW;
         t = {La[0][3], La[1][3], La[2][3]};      // its own bone lengths
     }
     fromQuat(nlerp(toQuat(La), toQuat(Lo), w), t, Lb);
@@ -964,9 +974,17 @@ void layerTick(daNpcPasser_c* passer, bool carryLight) {
     L.hold = guard ? bodyAnm(passer, style == travellers::kStyleSpear ? "garm_A" : "garm_D") : bodyAnm(passer, "hold");
     const bool picking = cur != nullptr && (cur == bodyAnm(passer, "pickup") || cur == bodyAnm(passer, "cast"));
     const bool onBench = cur != nullptr && cur == passer->getAnmP(14, 0);   // a convoy rider, seated
-    const bool wantArm = guard ? (!forced && !sitting && !onBench && !weaponOut(passer) && L.hold != nullptr)
-                               : (carryLight && !forced && !sitting && !picking && L.hold != nullptr);
+    // (a guard carries his shield on his back now while he isn't fighting: both arms free)
+    const bool wantArm = !guard && carryLight && !forced && !sitting && !picking && L.hold != nullptr;
     L.armW = std::clamp(L.armW + (wantArm ? kArmFade : -kArmFade), 0.0f, 1.0f);
+    // a guard running or walking in a fight keeps his on-guard arms (not mid thrust, block or swing,
+    // which pose them themselves)
+    L.fight = guard && style != travellers::kStyleArcher ? guardAnm(passer, style == travellers::kStyleSpear ? "spear" : "sword")
+                                                         : nullptr;
+    const bool moving = isLoco(passer, cur) || wantLegs;
+    const bool wantFight = L.fight != nullptr && weaponOut(passer) && moving && !forced && !sitting && !onBench &&
+                           !bowView(passer).inHand;
+    L.fightW = std::clamp(L.fightW + (wantFight ? kArmFade * 2.0f : -kArmFade * 2.0f), 0.0f, 1.0f);
 
     // food or drink, seated: the body's own eat/drink/sip loop on the same arm
     static const char* const kMeal[] = {nullptr, "eat", "drink", "sip", "nibble", "quaff", "eatside", "laugh"};

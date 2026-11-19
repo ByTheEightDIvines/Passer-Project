@@ -20,3 +20,7 @@ const Mtx kHold_back_small_man_a = {{0.00010f, 1.00000f, 0.00000f, -104.00000f},
 const Mtx kHold_back_tall_man_a = {{0.00010f, 1.00000f, 0.00000f, -85.00000f}, {-0.00010f, 0.00000f, -1.00000f, 12.00000f}, {-1.00000f, 0.00010f, 0.00010f, -0.00930f}};
 const Mtx kHold_back_small_mad_a = {{0.00010f, 1.00000f, 0.00000f, -104.00000f}, {-0.00010f, 0.00000f, -1.00000f, 24.00000f}, {-1.00000f, 0.00010f, 0.00010f, -0.01227f}};
 const Mtx kHold_back_tall_mad_a = {{0.00010f, 1.00000f, 0.00000f, -85.00000f}, {-0.00010f, 0.00000f, -1.00000f, 24.00000f}, {-1.00000f, 0.00010f, 0.00010f, -0.01045f}};
+// slung: the spear across his back over the shield, head up over the right shoulder (on the backbone joint;
+// tools: renders approved 2026-11-19)
+const Mtx kHold_back_spear_man_a = {{0.00000f, -0.76598f, 0.64286f, 5.97566f}, {-1.00000f, -0.00006f, -0.00007f, 36.22816f}, {0.00010f, -0.64286f, -0.76598f, -20.07908f}};
+const Mtx kHold_back_spear_mad_a = {{0.00000f, -0.76598f, 0.64286f, -13.04105f}, {-1.00000f, -0.00006f, -0.00007f, 48.22816f}, {0.00010f, -0.64286f, -0.76598f, -20.08205f}};
