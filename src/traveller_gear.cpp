@@ -227,7 +227,7 @@ void rememberLoaded(fpc_ProcID id, const Look* look, Gear* gear) {
 const Mtx kTorchGrip = {{1.0f, 0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 1.0f, 0.0f}, {0.0f, -1.0f, 0.0f, 0.0f}};
 const Vec kTorchTip = {11.0f, -3.7f, 74.0f};    // the flame, on the torch model's own tip
 constexpr f32 kLanternDrop = 47.0f;              // handle (top) to the model's origin (its base)
-constexpr f32 kLanternFlame = 23.0f;             // the flame, this far up from the lantern's base
+constexpr f32 kLanternFlame = 13.0f;             // the flame on the wick (the glass runs 9.5..27 up the lantern)
 const Vec kStaffLantern = {2.0f, 104.3f, 25.6f}; // the lantern's base, hanging from the staff's hook
 // Where a fighter puts its torch down: in front of it and a little to the left, the spot its pick-up
 // reaches for (body units, scaled with the body).

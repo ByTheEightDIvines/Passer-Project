@@ -2002,7 +2002,9 @@ void setLife(const fopAc_ac_c* passer, int quarters) {
 
 bool isFighter(const fopAc_ac_c* passer) {
     const int slot = slotOf(passer);
-    return slot >= 0 && fighterType(g_t[slot].type);
+    // Beedle wears the men's skeleton (type 0, which the guards fight in): he never fights, he runs from
+    // everything (wolf Link too), and carries a lantern, not a fighter's torch
+    return slot >= 0 && !g_t[slot].beedle && fighterType(g_t[slot].type);
 }
 
 daNpcPasser_c* nearestActor(const cXyz& pos, f32 maxDist) {
