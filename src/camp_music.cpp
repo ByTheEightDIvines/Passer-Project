@@ -191,6 +191,16 @@ void tick() {
         return;
     case kPlaying:
         setVolumes();
+        // (diagnosis, 2026-11-19: the songs start but nobody hears them) are the three sounds still
+        // alive a moment in, and at what volume, with Link how far off?
+        if (g_frames == 15 || g_frames == 90 || g_frames == 300 || (g_frames % 900) == 0) {
+            auto* link = dComIfGp_getPlayer(0);
+            const f32 d = link != nullptr ? std::sqrt((link->current.pos.x - g_pos.x) * (link->current.pos.x - g_pos.x) +
+                                                      (link->current.pos.z - g_pos.z) * (link->current.pos.z - g_pos.z)) : -1.0f;
+            travellers::diagLine("music   %s +%d: alive %d %d %d  vol %.2f %.2f %.2f  link %.0f off  ids %x %x %x",
+                                 kSongs[g_song].name, g_frames, g_handle[0] ? 1 : 0, g_handle[1] ? 1 : 0,
+                                 g_handle[2] ? 1 : 0, g_vol[0], g_vol[1], g_vol[2], d, soundId(0), soundId(1), soundId(2));
+        }
         if (g_frames >= loopFrames(g_song) * kLoopsPerSong) {
             unload();
             g_phase = kResting;

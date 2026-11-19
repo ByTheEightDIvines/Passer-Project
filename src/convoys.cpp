@@ -12,6 +12,7 @@
 #include "travellers.hpp"
 #include "wagon_actor.hpp"
 #include "guard_grudge.hpp"
+#include "fighter_anim.hpp"
 
 #include "SSystem/SComponent/c_math.h"
 #include "SSystem/SComponent/c_lib.h"
@@ -82,6 +83,10 @@ struct Member {
     u8 anim = 0xFF;
     bool fighting = false;
     int scared = 0;               // frames still off running from one of Link's bombs (drivers never)
+    bool archer = false;          // shoots (the bowman, the royal bow): he can deal with a foe up a ledge
+    int order = 0;                // escorts: which one (0, 1, ...), for single file behind the wagon
+    bool file = false;            // the side spot is over a drop or in a wall: walking behind instead
+    int fileAge = 0;
 };
 
 struct Convoy {
@@ -97,6 +102,8 @@ struct Convoy {
     int calm = 0;
     s32 nextAt = -1;              // game minute the next one sets off
     bool wrecked = false;         // its wagon was burnt out or smashed: the convoy's over
+    bool fleeing = false;         // a foe they can't get at (up a ledge) and nobody to shoot it: drive on, fast
+    bool abandoned = false;       // every escort's down: the drivers jump off and run, the wagon stands
     f32 horseS = 0.0f;            // the loose horse, running on down the road
 };
 std::array<Convoy, K_NUM> g_convoys{};
@@ -291,6 +298,8 @@ void addMember(std::vector<Member>& crew, u8 type, u8 role, f32 x, f32 z, s16 fa
     Member m;
     m.slot = slot;
     m.role = role;
+    m.archer = type == 8 || style == travellers::kStyleArcher;
+    if (role == R_ESCORT) for (const Member& o : crew) if (o.role == R_ESCORT) ++m.order;
     m.x = x;
     m.z = z;
     m.face = face;
@@ -342,11 +351,32 @@ bool wagonPlaced(psrWagon_c* w) {
     return axis > 0.25f && wagonFrame(w, 0.0f, 0.0f, 0.0f).abs(w->current.pos) < 3000.0f;
 }
 
+// Where an escort walks: at the wagon's side, unless that's off the side of a bridge, over a drop or
+// in a wall (the ground there isn't the road's); then in single file behind the wagon.
+bool sideSafe(psrWagon_c* w, const Member& m) {
+    const cXyz mid = wagonFrame(w, 0.0f, 0.0f, m.z);
+    const f32 road = groundAt(mid.x, mid.y + 100.0f, mid.z);
+    if (road == -G_CM3D_F_INF) return true;   // (can't tell: as before)
+    for (f32 t : {0.5f, 1.0f}) {
+        const cXyz at = wagonFrame(w, m.x * t, 0.0f, m.z);
+        const f32 g = groundAt(at.x, road + 100.0f, at.z);
+        if (g == -G_CM3D_F_INF || std::fabs(g - road) > 90.0f) return false;
+    }
+    return true;
+}
+cXyz escortSpot(psrWagon_c* w, Member& m) {
+    if (--m.fileAge <= 0) {
+        m.fileAge = 15;
+        m.file = !sideSafe(w, m);
+    }
+    return m.file ? wagonFrame(w, 0.0f, 0.0f, -720.0f - m.order * 170.0f) : wagonFrame(w, m.x, 0.0f, m.z);
+}
+
 void bringOut(std::vector<Member>& crew, psrWagon_c* w, s8 room) {
     if (!wagonPlaced(w)) return;
     for (Member& m : crew) {
         if (travellers::crewActor(m.slot) != nullptr || travellers::crewDead(m.slot)) continue;
-        cXyz at = m.role == R_RIDER ? w->benchSeat(m.x < 0.0f ? 0 : 1) : wagonFrame(w, m.x, 0.0f, m.z);
+        cXyz at = m.role == R_RIDER ? w->benchSeat(m.x < 0.0f ? 0 : 1) : escortSpot(w, m);
         if (m.role != R_RIDER) {
             if (const f32 g = groundAt(at.x, at.y, at.z); g != -G_CM3D_F_INF) at.y = g;
         }
@@ -438,7 +468,7 @@ void tickConvoy(Convoy& c) {
         putAway(c.crew);
         c.real = false;
         w = nullptr;
-        if (c.wrecked) {   // the wreck is left behind out of sight: that convoy is over
+        if (c.wrecked || c.abandoned) {   // the wreck (or the empty wagon) is left behind out of sight: that convoy is over
             endConvoy(c, kindEvery(c.kind));
             return;
         }
@@ -469,6 +499,27 @@ void tickConvoy(Convoy& c) {
         }
         return;
     }
+    if (c.real && w != nullptr && !c.abandoned) {
+        // every escort down (killed, or never came): the drivers jump down and run, the wagon stands
+        bool anyEscort = false, escortUp = false;
+        for (const Member& m : c.crew) {
+            if (m.role != R_ESCORT) continue;
+            anyEscort = true;
+            if (!travellers::crewDead(m.slot)) escortUp = true;
+        }
+        if (anyEscort && !escortUp) {
+            c.abandoned = true;
+            for (Member& m : c.crew) {
+                if (m.role != R_RIDER) continue;
+                travellers::crewHold(m.slot, false);
+                if (auto* a = travellers::crewActor(m.slot)) travellers::startFlee(a, w->middle());
+            }
+            svc_log->info(mod_ctx, "convoys: the escort is down, the drivers run");
+        }
+    }
+    if (c.real && w != nullptr && c.abandoned) {
+        return;   // (the wagon just stands where they left it)
+    }
     if (c.real && w != nullptr) {
         bringOut(c.crew, w, room);
         scareTick(c.crew);
@@ -484,6 +535,19 @@ void tickConvoy(Convoy& c) {
                 c.calm += 10;
             }
             if (c.halted && c.calm >= kCalmFrames) c.halted = false;
+            // a foe right by them that nobody on foot can get at (up on a ledge, down a drop): the
+            // archers shoot it while the rest hold back behind their shields; no archer up: everyone
+            // keeps together and the wagon drives on, fast, out of it
+            c.fleeing = false;
+            if (c.halted) {
+                if (fopAc_ac_c* f = foeAt(mid, kFightRadius); f != nullptr && !travellers::reachableOnFoot(mid, f)) {
+                    bool bow = false;
+                    for (const Member& m : c.crew) {
+                        if (m.archer && m.role == R_ESCORT && travellers::crewActor(m.slot) != nullptr && !travellers::crewDead(m.slot)) bow = true;
+                    }
+                    c.fleeing = !bow;
+                }
+            }
             // monsters right at the wagon (battering it, whether or not a blow of theirs lands on a
             // hit box): a knock every second and a half, where the nearest one is
             if (c.halted && (g_frame % 45) == 0) {
@@ -503,16 +567,18 @@ void tickConvoy(Convoy& c) {
                 auto* a = travellers::crewActor(m.slot);
                 const f32 behind = a != nullptr ? a->current.pos.absXZ(wagonFrame(w, m.x, 0.0f, m.z)) : 0.0f;
                 // (and the royal escort, all of them, while they're after Link over his bombs)
-                const bool fight = (c.halted && behind < kLeash) || (c.kind == K_ROYAL && grudge::squadHostile(2));
+                const bool fight = (c.halted && !c.fleeing && behind < kLeash) || (c.kind == K_ROYAL && grudge::squadHostile(2));
                 if (m.fighting == fight) continue;
                 m.fighting = fight;
                 travellers::crewHold(m.slot, !fight);
-                // let go: its own fighting takes over from where it stands (not from where it came out)
+                // let go: its own fighting takes over from where it stands (not from where it came out);
+                // taken back into the march: weapons away (shield and spear on the back)
                 if (fight && a != nullptr) travellers::resumeWalk(a);
+                if (!fight && a != nullptr) fighter_anim::drop(static_cast<daNpcPasser_c*>(a));
                 m.anim = 0xFF;
             }
         }
-        const f32 v = kSpeed;
+        const f32 v = c.fleeing ? kSpeed * 2.0f : kSpeed;
         c.s += v;
         roadAt(c.road, c.reverse, c.s, &pos, &yaw, &room);
         // the hitch and the rear axle on the road behind the horse (so the wagon takes the road's own
@@ -648,6 +714,13 @@ void update() {
     tickNod();
 }
 
+bool convoyFleeing(psrWagon_c* w) {
+    for (const Convoy& c : g_convoys) {
+        if (c.active && c.real && wagonOf(c.wagon) == w) return c.fleeing;
+    }
+    return false;
+}
+
 void placeHeld(daNpcPasser_c* p) {
     psrWagon_c* w = nullptr;
     Member* m = memberOf(slotOfActor(p), &w);
@@ -676,13 +749,18 @@ void placeHeld(daNpcPasser_c* p) {
         setAnim(p, *m, 14, 1.0f);
     } else {
         // walking at the wagon's side (or standing by it): head for the spot, at most a brisk walk
-        cXyz to = wagonFrame(w, m->x, 0.0f, m->z);
+        cXyz to = escortSpot(w, *m);
         cXyz d = to - p->current.pos;
         d.y = 0.0f;
         const f32 dist = d.absXZ();
-        const bool running = dist > 300.0f;   // fallen behind (after a fight): run to catch up
-        const f32 step = std::min(dist, kSpeed * (running ? 3.2f : 1.6f));
+        const bool running = dist > 300.0f || convoyFleeing(w);   // fallen behind, or the wagon's off fast
+        f32 step = std::min(dist, kSpeed * (running ? 3.2f : 1.6f));
         if (dist > 1.0f) {
+            // never off an edge: no ground where the step lands, or a drop, and he waits there
+            const f32 nx = p->current.pos.x + d.x / dist * std::max(step, 30.0f);
+            const f32 nz = p->current.pos.z + d.z / dist * std::max(step, 30.0f);
+            const f32 g = groundAt(nx, p->current.pos.y + 60.0f, nz);
+            if (g == -G_CM3D_F_INF || p->current.pos.y - g > 120.0f || g - p->current.pos.y > 80.0f) step = 0.0f;
             p->current.pos.x += d.x / dist * step;
             p->current.pos.z += d.z / dist * step;
         }

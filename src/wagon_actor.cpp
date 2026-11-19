@@ -420,7 +420,26 @@ void psrWagon_c::placeParts() {
         mHarnessYaw = mOnRoad ? mRoadHarnessYaw : shape_angle.y;
     }
     const f32 sy = cM_ssin(mHarnessYaw), cy = cM_scos(mHarnessYaw);
-    const cXyz hitch(mHarnessPos.x + sy * kHitchZ, mHarnessPos.y + kHitchY, mHarnessPos.z + cy * kHitchZ);
+    cXyz hitch(mHarnessPos.x + sy * kHitchZ, mHarnessPos.y + kHitchY, mHarnessPos.z + cy * kHitchZ);
+    // On the ground: the hitch at its own height over the ground under it (not the horse's), and the
+    // wagon pitched to the ground under its rear axle, so it rides the slopes instead of floating
+    // over them or ploughing into them. (Probed from just over the ground, under the wagon's own floor.)
+    s16 harnessPitch = 0, coachPitch = 0;
+    if (mDriven && !mWrecked) {
+        cXyz hp = hitch;
+        hp.y = mHarnessPos.y;
+        const f32 gH = groundAt(hp, 70.0f);
+        if (gH != -G_CM3D_F_INF && std::fabs(gH - mHarnessPos.y) < 150.0f) {
+            hitch.y = gH + kHitchY;
+            harnessPitch = cM_atan2s(gH - mHarnessPos.y, -kHitchZ);
+        }
+        cXyz rp = mPlaced ? mRear : hitch;
+        rp.y = hitch.y - kHitchY;
+        const f32 gR = groundAt(rp, 70.0f);
+        if (gR != -G_CM3D_F_INF && std::fabs(gR - (hitch.y - kHitchY)) < 150.0f) {
+            coachPitch = cM_atan2s(gR - (hitch.y - kHitchY), -kRearAxleZ);
+        }
+    }
     if (!mPlaced) {
         mRear.set(hitch.x + sy * kRearAxleZ, hitch.y, hitch.z + cy * kRearAxleZ);
         mPlaced = true;
@@ -443,12 +462,14 @@ void psrWagon_c::placeParts() {
     mpHorse->getModel()->setBaseTRMtx(mDoMtx_stack_c::get());
     mDoMtx_stack_c::transS(mHarnessPos);
     mDoMtx_stack_c::YrotM(mHarnessYaw);
+    mDoMtx_stack_c::XrotM(harnessPitch);
     mpHarness->setBaseTRMtx(mDoMtx_stack_c::get());
     cMtx_copy(mDoMtx_stack_c::get(), mHarnessMtx);
     if (mKind == PSR_WAGON_ROYAL) mpRoyal[1]->setBaseTRMtx(mDoMtx_stack_c::get());
 
     mDoMtx_stack_c::transS(hitch);
     mDoMtx_stack_c::YrotM(mCoachYaw);
+    mDoMtx_stack_c::XrotM(coachPitch);
     mpCoach->setBaseTRMtx(mDoMtx_stack_c::get());
     cMtx_copy(mDoMtx_stack_c::get(), mCoachMtx);
     if (mpCargo != nullptr) mpCargo->setBaseTRMtx(mDoMtx_stack_c::get());

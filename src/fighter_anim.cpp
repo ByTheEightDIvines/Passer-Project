@@ -873,6 +873,15 @@ void hit(daNpcPasser_c* passer, const cXyz& from) {
     startForced(passer, anim, kHitSpeed, true, 2.0f);
 }
 
+// A guard holding his shield up (the block pose) against something he can't get at: started again
+// whenever it isn't already on, so it stays up for as long as he's asked.
+void raiseShield(daNpcPasser_c* passer) {
+    if (passer == nullptr || passer->mpMorf == nullptr || styleOf(passer) == 0) return;
+    if (activeForced(passer) != nullptr) return;
+    if (Slot* s = slotFor(passer, false); s != nullptr && (s->phase == Phase::Swinging || bowPhase(s->phase))) return;
+    if (J3DAnmTransformKey* a = guardAnm(passer, "block")) startForced(passer, a, 1.0f, true, 4.0f);
+}
+
 // Sitting: a flinch where they sit (tools/camp/sit_flinch.py), back to the sit after.
 void sitFlinch(daNpcPasser_c* passer) {
     if (passer == nullptr || passer->mpMorf == nullptr) return;
@@ -953,8 +962,10 @@ void layerTick(daNpcPasser_c* passer, bool carryLight) {
     const bool forced = forcedAnm(cur) || cur == fa(passer, "psr_surprised.bck");
     const bool sitting = traveller_gear::sitting(slot);
 
-    // legs: on the move with something that isn't a walk or run
-    const bool wantLegs = L.speed > kMovingSpeed && !isLoco(passer, cur) && !forced && !sitting;
+    // legs: on the move with something that isn't a walk or run (never a driver on the wagon's bench:
+    // the wagon carries him, he sits - before this he stood up and walked on the spot)
+    const bool benchSit = cur != nullptr && cur == passer->getAnmP(14, 0);
+    const bool wantLegs = L.speed > kMovingSpeed && !isLoco(passer, cur) && !forced && !sitting && !benchSit;
     const f32 walkMax = Cd2_HIO_walkMaxSpeed(passer->m_type);
     const bool run = L.speed > walkMax * 1.25f;
     auto* loco = static_cast<J3DAnmTransformKey*>(passer->getAnmP(run ? 4 : 2, passer->getObjNum()));

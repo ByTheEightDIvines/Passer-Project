@@ -66,6 +66,8 @@ bool install();
 void hit(daNpcPasser_c* passer, const cXyz& from);
 // Sitting down: a flinch where they sit, then back to sitting.
 void sitFlinch(daNpcPasser_c* passer);
+// A guard holds his shield up (the block pose) for now.
+void raiseShield(daNpcPasser_c* passer);
 // The fall (the last blow): the Bokoblin's fly-back pose while in the air (landed=false), then its
 // landing sprawl (landed=true), held on the last frame. False if the body has no such animation.
 bool fall(daNpcPasser_c* passer, bool landed);

@@ -68,6 +68,8 @@ int maxLife(const fopAc_ac_c* passer);
 void setLife(const fopAc_ac_c* passer, int quarters);
 // Fighters stand their ground and only run once they are down to their last heart.
 bool isFighter(const fopAc_ac_c* passer);
+// Can someone on foot at `from` get to that foe (not up a ledge, not down a drop)?
+bool reachableOnFoot(const cXyz& from, const fopAc_ac_c* foe);
 // Roster slot of a traveller actor (0..31), or -1.
 int slotIndex(const fopAc_ac_c* actor);
 // Diagnostics: a traveller was hit; an enemy started or ended a hunt for one.

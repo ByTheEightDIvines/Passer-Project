@@ -16,10 +16,11 @@ const Mtx kHold_fsmall_man_a = {{0.28476f, 0.59788f, 0.46792f, -50.57812f}, {0.9
 const Mtx kHold_ftall_mad_a = {{-0.35454f, 0.77011f, 0.53032f, -80.58021f}, {0.92830f, 0.22192f, 0.29834f, -22.27935f}, {0.11206f, 0.59807f, -0.79357f, -72.03677f}};
 const Mtx kHold_fsmall_mad_a = {{0.28476f, 0.59788f, 0.46792f, -52.50260f}, {0.95852f, -0.18202f, -0.12789f, 19.78146f}, {0.01219f, 0.34654f, -0.87447f, -38.12225f}};
 // seated: the shield on his back, upright, crest out (on the backbone joint)
-const Mtx kHold_back_small_man_a = {{0.00010f, 1.00000f, 0.00000f, -104.00000f}, {-0.00010f, -0.00000f, -1.00000f, 18.78421f}, {-1.00000f, 0.00010f, 0.00010f, -0.01292f}};
-const Mtx kHold_back_tall_man_a = {{0.00010f, 1.00000f, 0.00000f, -85.00000f}, {-0.00010f, -0.00000f, -1.00000f, 28.98315f}, {-1.00000f, 0.00010f, 0.00010f, -0.01376f}};
-const Mtx kHold_back_small_mad_a = {{0.00010f, 1.00000f, 0.00000f, -104.00000f}, {-0.00010f, -0.00000f, -1.00000f, 30.81226f}, {-1.00000f, 0.00010f, 0.00010f, -0.01407f}};
-const Mtx kHold_back_tall_mad_a = {{0.00010f, 1.00000f, 0.00000f, -85.00000f}, {-0.00010f, -0.00000f, -1.00000f, 41.01120f}, {-1.00000f, 0.00010f, 0.00010f, -0.01492f}};
+const Mtx kHold_back_small_man_a = {{-0.00010f, 1.00000f, 0.00000f, -104.00000f}, {0.00010f, 0.00000f, 1.00000f, 23.58421f}, {1.00000f, 0.00010f, -0.00010f, -0.01340f}};
+const Mtx kHold_back_tall_man_a = {{-0.00010f, 1.00000f, 0.00000f, -85.00000f}, {0.00010f, 0.00000f, 1.00000f, 27.38315f}, {1.00000f, 0.00010f, -0.00010f, -0.01360f}};
+const Mtx kHold_back_small_mad_a = {{-0.00010f, 1.00000f, 0.00000f, -104.00000f}, {0.00010f, 0.00000f, 1.00000f, 35.61226f}, {1.00000f, 0.00010f, -0.00010f, -0.01455f}};
+const Mtx kHold_back_tall_mad_a = {{-0.00010f, 1.00000f, 0.00000f, -85.00000f}, {0.00010f, 0.00000f, 1.00000f, 39.41120f}, {1.00000f, 0.00010f, -0.00010f, -0.01476f}};
+// (the back shields: crest out, the grip against his back; flipped 2026-11-19)
 // slung: the spear across his back over the shield, head up over the right shoulder (on the backbone joint;
 // tools/guards; renders approved 2026-11-19). Layers out from the back: spear against it, the shield over the spear.
 const Mtx kHold_back_spear_man_a = {{0.00000f, -0.76598f, 0.64286f, 5.97566f}, {-1.00000f, -0.00006f, -0.00007f, 32.33023f}, {0.00010f, -0.64286f, -0.76598f, -20.07870f}};

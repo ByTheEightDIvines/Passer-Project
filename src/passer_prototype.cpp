@@ -186,6 +186,9 @@ constexpr std::array kLanguages{
 
 struct PasserState {
     int bombScare = 0;        // frames still running from one of Link's bombs (everyone runs, fighters too)
+    fpc_ProcID reachFoe = fpcM_ERROR_PROCESS_ID_e;   // the foe last checked for reach (reachableFrom), and
+    int reachAge = 0;         // ... frames since
+    bool reachOk = true;
     cXyz bombAt{};            // ...where it was
     int blast = 0;            // frames thrown by a bomb's blast (no harm: a shove, a stagger, then running)
     f32 blastX = 0.0f, blastY = 0.0f, blastZ = 0.0f;
@@ -432,6 +435,35 @@ bool mountedRider(const fopAc_ac_c* actor) {
     if (actor == nullptr || fopAcM_GetName(const_cast<fopAc_ac_c*>(actor)) != fpcNm_E_RD_e) return false;
     return reinterpret_cast<const e_rd_class*>(actor)->ride_mode != 0;
 }
+f32 groundUnder(f32 x, f32 y, f32 z) {
+    dBgS_ObjGndChk gnd;
+    cXyz probe(x, y + 250.0f, z);
+    gnd.SetPos(&probe);
+    return dComIfG_Bgsp().GroundCross(&gnd);
+}
+
+// Can someone on foot at `from` get to this foe? Not when it's up on a ledge or a bluff (the ground
+// between climbs too sharply somewhere), nor far down below: then the fighters hold back and the
+// archers deal with it. A Bulblin up on his boar is always within reach.
+bool reachableFrom(const cXyz& from, const fopAc_ac_c* foe) {
+    if (foe == nullptr || mountedRider(foe)) return true;
+    const f32 dy = foe->current.pos.y - from.y;
+    if (dy < -260.0f) return false;              // down below a drop
+    if (dy < 90.0f) return true;                 // about level
+    const f32 dx = foe->current.pos.x - from.x, dz = foe->current.pos.z - from.z;
+    const f32 len = std::sqrt(dx * dx + dz * dz);
+    const int steps = std::clamp(static_cast<int>(len / 60.0f), 1, 40);
+    f32 prev = from.y;
+    for (int i = 1; i <= steps; ++i) {
+        const f32 t = static_cast<f32>(i) / steps;
+        const f32 g = groundUnder(from.x + dx * t, std::max(prev, from.y + dy * t), from.z + dz * t);
+        if (g == -G_CM3D_F_INF) return false;    // a gap
+        if (g - prev > 55.0f * (len / steps) / 60.0f) return false;   // a wall or a ledge to climb
+        prev = g;
+    }
+    return std::fabs(prev - foe->current.pos.y) < 120.0f;   // it really stands on that ground
+}
+
 // Something our people treat as a foe: the game's enemies, less projectiles and the boars.
 bool isFoe(fopAc_ac_c* actor) {
     return actor != nullptr && fopAcM_IsActor(actor) && fopAcM_GetGroup(actor) == fopAc_ENEMY_e &&
@@ -2099,6 +2131,19 @@ void stepToward(daNpcPasser_c* passer, const cXyz& to, f32 speed) {
     // circling). There it steps straight at the spot, never past it, and only the body turns.
     const f32 dx = aim.x - passer->current.pos.x, dz = aim.z - passer->current.pos.z;
     const f32 d = std::sqrt(dx * dx + dz * dz);
+    {
+        // never off an edge: a step that would leave the ground (a bridge's side, a cliff) isn't taken
+        const f32 ux = d > 0.001f ? dx / d : cM_ssin(passer->current.angle.y);
+        const f32 uz = d > 0.001f ? dz / d : cM_scos(passer->current.angle.y);
+        const f32 ahead = std::max(speed * 2.0f, 40.0f);
+        const f32 g = groundUnder(passer->current.pos.x + ux * ahead, passer->current.pos.y, passer->current.pos.z + uz * ahead);
+        if (g == -G_CM3D_F_INF || passer->current.pos.y - g > 120.0f) {
+            const s16 yaw = cLib_targetAngleY(&passer->current.pos, &aim);
+            cLib_addCalcAngleS2(&passer->current.angle.y, yaw, 4, 0x1000);
+            passer->shape_angle.y = passer->current.angle.y;
+            return;
+        }
+    }
     if (d < speed * 3.0f) {
         const f32 step = std::min(speed, d);
         if (d > 0.001f) {
@@ -2483,10 +2528,27 @@ bool campGuard(daNpcPasser_c* passer, PasserState& state) {
             const f32 dz = enemy->current.pos.z - passer->current.pos.z;
             const f32 dist = std::sqrt(dx * dx + dz * dz);
             const f32 reach = guard ? reachOf(passer) : kStrikeReach;
-            state.chasing = dist > reach;
+            if (enemy != dComIfGp_getPlayer(0)) {
+                const fpc_ProcID id = fopAcM_GetID(enemy);
+                if (id != state.reachFoe || ++state.reachAge >= 10) {
+                    state.reachFoe = id;
+                    state.reachAge = 0;
+                    state.reachOk = reachableFrom(passer->current.pos, enemy);
+                }
+            } else {
+                state.reachOk = true;
+            }
+            state.chasing = dist > reach && state.reachOk;
             state.onGuard = true;
             if (fighter_anim::busy(passer)) {
                 // startled, drawing or mid-swing: it stays where it is until that's done
+            } else if (!state.reachOk) {
+                // up on a ledge (or down below): no way there; face it behind the shield
+                guardAnim(passer, state, kAnmIdle);
+                const s16 yaw = cLib_targetAngleY(&passer->current.pos, &enemy->current.pos);
+                cLib_addCalcAngleS2(&passer->current.angle.y, yaw, 4, kGuardTurn);
+                passer->shape_angle.y = passer->current.angle.y;
+                fighter_anim::raiseShield(passer);
             } else if (dist > reach) {
                 guardAnim(passer, state, kAnmRun);
                 stepToward(passer, guard ? flankSpot(passer, enemy) : enemy->current.pos,
@@ -2721,11 +2783,23 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         if (bowman && enemy == nullptr) enemy = nearestEnemyAt(passer->current.pos, kBowRange);
         state->vsWolf = enemy != nullptr && enemy == dComIfGp_getPlayer(0);
         bool shoot = false;
+        // up on a ledge or a bluff, down below a drop: nobody on foot gets there (checked a few times a
+        // second): the archers shoot it, the others hold back behind their shields
+        bool outOfReach = false;
+        if (enemy != nullptr && !state->vsWolf) {
+            const fpc_ProcID id = fopAcM_GetID(enemy);
+            if (id != state->reachFoe || ++state->reachAge >= 10) {
+                state->reachFoe = id;
+                state->reachAge = 0;
+                state->reachOk = reachableFrom(passer->current.pos, enemy);
+            }
+            outOfReach = !state->reachOk;
+        }
         if (bowman && enemy != nullptr && !state->vsWolf) {
             // at range, or out of a sword's reach above: the bow; close up: the sword
             const f32 flat = passer->current.pos.absXZ(enemy->current.pos);
             const bool high = enemy->current.pos.y - passer->current.pos.y > kReachAbove;
-            shoot = high || flat > (state->bowMode ? kBowNear : kBowFar);
+            shoot = high || outOfReach || flat > (state->bowMode ? kBowNear : kBowFar);
             if (shoot && !state->bowMode) travellers::noteAct(passer, "takes aim");
             if (!shoot && state->bowMode) travellers::noteAct(passer, "too close: bow away, sword out");
             state->bowMode = shoot;
@@ -2749,8 +2823,9 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
             // out of reach: charge at it (not at wolf Link: him it only squares up to)
             state->shooting = shoot;
             const f32 reach = soldierHere ? reachOf(passer) : kStrikeReach;
-            const bool charge = !shoot && (!state->vsWolf || afterLink) && !fighter_anim::busy(passer) &&
+            const bool charge = !shoot && !outOfReach && (!state->vsWolf || afterLink) && !fighter_anim::busy(passer) &&
                                 passer->current.pos.absXZ(enemy->current.pos) > reach;
+            if (outOfReach && !shoot) fighter_anim::raiseShield(passer);   // holding behind the shield
             if (charge && !state->chasing) {
                 say(passer, *state, psr_bubble::kAttack);
                 travellers::noteAct(passer, "charges");
@@ -2800,7 +2875,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
                 const s16 off = static_cast<s16>(cLib_targetAngleY(&passer->current.pos, &enemy->current.pos) -
                                                  passer->shape_angle.y);
                 if (fighter_anim::aimed(passer) && std::abs(off) < kBowFacing) state->swingReq = true;
-            } else if (dx * dx + dz * dz <= reach * reach) {
+            } else if (!outOfReach && dx * dx + dz * dz <= reach * reach) {
                 if (--state->strikeTimer <= 0 && swingOrStrike(passer, *state)) {
                     state->strikeTimer = kStrikeEvery;
                 }
@@ -2865,9 +2940,9 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         // Link's sword (or anything of his) on anyone else: a flinch, never harm
         if (!byWolf && !byLink && attacker != nullptr && attacker == dComIfGp_getPlayer(0)) {
             const int slot = travellers::slotIndex(passer);
-            if (convoys::isRider(slot) || travellers::isBeedle(passer)) return HOOK_CONTINUE;
+            if (travellers::isBeedle(passer)) return HOOK_CONTINUE;
             state->invuln = kHurtInvulnFrames;
-            if (traveller_gear::sitting(slot)) fighter_anim::sitFlinch(passer);   // where they sit
+            if (traveller_gear::sitting(slot) || convoys::isRider(slot)) fighter_anim::sitFlinch(passer);   // where they sit
             else fighter_anim::hit(passer, attacker->current.pos);               // the stagger, facing him
             state->voiceWait = 0;
             callOut(passer, *state, kVoiceYelp, 30);
@@ -2901,7 +2976,12 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         passer->health = static_cast<s16>(state->health);
         travellers::noteHit(passer, damage, life);
         state->invuln = kHurtInvulnFrames;
-        if (life > 0) fighter_anim::hit(passer, attacker->current.pos);   // the blow shows: a stagger
+        if (life > 0) {
+            // the blow shows: a stagger (sat on a bench or the wagon's: a flinch where they sit)
+            const int hs = travellers::slotIndex(passer);
+            if (traveller_gear::sitting(hs) || convoys::isRider(hs)) fighter_anim::sitFlinch(passer);
+            else fighter_anim::hit(passer, attacker->current.pos);
+        }
         state->voiceWait = 0;
         callOut(passer, *state, kVoiceYelp, 30);                           // and is heard
         say(passer, *state, travellers::isFighter(passer) ? psr_bubble::kAngry : psr_bubble::kScared);
@@ -3536,3 +3616,8 @@ MOD_EXPORT ModResult mod_shutdown(ModError*) {
 }
 }
 
+
+namespace travellers {
+// (for the convoys: can the escorts get at that foe from the road?)
+bool reachableOnFoot(const cXyz& from, const fopAc_ac_c* foe) { return reachableFrom(from, foe); }
+}  // namespace travellers
