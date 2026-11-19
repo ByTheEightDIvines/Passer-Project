@@ -36,7 +36,7 @@ enum Line : int {
     L_WARN1, L_WARN2, L_ATTACK,
     L_YIELD_CAPTAIN, L_YIELD_BARRACKS, L_YIELD_OW, L_YIELD_EASY,
     L_LESSON,
-    L_RUN_WHERE, L_RUN_BREATH,
+    L_RUN_WHERE, L_RUN_BREATH, L_RUN_CARE, L_RUN_COWARD, L_RUN_BOMBS,
     L_COUNT
 };
 // [big][rest]: the first part shouted (bigger), as the camp cook does
@@ -51,6 +51,9 @@ const char* const kLines[L_COUNT][2] = {
     {"...Let that be a lesson.", ""},
     {"Ay! Where are you going?!", " We weren't\ndone! ...Well, I was done, but still!"},
     {"Get back here!", " ...No, wait, don't. I'm\nout of breath."},
+    {"Oi! Where d'you think you're going?!", "\n...Fine! Run! See if we care!"},
+    {"Coward!", " ...Actually, good call. Off you\npop."},
+    {"That's right, run!", " And take your\nbombs with you!"},
 };
 std::vector<mods::flow::RegisteredMessage> g_msgs;
 u16 g_nodes[L_COUNT];
@@ -69,7 +72,7 @@ struct Squad {
 std::array<Squad, 3> g_sq{};
 int g_frame = 0;
 int g_yieldTurn = 0;
-int g_runTurn = 0;
+int g_runTurn = -1;
 
 // the yell waiting for its actor: who says what
 fpc_ProcID g_speaker = fpcM_ERROR_PROCESS_ID_e;
@@ -273,7 +276,11 @@ void tick() {
             // he's breaking away: the nearest yells after him, and they give it up
             standDown(q);
             q.ranUntil = g_frame + kSoreFor;
-            yell(near, (g_runTurn++ % 2) == 0 ? L_RUN_WHERE : L_RUN_BREATH);
+            // one of the five at random (never the same one twice running)
+            int pick = static_cast<int>(cM_rndF(5.0f)) % 5;
+            if (pick == g_runTurn) pick = (pick + 1) % 5;
+            g_runTurn = pick;
+            yell(near, L_RUN_WHERE + pick);
             travellers::diagLine("grudge  squad %d: Link ran off", s);
         } else if (g_frame - q.lastNear > kLostSight) {
             standDown(q);   // he ran off: they let him go
