@@ -11,6 +11,7 @@
 #include "beedle_field.hpp"
 
 #include <deque>
+#include <string>
 #include <algorithm>
 #include "d/actor/d_a_npc_passer.h"
 #include "d/d_com_inf_game.h"
@@ -27,6 +28,7 @@
 #include "mod_sounds.hpp"
 #include "travellers.hpp"
 #include <array>
+#include <string>
 #include <cstdio>
 #include <vector>
 
@@ -40,20 +42,41 @@ struct Ware {
     Kind kind;
     u8 item;            // the item given (bottles: the bottle's contents)
 };
+// Their shop descriptions are the game's own (^...^ is the game's red highlight): the neutral lines of
+// Kakariko's Malo Mart where it sells them; the Blue Potion's from Castle Town's Malo Mart; the Lantern
+// Oil's from the City in the Sky; the Milk's (the Gorons') and the Bee Larva's (Sera's) with "Brother" and
+// "m'dear" taken out. No shop in the game sells the seeds on their own: theirs is ours.
 constexpr std::array<Ware, 11> kWares{{
-    {"10 Arrows", "Arrows (10)", "Arrows for your bow. Never run dry\nin the middle of a fight!", 5, K_ARROWS, dItemNo_ARROW_10_e},              // 10 (Death Mountain's hot spring shop)
-    {"10 Bombs", "Bombs (10)", "Boom! Blasts rocks, walls and\nmonsters alike. Handle with care!", 25, K_BOMBS, dItemNo_BOMB_10_e},                // 30 (Barnes)
-    {"5 Water Bombs", "Water Bombs (5)", "Bombs that sink and blow up\nunderwater, Zora style!", 25, K_WATER, dItemNo_WATER_BOMB_5_e},      // 30 (Barnes)
-    {"5 Bomblings", "Bomblings (5)", "Little bombs that scurry along\nthe ground on their own legs!", 25, K_POKE, dItemNo_BOMB_INSECT_5_e},        // 30 (Barnes)
-    {"a Red Potion", "Red Potion", "Restores 8 hearts of life energy.\nNeeds an empty bottle!", 25, K_BOTTLE, dItemNo_RED_BOTTLE_e},        // 30
-    {"a Blue Potion", "Blue Potion", "Restores all your hearts! The\nreal deal. Needs an empty bottle!", 95, K_BOTTLE, dItemNo_BLUE_BOTTLE_e},      // 100
-    {"Lantern Oil", "Lantern Oil", "Keeps your lantern burning.\nNeeds an empty bottle!", 15, K_BOTTLE, dItemNo_OIL_BOTTLE_e},         // 20
-    {"Milk", "Milk", "Fresh from Ordon! Two drinks of\nthree hearts each. Needs a bottle!", 15, K_BOTTLE, dItemNo_MILK_BOTTLE_e},               // 20
-    {"a Wooden Shield", "Wooden Shield", "A sturdy wooden shield. It burns,\nso mind the fire!", 45, K_SHIELD, dItemNo_WOOD_SHIELD_e},    // 50
-    {"Bee Larva", "Bee Larva", "Bait for fishing, or a snack in a\npinch. Needs an empty bottle!", 5, K_LARVA, dItemNo_BEE_CHILD_e},              // 10 (Sera's Sundries), a bottle of 10
-    {"50 Seeds", "Slingshot Seeds", "Ammo for your slingshot!", 5, K_SEEDS, dItemNo_PACHINKO_SHOT_e},           // (no shop sells them: 10, as a pack of arrows)
+    {"10 Arrows", "Arrows (10)", "Arrows for a bow. Watch your\nsupply!", 5, K_ARROWS, dItemNo_ARROW_10_e},              // 10 (Death Mountain's hot spring shop)
+    {"10 Bombs", "Bombs (10)", "I sell these in packs of ten. You get\na slight discount that way.", 25, K_BOMBS, dItemNo_BOMB_10_e},                // 30 (Barnes)
+    {"5 Water Bombs", "Water Bombs (5)", "These bombs even work\nunderwater! I sell 'em in sets\nof five.", 25, K_WATER, dItemNo_WATER_BOMB_5_e},      // 30 (Barnes)
+    {"5 Bomblings", "Bomblings (5)", "These cute little bugs walk around\nand blow up all on their own!", 25, K_POKE, dItemNo_BOMB_INSECT_5_e},        // 30 (Barnes)
+    {"a Red Potion", "Red Potion", "This potion replenishes your\nlife energy. Keep it in an ^empty\nbottle^.", 25, K_BOTTLE, dItemNo_RED_BOTTLE_e},        // 30
+    {"a Blue Potion", "Blue Potion", "A restorative elixir recommended\nfor those who do not feel 100%.\n(Requires an empty bottle.)", 95, K_BOTTLE, dItemNo_BLUE_BOTTLE_e},      // 100
+    {"Lantern Oil", "Lantern Oil", "If you have an empty bottle, you\nshould buy some.", 15, K_BOTTLE, dItemNo_OIL_BOTTLE_e},         // 20
+    {"Milk", "Milk (2 Servings)", "One serving has ^3 hearts^ worth\nof nutrients! A full bottle\nholds two servings!", 15, K_BOTTLE, dItemNo_MILK_BOTTLE_e},               // 20
+    {"a Wooden Shield", "Wooden Shield", "This is a simple shield. It's made of\nwood, so it will burn away if\ntouched by fire.", 45, K_SHIELD, dItemNo_WOOD_SHIELD_e},    // 50
+    {"Bee Larva", "Bee Larva (10)", "That's used as fishing bait.\nYou can store it in an empty bottle\nif you've got one.", 5, K_LARVA, dItemNo_BEE_CHILD_e},              // 10 (Sera's Sundries), a bottle of 10
+    {"50 Seeds", "Slingshot Seeds (50)", "Ammo for a slingshot. Keep a\ngood supply handy!", 5, K_SEEDS, dItemNo_PACHINKO_SHOT_e},           // (no shop sells them: 10, as a pack of arrows)
 }};
 constexpr int kWareCount = static_cast<int>(kWares.size());
+
+// a ware's description as the game writes it: ^ turns the game's red highlight on and off
+template <class B> void descText(B& b, const char* d) {
+    std::string part;
+    bool red = false;
+    for (const char* p = d;; ++p) {
+        if (*p == '^' || *p == '\0') {
+            if (!part.empty()) b.text(part.c_str());
+            part.clear();
+            if (*p == '\0') break;
+            red = !red;
+            b.text_color(red ? MESSAGE_COLOR_RED : MESSAGE_COLOR_DEFAULT);
+        } else {
+            part += *p;
+        }
+    }
+}
 
 // his voice: programs 0xEC/0xED (the travellers' voices use 0x88-0xDF, the camp songs 0xE0-0xEB)
 constexpr u8 kPrgGoodbye = 0xEC, kPrgThanks = 0xED;
@@ -221,11 +244,11 @@ ModResult registerFlows(mods::flow::GraphBuilder& graph, const MessageLanguage* 
         n.next(next);
         return n.id();
     };
-    const int bye = node([](auto& b) { b.text("Come back any time!"); }, mods::flow::kEnd);
-    const int poor = node([](auto& b) { b.text("Huh? You don't have enough Rupees!\nCome back when you do!"); }, mods::flow::kEnd);
-    const int full = node([](auto& b) { b.text("Looks like you can't carry any more\nof that! Next time, then!"); }, mods::flow::kEnd);
+    const int bye = node([](auto& b) { b.text("Bye! Come back any time,\nMr. Customer!"); }, mods::flow::kEnd);
+    const int poor = node([](auto& b) { b.text("OH! Mr. Customer, you don't have\nenough Rupees! Come back when\nyou do!"); }, mods::flow::kEnd);
+    const int full = node([](auto& b) { b.text("OH! Looks like you can't carry any\nmore of that, Mr. Customer!\nNext time, then!"); }, mods::flow::kEnd);
     const int thanks = node([](auto& b) { b.text("THANK YOU!"); }, mods::flow::kEnd);
-    const int nothing = node([](auto& b) { b.text("Ah, I've got nothing you can use today.\nCome back tomorrow!"); }, mods::flow::kEnd);
+    const int nothing = node([](auto& b) { b.text("OH... I've got nothing you can use\ntoday, Mr. Customer. Come back\ntomorrow!"); }, mods::flow::kEnd);
     if (bye < 0 || poor < 0 || full < 0 || thanks < 0 || nothing < 0) return g_lastErr != MOD_OK ? g_lastErr : MOD_ERROR;
     g_nothingNode = static_cast<u16>(nothing);
     for (int i = 0; i < kWareCount; ++i) {
@@ -240,11 +263,10 @@ ModResult registerFlows(mods::flow::GraphBuilder& graph, const MessageLanguage* 
         auto choose = graph.add_branch(FLOW_QUERY_SELECT_2, 0);
         choose.results({check.id(), static_cast<u16>(bye)});
         const int offer = node([&](auto& b) {
-            b.text("Today's special: ");
-            b.text_color(MESSAGE_COLOR_RED).text(w.name).text_color(MESSAGE_COLOR_DEFAULT);
-            b.text("!\nJust ");
-            b.text_color(MESSAGE_COLOR_RED).text(price).text_color(MESSAGE_COLOR_DEFAULT);
-            b.text(". Want it?");
+            b.text("OHHH! Mr. Customer! Today's special:\n");
+            b.text_color(MESSAGE_COLOR_ORANGE).text(w.name).text_color(MESSAGE_COLOR_DEFAULT).text(" for just ");
+            b.text_color(MESSAGE_COLOR_PURPLE).text(price).text_color(MESSAGE_COLOR_DEFAULT);
+            b.text("!\nWill you buy it?");
             b.options("I'll take it!", "No thanks");
         }, choose.id());
         if (offer < 0) return g_lastErr != MOD_OK ? g_lastErr : MOD_ERROR;
@@ -253,10 +275,10 @@ ModResult registerFlows(mods::flow::GraphBuilder& graph, const MessageLanguage* 
         auto choose2 = graph.add_branch(FLOW_QUERY_SELECT_2, 0);
         choose2.results({check.id(), static_cast<u16>(bye)});
         const int offer2 = node([&](auto& b) {
-            b.text_color(MESSAGE_COLOR_RED).text(w.name).text_color(MESSAGE_COLOR_DEFAULT);
-            b.text("? Good eye!\nJust ");
-            b.text_color(MESSAGE_COLOR_RED).text(price).text_color(MESSAGE_COLOR_DEFAULT);
-            b.text(". Want it?");
+            b.text_color(MESSAGE_COLOR_ORANGE).text(w.name).text_color(MESSAGE_COLOR_DEFAULT);
+            b.text("? Good eye, Mr. Customer!\nThat's ");
+            b.text_color(MESSAGE_COLOR_PURPLE).text(price).text_color(MESSAGE_COLOR_DEFAULT);
+            b.text(". Will you buy it?");
             b.options("I'll take it!", "No thanks");
         }, choose2.id());
         if (offer2 < 0) return g_lastErr != MOD_OK ? g_lastErr : MOD_ERROR;
@@ -275,7 +297,7 @@ ModResult registerFlows(mods::flow::GraphBuilder& graph, const MessageLanguage* 
     {
         const int greet = node([&](auto& b) {
             b.talk_anim(1);
-            b.text("Welcome to Beedle's tent shop!\nHave a look! Something here's bound\nto catch your eye! ");
+            b.text("OHHHHH! A customer! Welcome to\nBeedle's tent shop, Mr. Customer!\nHave a look around! ");
             shopWait(b);
         }, mods::flow::kEnd);
         auto keeper = graph.add_branch(static_cast<FlowQueryId>(FLOW_QUERY_SHOP_CLERK), 0);
@@ -284,12 +306,12 @@ ModResult registerFlows(mods::flow::GraphBuilder& graph, const MessageLanguage* 
         }
         const int more = node([&](auto& b) {
             b.talk_anim(2);
-            b.text("Anything else catch your eye? ");
+            b.text("Anything else catch your eye,\nMr. Customer? ");
             shopWait(b);
         }, mods::flow::kEnd);
         const int bye = node([](auto& b) {
             b.talk_anim(3);
-            b.text("GOODBYE!\nCome back soon, OK?");
+            b.text("GOODBYE!\nCome back soon, Mr. Customer!");
         }, mods::flow::kEnd);
         auto byeEv = graph.add_event(g_eBye, {0, 0, 0, 0});
         byeEv.next(static_cast<u16>(bye));
@@ -298,8 +320,8 @@ ModResult registerFlows(mods::flow::GraphBuilder& graph, const MessageLanguage* 
         g_shopGreet = static_cast<u16>(greet);
     }
     const int sThanks = node([](auto& b) { b.talk_anim(5); b.text("THANK YOU!"); }, mods::flow::kEnd);
-    const int sPoor = node([](auto& b) { b.talk_anim(4); b.text("Huh? You don't have enough Rupees!\nCome back when you do!"); }, mods::flow::kEnd);
-    const int sFull = node([](auto& b) { b.talk_anim(4); b.text("Looks like you can't carry any more\nof that! Next time, then!"); }, mods::flow::kEnd);
+    const int sPoor = node([](auto& b) { b.talk_anim(4); b.text("OH! Mr. Customer, you don't have\nenough Rupees! Come back when\nyou do!"); }, mods::flow::kEnd);
+    const int sFull = node([](auto& b) { b.talk_anim(4); b.text("OH! Looks like you can't carry any\nmore of that, Mr. Customer!\nNext time, then!"); }, mods::flow::kEnd);
     if (sThanks < 0 || sPoor < 0 || sFull < 0) return g_lastErr != MOD_OK ? g_lastErr : MOD_ERROR;
     for (int i = 0; i < kWareCount; ++i) {
         const Ware& w = kWares[i];
@@ -310,8 +332,8 @@ ModResult registerFlows(mods::flow::GraphBuilder& graph, const MessageLanguage* 
         const int desc = node([&](auto& b) {   // M+1
             b.speaker(3).draw_type(MESSAGE_DRAW_INSTANT);
             b.text_color(MESSAGE_COLOR_ORANGE).text(w.title).text(": ");
-            b.text_color(MESSAGE_COLOR_PURPLE).text(price).text("\n").text_color(MESSAGE_COLOR_DEFAULT);
-            b.text(w.desc);
+            b.text_color(MESSAGE_COLOR_PURPLE).text(price).text_color(MESSAGE_COLOR_DEFAULT).text("\n");
+            descText(b, w.desc);
         }, mods::flow::kEnd);
         if (desc < 0) return g_lastErr != MOD_OK ? g_lastErr : MOD_ERROR;
         if (desc != entry.id() + 1) {
@@ -324,8 +346,8 @@ ModResult registerFlows(mods::flow::GraphBuilder& graph, const MessageLanguage* 
         const int opts = node([](auto& b) { b.options("I'll take it!", "No thanks"); }, yesNo.id());
         const int offer = node([&](auto& b) {
             b.talk_anim(static_cast<u8>(1 + (i & 3)));
-            b.text_color(MESSAGE_COLOR_ORANGE).text(w.name).text_color(MESSAGE_COLOR_DEFAULT).text("? Good eye!\nJust ");
-            b.text_color(MESSAGE_COLOR_PURPLE).text(price).text_color(MESSAGE_COLOR_DEFAULT).text(". Want it?");
+            b.text_color(MESSAGE_COLOR_ORANGE).text(w.name).text_color(MESSAGE_COLOR_DEFAULT).text("? Good eye, Mr. Customer!\nThat's ");
+            b.text_color(MESSAGE_COLOR_PURPLE).text(price).text_color(MESSAGE_COLOR_DEFAULT).text(". Will you buy it?\nBuy it! Buy buy buy!");
             b.await_choice();
         }, static_cast<u16>(opts));
         if (opts < 0 || offer < 0) return g_lastErr != MOD_OK ? g_lastErr : MOD_ERROR;
@@ -336,7 +358,7 @@ ModResult registerFlows(mods::flow::GraphBuilder& graph, const MessageLanguage* 
     }
 
     const int hello = node([](auto& b) {
-        b.text("Welcome to Beedle's tent shop!\nHave a look at the cushions, and if\nanything catches your eye, just ask!");
+        b.text("OHHHHH! A customer! Welcome to\nBeedle's tent shop, Mr. Customer!\nIf anything catches your eye, just ask!");
     }, mods::flow::kEnd);
     if (hello < 0) return g_lastErr != MOD_OK ? g_lastErr : MOD_ERROR;
     g_tentHelloNode = static_cast<u16>(hello);
