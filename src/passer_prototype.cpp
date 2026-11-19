@@ -1000,7 +1000,8 @@ void setDamageable(daNpcPasser_c* passer) {
     // the escort wagon's, only caught Bulblin arrows and Link's own sword.)
     // While Link is a wolf, fighters also take his bites (group 0x2, one of the groups his attacks
     // aim at): he can hurt them, never kill them, and they run (see the hit handler).
-    passer->mCyl.SetTgSPrm(daPy_py_c::checkNowWolf() && travellers::isFighter(passer) ? 0x7 : 0x5);
+    // And a soldier fighting Link over his bombs takes Link's blows too (guard_grudge: never killed).
+    passer->mCyl.SetTgSPrm((daPy_py_c::checkNowWolf() && travellers::isFighter(passer)) || grudge::hostile(passer) ? 0x7 : 0x5);
     passer->mCyl.SetTgHitMark(CcG_Tg_UNK_MARK_1);
     passer->mCyl.SetTgSe(dCcD_SE_SOFT_BODY);
 }

@@ -20,6 +20,7 @@
 #include "JSystem/J3DGraphAnimator/J3DModel.h"
 #include "JSystem/JParticle/JPAEmitter.h"
 #include "traveller_gear.hpp"
+#include "m_Do/m_Do_audio.h"
 #include "mods/service.hpp"
 #include "mods/svc/log.h"
 
@@ -127,6 +128,51 @@ psrWagon_c::~psrWagon_c() {
     dComIfG_resDelete(&mPhaseOwn, kOwnArc);
 }
 
+namespace {
+const dCcD_SrcCyl kBodySrc = {
+    {
+        {0x0, {{0x0, 0x0, 0x0}, {0x0, 0x0}, 0x0}},
+        {dCcD_SE_NONE, 0x0, 0x0, 0x0, 0x0},
+        {dCcD_SE_WOOD, 0x0, 0x0, 0x0, 0x0},
+        {0x0},
+    },
+    {{{0.0f, 0.0f, 0.0f}, 110.0f, 230.0f}},
+};
+constexpr int kHitDamage = 12;   // a monster's blow on the wagon (it takes 255)
+}  // namespace
+
+// A small knock: the game's "hit something hard" sparks (not the big hit star) and a crack of wood.
+void psrWagon_c::hitFx(const cXyz& at) {
+    dComIfGp_particle_set(0x117, &at, nullptr, nullptr);   // ID_ZI_J_HITNG_A
+    dComIfGp_particle_set(0x118, &at, nullptr, nullptr);   // ID_ZI_J_HITNG_B
+    mDoAud_seStart(Z2SE_HIT_WOOD_WEAPON, &at, 0, dComIfGp_getReverb(fopAcM_GetRoomNo(this)));
+}
+
+void psrWagon_c::hitTick() {
+    if (mWrecked) return;
+    if (mHitCool > 0) --mHitCool;
+    // three boxes along the wagon (its own frame: origin at the hitch, the body runs back to -460)
+    static const f32 kAlong[3] = {-80.0f, -250.0f, -420.0f};
+    for (int i = 0; i < 3; i++) {
+        dCcD_Cyl& c = mBody[i];
+        if (c.ChkTgHit()) {
+            fopAc_ac_c* by = c.GetTgHitAc();
+            cXyz at = *c.GetTgHitPosP();
+            c.ClrTgHit();
+            if (by != nullptr && fopAcM_GetGroup(by) == fopAc_ENEMY_e && mHitCool == 0) {
+                hitFx(at);
+                addDamage(kHitDamage);
+                mHitCool = 8;   // one swing, one knock
+            }
+        }
+        mDoMtx_stack_c::copy(mCoachMtx);
+        cXyz local(0.0f, 0.0f, kAlong[i]), w;
+        mDoMtx_stack_c::multVec(&local, &w);
+        c.SetC(w);
+        dComIfG_Ccsp()->Set(&c);
+    }
+}
+
 cPhs_Step psrWagon_c::create() {
     fopAcM_ct(this, psrWagon_c);
     cPhs_Step step = dComIfG_resLoad(&mPhaseCoach, kCoachArc);
@@ -143,6 +189,16 @@ cPhs_Step psrWagon_c::create() {
     // stand on the ground, the wagon straight out behind the horse
     if (const f32 g = groundAt(current.pos); g != -G_CM3D_F_INF) current.pos.y = g;
     placeParts();
+    // the hit boxes: the same target groups as the travellers' (so the monsters' blows land), never
+    // pushing anything about
+    mStts.Init(0xFF, 0xFF, this);
+    for (dCcD_Cyl& c : mBody) {
+        c.Set(kBodySrc);
+        c.SetStts(&mStts);
+        c.SetTgType(0xD8FBFDFF);
+        c.SetTgSPrm(0x5);
+        c.SetTgSe(dCcD_SE_WOOD);
+    }
     if (mpBgCoach != nullptr && dComIfG_Bgsp().Regist(mpBgCoach, this)) mpBgCoach = nullptr;
     if (mpBgHarness != nullptr && dComIfG_Bgsp().Regist(mpBgHarness, this)) mpBgHarness = nullptr;
     return cPhs_COMPLEATE_e;
@@ -447,6 +503,7 @@ int psrWagon_c::Execute() {
     mpHorse->modelCalc();
     updateFire();
     lampsTick();
+    hitTick();
     eyePos = current.pos;
     eyePos.y += 200.0f;
     attention_info.position = eyePos;

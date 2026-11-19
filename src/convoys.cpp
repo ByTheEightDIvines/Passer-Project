@@ -257,6 +257,10 @@ bool foeNear(const cXyz& at, f32 r) {
     fpcM_Search(foeSub, &n);
     return n.found;
 }
+fopAc_ac_c* foeAt(const cXyz& at, f32 r) {
+    NearFoe n{at, r * r, false};
+    return static_cast<fopAc_ac_c*>(fpcM_Search(foeSub, &n));
+}
 
 // out of Link's sight: behind him, or far enough off
 bool outOfSight(const cXyz& at) {
@@ -480,7 +484,20 @@ void tickConvoy(Convoy& c) {
                 c.calm += 10;
             }
             if (c.halted && c.calm >= kCalmFrames) c.halted = false;
-            if (c.halted && foeNear(w->middle(), 450.0f)) w->addDamage(2);   // monsters at the wagon itself
+            // monsters right at the wagon (battering it, whether or not a blow of theirs lands on a
+            // hit box): a knock every second and a half, where the nearest one is
+            if (c.halted && (g_frame % 45) == 0) {
+                if (fopAc_ac_c* m = foeAt(w->middle(), 450.0f)) {
+                    cXyz at = w->middle();
+                    cXyz d = m->current.pos - at;
+                    d.y = 0.0f;
+                    const f32 len = d.absXZ();
+                    if (len > 1.0f) { at.x += d.x / len * 100.0f; at.z += d.z / len * 100.0f; }
+                    at.y = std::max(at.y, m->current.pos.y + 70.0f);
+                    w->hitFx(at);
+                    w->addDamage(9);
+                }
+            }
             for (Member& m : c.crew) {
                 if (m.role != R_ESCORT || m.scared > 0) continue;   // (running from a bomb: not now)
                 auto* a = travellers::crewActor(m.slot);

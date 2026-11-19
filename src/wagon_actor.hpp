@@ -5,6 +5,7 @@
 #include "d/d_kankyo.h"
 #include "SSystem/SComponent/c_phase.h"
 #include "d/d_bg_w.h"
+#include "d/d_cc_d.h"
 
 // The convoy wagon: Telma's wagon put together the way the game's own coach is (horse at the actor,
 // harness on the horse, the wagon on the harness's hitch), but driven by our convoy code along its
@@ -73,6 +74,14 @@ public:
     // travellers' - [0] wagon, [1] harness, [2] cover, [7] cargo. Missing ones: the normal look stays
     J3DModel* mpBurnt[8] = {};
     bool mHorseGone = false;        // the loose horse ran off out of sight
+
+    // Hit boxes along the wagon's body: monsters' blows that land on it show (a small spark and a
+    // knock of wood) and do damage.
+    dCcD_Stts mStts;
+    dCcD_Cyl mBody[3];
+    int mHitCool = 0;
+    void hitTick();
+    void hitFx(const cXyz& at);   // a monster's blow lands here
 
     void addDamage(int amount);
     void ignite();
