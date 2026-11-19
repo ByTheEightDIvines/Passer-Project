@@ -32,6 +32,8 @@ void yield(daNpcPasser_c* soldier);
 void tick();
 // Beaten by Link not long ago: they say so when he talks to them.
 bool sore(const fopAc_ac_c* soldier);
+// Link ran off from their fight not long ago.
+bool ranOff(const fopAc_ac_c* soldier);
 
 ModResult registerLines(mods::flow::GraphBuilder& graph, u16 group, const MessageLanguage* langs, int nLangs);
 void linesReady(bool ok);   // their graph was committed (or not)

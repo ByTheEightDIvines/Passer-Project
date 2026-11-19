@@ -10,6 +10,7 @@ Spot spotFor(const fopAc_ac_c* actor) {
     if (actor == nullptr) return SPOT_NONE;
     if (travellers::isBeedle(actor)) return SPOT_BEEDLE;
     if (grudge::sore(actor)) return SPOT_GUARD_SORE;
+    if (grudge::ranOff(actor)) return SPOT_GUARD_RAN;
     if (travellers::isGuard(actor)) {
         return travellers::eldinBridgeWarpedBack() ? SPOT_GUARD_BRIDGE_BACK : SPOT_GUARD_BRIDGE_OUT;
     }
@@ -30,6 +31,7 @@ const char* placeholder(Spot spot) {
         "[LINE: guard camp, bridge out]",
         "[LINE: guard camp, bridge back - one more ale]",
         "[LINE: guards, beaten by Link]",
+        "[LINE: guards, Link ran off]",
         "[LINE: gorge convoy]",
         "[LINE: west-gate convoy]",
         "[LINE: royal convoy]",
@@ -60,6 +62,9 @@ const char* const kLines[SPOT_COUNT][kMaxLines] = {
     // any soldier, a while after Link beat them (guard_grudge)
     {"Oh. It's you. ...Keep your distance,\nbomb boy.",
      "My helmet's still ringing, thanks for\nasking."},
+    // any soldier, a while after Link ran off from their fight
+    {"Oh, look who's back. Brave enough to\ntalk, but not to finish a fight?",
+     "Back for round two? ...Please say no."},
     // the gorge travellers
     {"We're headed for Castle Town. The road\nthrough the gorge is safe enough now\nthat the darkness has lifted.",
      "Stay close if you're going our way.\nThe Bulblins don't like a crowd."},

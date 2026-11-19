@@ -30,11 +30,13 @@ constexpr int kSoreFor = 30 * 60 * 8;        // eight minutes of sore lines afte
 constexpr int kLostSight = 30 * 8;           // Link this long out of every soldier's reach: let go
 constexpr f32 kSquadReach = 3500.0f;         // a soldier this near Link is still in the fight
 constexpr int kLinkLastHeart = 4;            // Link's life in quarter hearts: on his last heart, they stop
+constexpr f32 kRunYell = 1800.0f;            // Link breaking away this far from the nearest: one yells after him
 
 enum Line : int {
     L_WARN1, L_WARN2, L_ATTACK,
     L_YIELD_CAPTAIN, L_YIELD_BARRACKS, L_YIELD_OW, L_YIELD_EASY,
     L_LESSON,
+    L_RUN_WHERE, L_RUN_BREATH,
     L_COUNT
 };
 // [big][rest]: the first part shouted (bigger), as the camp cook does
@@ -47,6 +49,8 @@ const char* const kLines[L_COUNT][2] = {
     {"Ow. Ow. Right. You win.", " Can we stop\nnow? Please?"},
     {"I was going easy on you!", " ...I was\ngoing easy on you."},
     {"...Let that be a lesson.", ""},
+    {"Ay! Where are you going?!", " We weren't\ndone! ...Well, I was done, but still!"},
+    {"Get back here!", " ...No, wait, don't. I'm\nout of breath."},
 };
 std::vector<mods::flow::RegisteredMessage> g_msgs;
 u16 g_nodes[L_COUNT];
@@ -60,10 +64,12 @@ struct Squad {
     bool hostile = false;
     int lastNear = 0;
     int soreUntil = -1;
+    int ranUntil = -1;      // Link ran off mid-fight: they say so for a while
 };
 std::array<Squad, 3> g_sq{};
 int g_frame = 0;
 int g_yieldTurn = 0;
+int g_runTurn = 0;
 
 // the yell waiting for its actor: who says what
 fpc_ProcID g_speaker = fpcM_ERROR_PROCESS_ID_e;
@@ -243,6 +249,7 @@ void yield(daNpcPasser_c* soldier) {
     Squad& q = g_sq[s];
     standDown(q);
     q.soreUntil = g_frame + kSoreFor;
+    q.ranUntil = -1;
     static const int kYields[4] = {L_YIELD_CAPTAIN, L_YIELD_BARRACKS, L_YIELD_OW, L_YIELD_EASY};
     yell(soldier, kYields[g_yieldTurn++ % 4]);
     travellers::diagLine("grudge  squad %d yields to Link", s);
@@ -262,11 +269,22 @@ void tick() {
             standDown(q);
             if (near != nullptr) yell(near, L_LESSON);
             travellers::diagLine("grudge  squad %d: Link's beaten", s);
+        } else if (near != nullptr && distXZ(near->current.pos, link->current.pos) > kRunYell) {
+            // he's breaking away: the nearest yells after him, and they give it up
+            standDown(q);
+            q.ranUntil = g_frame + kSoreFor;
+            yell(near, (g_runTurn++ % 2) == 0 ? L_RUN_WHERE : L_RUN_BREATH);
+            travellers::diagLine("grudge  squad %d: Link ran off", s);
         } else if (g_frame - q.lastNear > kLostSight) {
             standDown(q);   // he ran off: they let him go
             travellers::diagLine("grudge  squad %d: Link got away", s);
         }
     }
+}
+
+bool ranOff(const fopAc_ac_c* soldier) {
+    const int s = squadOf(soldier);
+    return s != 0 && g_sq[s].ranUntil >= 0 && g_frame < g_sq[s].ranUntil;
 }
 
 bool sore(const fopAc_ac_c* soldier) {

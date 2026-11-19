@@ -15,6 +15,7 @@ enum Spot : int {
     SPOT_GUARD_BRIDGE_OUT,   // the bridge is gone: they're stuck here
     SPOT_GUARD_BRIDGE_BACK,  // the bridge is back: "back on the road after one more ale" (and stay)
     SPOT_GUARD_SORE,         // any soldier, a while after Link beat his squad in a fight over bombs
+    SPOT_GUARD_RAN,          // ...or after Link ran off from that fight
     // on the road
     SPOT_CONVOY_GORGE,       // the gorge travellers' convoy
     SPOT_CONVOY_WEST,        // the west-gate travellers' convoy
