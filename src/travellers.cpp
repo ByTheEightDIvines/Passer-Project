@@ -85,7 +85,7 @@ constexpr int kArrivalGap = 450;             // frames (7.5 s) between late arri
 // Hearts, counted in quarter hearts like Link's (an enemy hit that takes half a heart from Link
 // takes half a heart from a traveller).
 constexpr int kQuarters = 4;
-constexpr int kFighterHearts = 5;
+constexpr int kFighterHearts = 2;      // the same as everyone (the user, 2026-11-19: fighters and guards no tougher than travellers)
 constexpr int kCommonHearts = 2;
 constexpr int kHealFrames = 600;             // off screen, a quarter heart back every 10 s
 constexpr int kHealFramesResting = 150;      // ...every 2.5 s while sitting at camp or in town

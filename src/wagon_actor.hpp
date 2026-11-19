@@ -46,7 +46,7 @@ public:
     int mAnim = -1;
     bool mPlaced = false;
     // damage: monsters at it, and fire (a Bulblin's fire arrow in the wood) that burns it down
-    static constexpr int kMaxDamage = 255;
+    static constexpr int kMaxDamage = 765;   // three times what it was (2026-11-19): it outlasts its escort
     int mDamage = 0;
     int mBurnTick = 0;
     bool mBurning = false;
