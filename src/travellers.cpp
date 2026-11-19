@@ -509,6 +509,7 @@ void fillPath(PathStore& store, const std::vector<cXyz>& pts) {
 }
 
 bool fighterType(int type);
+void placeTraveller(int s);   // (below: populate's own placement, also used when the field first opens)
 
 // --- camp seats ---------------------------------------------------------------------------------
 // The amphitheater camp just outside Castle Town (the one camp in the Castle Town field area).
@@ -1622,13 +1623,18 @@ void refreshStory() {
         g_openBlocks = blocks;
         // the field has just opened (a save loaded after everyone was placed with it shut): those parked
         // resting get going soon, as at the start of a day, not "tomorrow morning"
+        // Everyone was placed at frame 1, before the save, with nothing open: the fallback put them all on
+        // the first camp (29 people, 5 seats) and there they stayed. Now that the field is open: placed
+        // properly, spread over the roads and camps as at a fresh start (not the guards or convoy crews).
         if (firstOpen) {
+            int placed = 0;
             for (int s = 0; s < kPopulation && s < kSlots; ++s) {
-                Traveller& t = g_t[s];
-                if (!t.used || t.spawned || t.guard || t.crew || t.dead || t.state != ST_REST) continue;
-                t.restUntilMorning = false;
-                t.timer = rndRange(30, 1800);
+                if (g_t[s].spawned) continue;
+                releaseSeat(g_t[s]);
+                placeTraveller(s);
+                ++placed;
             }
+            diag("story   field open: %d travellers placed", placed);
         }
     }
 }
@@ -1667,12 +1673,12 @@ void rehomeStranded() {
     }
 }
 
-void populate() {
-    // start them spread over the network: some on the roads, some at camps
-    // the first few are the bards, one to each fire; everyone else from the rest of the cast
+// One traveller placed somewhere open: some on the roads, some at camps; the first few are the bards,
+// one to each fire; everyone else from the rest of the cast.
+void placeTraveller(int s) {
     std::vector<int> fires;
     for (int c = 0; c < kCampCount; ++c) if (kNodes[kCamps[c].node].kind == NK_CAMP) fires.push_back(kCamps[c].node);
-    for (int s = 0; s < kPopulation && s < kSlots; ++s) {
+    {
         Traveller& t = g_t[s];
         t = Traveller{};
         t.used = true;
@@ -1700,6 +1706,10 @@ void populate() {
             t.dist = static_cast<f32>(rnd() % 1000) / 1000.0f * edgeLength(t.route[0].edge);
         }
     }
+}
+
+void populate() {
+    for (int s = 0; s < kPopulation && s < kSlots; ++s) placeTraveller(s);
     // the guards, at their own fire for good
     const int guards = guardCampNode();
     for (int k = 0; guards >= 0 && k < static_cast<int>(kGuardCast.size()) && kPopulation + k < kSlots; ++k) {
