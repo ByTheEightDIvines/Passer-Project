@@ -1,4 +1,5 @@
 """Beedle's shop room (R_PSR00 R00_00.arc), patched in place of a full rebuild:
+  - the clay pot stuck in the bench right of the doorway (seen from inside) comes out of the shop model.
   - four display tables, not six: the middle pair (x +-130, z 60 in the shop's frame) comes out of the
     shop model (model5.bmd: the table and its cushion, 192 triangles each) and out of the collision.
     The four left are the corners of the aisle, which the game's four-ware shop (dShopSystem_c::
@@ -52,23 +53,28 @@ def field_y(x, z):   # the field's ground (shop frame) under (x, z)
 
 # ---- the shop model: the middle tables out (only its display lists change: no texture is re-encoded) ----
 b = BMD(files['bmdr/model5.bmd']); assert len(b.jloc) == 1 and np.allclose(b.world(0), np.eye(4)), 'one joint, at the origin'
-files['bmdr/model5.bmd'], dropped = drop_tris(files['bmdr/model5.bmd'], lambda si, P: at_gone_table(local(P)))
-assert dropped == 2 * 192, dropped
-print('shop model: dropped', dropped, 'triangles (two tables and their cushions)')
+POT = 20   # the clay pot stuck in the bench right of the doorway (seen from inside): its own material/shape
+def pot(si, L): m = L.mean(0); return si == POT and -330 < m[0] < -230 and 410 < m[2] < 510 and m[1] < 80
+files['bmdr/model5.bmd'], dropped = drop_tris(files['bmdr/model5.bmd'], lambda si, P: at_gone_table(local(P)) or pot(si, local(P)))
+assert dropped == 2 * 192 + 174, dropped
+print('shop model: dropped', dropped, 'triangles (two tables and their cushions, the pot in the bench)')
 
 # ---- the collision: the middle tables' boxes out, the floor outside the door on the field ----
 T = read_kcl(files['kcl/room.kcl'])
-out = []; gone = 0; lifted = 0
+out = []; gone = 0; gone_pot = 0; lifted = 0
 for t in T:
     L = local(np.array(t))
     if at_gone_table(L, half=42.0, top=80.0):   # (a box: top at 72, four sides from the floor up)
         gone += 1; continue
+    if L[:, 0].min() > -313 and L[:, 0].max() < -247 and L[:, 2].min() > 427 and L[:, 2].max() < 493 and L[:, 1].min() > 3:
+        gone_pot += 1; continue                      # the pot's box (x -312..-248, z 428..492, up to 69)
     if np.all(np.abs(L[:, 1]) < 0.01) and L[:, 2].min() >= 499.9:   # the floor just outside the doorway
         L = L.copy()
         for k in range(3): L[k, 1] = max(0.0, field_y(L[k, 0], L[k, 2]) + 0.5) if L[k, 2] > 500.1 else 0.0
         t = tuple(place(*p) for p in L); lifted += 1
     out.append(t)
-print('collision: dropped', gone, 'table faces; floor outside the door:', lifted, 'faces on the field')
+assert gone_pot == 10, gone_pot
+print('collision: dropped', gone, 'table faces and the pot\'s', gone_pot, '; floor outside the door:', lifted, 'faces on the field')
 assert gone == 2 * 10, gone
 data, n = write_kcl(out)
 files['kcl/room.kcl'] = data

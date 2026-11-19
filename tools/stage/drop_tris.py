@@ -50,8 +50,8 @@ def drop_tris(d, drop):
             else: raise SystemExit('primitive %x' % op)
         keep = [t for t in tris if not drop(i, np.array([pos[vx[ipos]] for vx in t]))]
         if len(keep) == len(tris): continue
-        assert keep, f'shape {i} would be empty'
         dropped += len(tris) - len(keep)
+        if not keep: keep = [(tris[0][0],) * 3]   # a whole shape gone: one zero-area triangle keeps it valid, draws nothing
         dl = bytearray()
         for k in range(0, len(keep), 21000):
             part = keep[k:k + 21000]
