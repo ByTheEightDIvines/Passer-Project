@@ -560,7 +560,17 @@ void foesNear(const cXyz& at, f32 maxDistance, f32 maxAbove, std::vector<fopAc_a
         if (!isFoe(e) || !inPasserArea(e)) return nullptr;
         if (e->current.pos.y - d->at->y > d->maxAbove && !mountedRider(e)) return nullptr;
         const f32 dx = e->current.pos.x - d->at->x, dz = e->current.pos.z - d->at->z;
-        if (dx * dx + dz * dz <= d->maxSq) d->out->push_back(e);
+        if (dx * dx + dz * dz > d->maxSq) return nullptr;
+        // on the wing (a Kargarok, a Keese, anything well off the ground): not one for a man on foot.
+        // Before, a swooping Kargarok dipped in and out of reach, a fighter left his turn to sprint
+        // after it each time it dipped, and was hauled back when it rose (the zooming).
+        const s16 name = fopAcM_GetName(e);
+        if (name == fpcNm_E_KR_e || name == fpcNm_E_BA_e) return nullptr;
+        if (!mountedRider(e)) {
+            const f32 g = groundUnder(e->current.pos.x, e->current.pos.y, e->current.pos.z);
+            if (g == -G_CM3D_F_INF || e->current.pos.y - g > 150.0f) return nullptr;
+        }
+        d->out->push_back(e);
         return nullptr;
     }, &s);
 }
@@ -2273,6 +2283,19 @@ void stepToward(daNpcPasser_c* passer, const cXyz& to, f32 speed) {
         passer->current.pos.x += cM_ssin(passer->current.angle.y) * speed;
         passer->current.pos.z += cM_scos(passer->current.angle.y) * speed;
     }
+    // feet to match the ground covered: the run (or walk) played at its own rate whatever the speed,
+    // so a fast chase was a slide with the legs barely going
+    if (passer->mpMorf != nullptr) {
+        const auto* cur = passer->mpMorf->getAnm();
+        const int obj = passer->getObjNum();
+        if (cur != nullptr && cur == passer->getAnmP(kAnmRun, obj)) {
+            passer->mpMorf->setPlaySpeed(std::clamp(Cd2_HIO_anmPlaySpeed(passer->m_type) * speed /
+                                                    std::max(0.1f, Cd2_HIO_maxSpeed(passer->m_type)), 0.7f, 2.2f));
+        } else if (cur != nullptr && cur == passer->getAnmP(kAnmWalk, obj)) {
+            passer->mpMorf->setPlaySpeed(std::clamp(Cd2_HIO_walkAnmPlaySpeed(passer->m_type) * speed /
+                                                    std::max(0.1f, Cd2_HIO_walkMaxSpeed(passer->m_type)), 0.6f, 2.0f));
+        }
+    }
     passer->mAcch.CrrPos(dComIfG_Bgsp());
 }
 
@@ -2708,7 +2731,7 @@ bool campGuard(daNpcPasser_c* passer, PasserState& state) {
             } else if (dist > reach) {
                 guardAnim(passer, state, kAnmRun);
                 stepToward(passer, guard ? flankSpot(passer, enemy) : enemy->current.pos,
-                           Cd2_HIO_maxSpeed(passer->m_type) * (guard ? 1.9f : 1.5f));
+                           Cd2_HIO_maxSpeed(passer->m_type) * (guard ? 1.4f : 1.3f));
             } else {
                 guardAnim(passer, state, kAnmIdle);
                 const s16 yaw = cLib_targetAngleY(&passer->current.pos, &enemy->current.pos);
@@ -3005,7 +3028,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
             } else if (charge) {
                 guardAnim(passer, *state, kAnmRun);
                 stepToward(passer, soldierHere ? flankSpot(passer, enemy) : enemy->current.pos,
-                           Cd2_HIO_maxSpeed(passer->m_type) * (soldierHere ? 1.8f : 1.5f));
+                           Cd2_HIO_maxSpeed(passer->m_type) * (soldierHere ? 1.4f : 1.3f));
                 state->turning = false;
             } else {
                 passer->speedF = 0.0f;

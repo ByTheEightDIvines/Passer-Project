@@ -6,4 +6,6 @@ const Mtx kGuardQuiver[2] = {{{0.87754f, -0.47643f, -0.05422f, 8.58310f}, {0.478
 // the bow on his back (replaces kBowOnBack for him)
 const Mtx kGuardBowOnBack[2] = {{{0.58074f, 0.81409f, 0.00000f, 19.62295f}, {0.00000f, 0.00000f, 1.00000f, 27.31780f}, {0.81409f, -0.58074f, 0.00000f, -7.12915f}}, {{0.58074f, 0.81409f, 0.00000f, 19.62295f}, {0.00000f, 0.00000f, 1.00000f, 35.69176f}, {0.81409f, -0.58074f, 0.00000f, -7.12915f}}};
 // the small shield on his back, over the bow (replaces kHold_back_small_* for him)
-const Mtx kGuardShieldBack[2] = {{{0.00010f, 1.00000f, 0.00000f, -104.00000f}, {-0.00010f, 0.00000f, -1.00000f, 33.05769f}, {-1.00000f, 0.00010f, 0.00010f, -0.01112f}}, {{0.00010f, 1.00000f, 0.00000f, -104.00000f}, {-0.00010f, 0.00000f, -1.00000f, 41.43164f}, {-1.00000f, 0.00010f, 0.00010f, -0.01227f}}};
+// turned round on his back (its face out, the grip against him): a half turn about its own long
+// axis through the middle of its thickness, so it fills the same depth it did
+const Mtx kGuardShieldBack[2] = {{{-0.00010f, 1.00000f, 0.00000f, -104.00000f}, {0.00010f, 0.00000f, 1.00000f, 37.85769f}, {1.00000f, 0.00010f, -0.00010f, -0.01160f}}, {{-0.00010f, 1.00000f, 0.00000f, -104.00000f}, {0.00010f, 0.00000f, 1.00000f, 46.23164f}, {1.00000f, 0.00010f, -0.00010f, -0.01275f}}};

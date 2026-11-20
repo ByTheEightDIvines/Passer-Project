@@ -773,7 +773,7 @@ void placeHeld(daNpcPasser_c* p) {
         d.y = 0.0f;
         const f32 dist = d.absXZ();
         const bool running = dist > 300.0f || convoyFleeing(w);   // fallen behind, or the wagon's off fast
-        f32 step = reacting ? 0.0f : std::min(dist, kSpeed * (running ? 3.2f : 1.6f));   // (staggering: not a step)
+        f32 step = reacting ? 0.0f : std::min(dist, kSpeed * (running ? 2.6f : 1.6f));   // (staggering: not a step)
         if (dist > 1.0f) {
             // never off an edge: no ground where the step lands, or a drop, and he waits there
             const f32 nx = p->current.pos.x + d.x / dist * std::max(step, 30.0f);
@@ -796,7 +796,7 @@ void placeHeld(daNpcPasser_c* p) {
         cLib_addCalcAngleS2(&p->shape_angle.y, face, 4, 0x800);
         p->current.angle.y = p->shape_angle.y;
         if (reacting) {}
-        else if (moving && running) setAnim(p, *m, 4, 1.0f);
+        else if (moving && running) setAnim(p, *m, 4, Cd2_HIO_anmPlaySpeed(p->m_type) * std::clamp(moved / std::max(0.1f, Cd2_HIO_maxSpeed(p->m_type)), 0.7f, 2.2f));
         else if (moving) setAnim(p, *m, 2, Cd2_HIO_walkAnmPlaySpeed(p->m_type) * std::clamp(moved / kSpeed, 0.6f, 1.6f));
         else setAnim(p, *m, 0, 1.0f);
     }
