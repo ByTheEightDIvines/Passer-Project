@@ -1,6 +1,7 @@
 #include "global.h"
 #include "player_camp.hpp"
 
+#include "freeze.hpp"
 #include "mod_lights.hpp"
 #include "tent_actor.hpp"
 #include "travellers.hpp"
@@ -53,6 +54,12 @@ constexpr s16 kBenchAngle = 0x1C00;        // the bench in front of the fire, a 
 constexpr f32 kBenchRing = 230.0f;
 constexpr f32 kDoorOut = 70.0f;            // where Link stands to check the tent: just out from its door
 constexpr f32 kCheckReach = 230.0f;        // ...within this of that spot
+// Midna's pop, as when she takes the Ordon sword and shield (demo10; copied from the Faron spring's
+// pack into our own psr_fx.jpc): the sparkle she makes things appear and vanish with, one per piece.
+// (Not Link's warp sparkle, ZI_J_LK_WARP_APP_A: played away from Link and three at once, the graphics
+// worker gave up drawing it.)
+constexpr u16 kPop[2] = {0x86BA, 0x86C2};
+constexpr int kPopFrame = 22, kShowFrame = 28;   // the sparkle, then the camp is there
 
 // --- Midna's menu (the game's Midna flow in message group 0, as read from zel_00.bmg) --------------
 constexpr u16 kMidnaGroup = 0;
@@ -521,6 +528,7 @@ cPhs_Step psrPCamp_c::create() {
     if (a != cPhs_COMPLEATE_e) return a;
     if (b != cPhs_COMPLEATE_e) return b;
     mLoaded = true;
+    psr_freeze::loadEffects();   // our effects pack (Midna's pop) lives in PsrPack, loaded just above
     if (!fopAcM_entrySolidHeap(this, createHeapCallBack, 0x20000)) return cPhs_ERROR_e;
     mCenter = current.pos;
     mYaw = shape_angle.y;
@@ -706,14 +714,18 @@ void psrPCamp_c::runSummon() {
     g_cam.eye = lerp(g_cam.fromEye, mShotEye, t);
     g_cam.center = lerp(g_cam.fromCenter, mShotCenter, t);
     g_cam.fovy = g_cam.fromFovy + (60.0f - g_cam.fromFovy) * t;
-    if (mTimer == 22) {
-        // her twilight, where each piece will stand
-        const cXyz spots[3] = {mCenter, tentPoint(mCenter, mYaw), benchPoint(mCenter, mYaw)};
-        const cXyz big(1.0f, 1.0f, 1.0f);
-        for (const cXyz& s : spots) dComIfGp_particle_set(ID_ZI_J_LK_WARP_APP_A, &s, &tevStr, &shape_angle, &big);
-        mDoAud_seStart(Z2SE_AL_WARP_OUT, &mCenter, 0, dComIfGp_getReverb(fopAcM_GetRoomNo(this)));
+    if (mTimer == kPopFrame) {
+        // her pop, where each piece will stand, with her magic's sound
+        const cXyz tent = tentPoint(mCenter, mYaw), bench = benchPoint(mCenter, mYaw);
+        const cXyz spots[3] = {cXyz(mCenter.x, mCenter.y + 40.0f, mCenter.z), cXyz(tent.x, mCenter.y + 120.0f, tent.z),
+                               cXyz(bench.x, mCenter.y + 40.0f, bench.z)};
+        const cXyz one(1.0f, 1.0f, 1.0f);
+        for (const cXyz& at : spots) {
+            for (u16 id : kPop) psr_freeze::effect(id, at, mYaw, one);
+        }
+        mDoAud_seStart(Z2SE_D10_MDN_MAGIC, &mCenter, 0, dComIfGp_getReverb(fopAcM_GetRoomNo(this)));
     }
-    if (mTimer == 50) {
+    if (mTimer == kShowFrame) {
         mShown = true;
         makeTent();
     }
