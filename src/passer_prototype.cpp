@@ -144,7 +144,7 @@ constexpr int kShooterFrames = 600;   // twenty seconds after the last arrow, a 
 constexpr f32 kOldWomanRunScale = 0.85f;
 // The body's own voice lines (what a townsperson says when you talk to them): 1 surprise, 2 fear, 3 hey.
 constexpr int kVoiceShout = 3, kVoiceYelp = 1, kVoiceFear = 2;
-constexpr u16 kDeathSmoke = 0x0108;   // in our own effect pack (psr_fx.jpc): the white death smoke
+constexpr u16 kDeathSmoke = psr_freeze::kFxDeathSmoke;   // in our own effect pack (psr_fx.jpc): the white death smoke
 constexpr f32 kFellThrough = 1500.0f;   // this far below its last footing it has fallen through the world
 constexpr f32 kTidyDistance = 6000.0f;   // off screen and this far from Link: the game may tidy it away
 constexpr int kSafeFramesToResume = 90;  // three seconds with nothing scary nearby
@@ -1524,7 +1524,8 @@ void callOut(daNpcPasser_c* passer, PasserState& state, int line, int wait);   /
 constexpr int kCastCooldown = 1800;
 // the spell's effects (psr_fx.jpc in PsrPack: the chest puff's glow and sparkles, recoloured icy blue,
 // and the ice shards Link's freeze breaks into)
-constexpr u16 kSpellGlow = 0x0110, kSpellSparks = 0x0111, kSpellBurst = 0x0112, kSpellShards = 0x8818;
+constexpr u16 kSpellGlow = psr_freeze::kFxSpellGlow, kSpellSparks = psr_freeze::kFxSpellSparks,
+              kSpellBurst = psr_freeze::kFxSpellBurst, kSpellShards = psr_freeze::kFxIceBreakA;
 constexpr int kQuietToForget = 300;   // ten seconds with no monster near: the hits are forgotten
 constexpr f32 kCastReach = 1500.0f;
 void castTick(daNpcPasser_c* passer, PasserState& state) {

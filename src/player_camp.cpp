@@ -19,6 +19,7 @@
 #include "d/d_com_inf_game.h"
 #include "d/d_kankyo.h"
 #include "d/d_msg_flow.h"
+#include "d/d_particle.h"
 #include "d/d_particle_name.h"
 #include "f_op/f_op_actor.h"
 #include "f_op/f_op_actor_mng.h"
@@ -26,6 +27,8 @@
 #include "m_Do/m_Do_audio.h"
 #include "m_Do/m_Do_ext.h"
 #include "m_Do/m_Do_mtx.h"
+#include "JSystem/JKernel/JKRExpHeap.h"
+#include "JSystem/JParticle/JPAEmitterManager.h"
 #include "mods/service.hpp"
 #include "mods/svc/actor.h"
 #include "mods/svc/audio_res.h"
@@ -64,7 +67,7 @@ constexpr f32 kCheckReach = 190.0f;        // ...within this of where he stands
 // pack into our own psr_fx.jpc): the sparkle she makes things appear and vanish with, one per piece.
 // (Not Link's warp sparkle, ZI_J_LK_WARP_APP_A: played away from Link and three at once, the graphics
 // worker gave up drawing it.)
-constexpr u16 kPop[2] = {0x86BA, 0x86C2};
+constexpr u16 kPop[2] = {psr_freeze::kFxMidnaPop, psr_freeze::kFxMidnaPop2};
 // (Diagnosing a crash in the summon: the three steps a frame apart in time, and every frame logged, so the
 // diary's last line names the step if the frame's geometry space overflows again.)
 constexpr int kPopFrame = 22, kShowFrame = 40, kTentFrame = 58;   // the sparkle, the fire and bench, the tent
@@ -580,7 +583,7 @@ cPhs_Step psrPCamp_c::create() {
     if (b != cPhs_COMPLEATE_e) return b;
     mLoaded = true;
     psr_freeze::loadEffects();   // our effects pack (Midna's pop) lives in PsrPack, loaded just above
-    if (!fopAcM_entrySolidHeap(this, createHeapCallBack, 0x20000)) return cPhs_ERROR_e;
+    if (!fopAcM_entrySolidHeap(this, createHeapCallBack, 0x40000)) return cPhs_ERROR_e;
     mCenter = current.pos;
     mYaw = shape_angle.y;
     mLit = g_save.lit != 0;
@@ -797,6 +800,15 @@ void psrPCamp_c::runSummon() {
     }
     if (mTimer == kShowFrame) mShown = true;
     if (mTimer == kTentFrame) makeTent();
+    // the heaps and the particle manager, each frame (the game's own log loses its last lines in a crash;
+    // ours is written out line by line, so its last line is the state the frame the game went down)
+    auto kb = [](JKRHeap* h) { return h != nullptr ? static_cast<int>(h->getTotalFreeSize() / 1024) : -1; };
+    JPAEmitterManager* em = dPa_control_c::getEmitterManager();
+    travellers::diagLine("pcamp   heaps free KB: game %d zelda %d archive %d command %d | emitters %d/%d particles %d/%d",
+                         kb(mDoExt_getGameHeap()), kb(mDoExt_getZeldaHeap()), kb(mDoExt_getArchiveHeap()),
+                         kb(mDoExt_getCommandHeap()), em != nullptr ? em->getEmitterNumber() : -1,
+                         em != nullptr ? static_cast<int>(em->emtrNum) : -1, em != nullptr ? em->getParticleNumber() : -1,
+                         em != nullptr ? static_cast<int>(em->ptclNum) : -1);
     travellers::diagLine("pcamp   summon f%d fill %.0f%% zoom %.2f%s", mTimer, travellers::vertexFill() * 100.0f, g_cam.zoom,
                          mTimer == kPopFrame ? " <- sparkle" : mTimer == kShowFrame ? " <- fire and bench drawn" :
                          mTimer == kTentFrame ? " <- tent made" : "");

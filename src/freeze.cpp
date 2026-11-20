@@ -24,8 +24,9 @@
 namespace {
 
 constexpr u8 kOurPackSlot = 2;              // the particle manager's slots: 0 always-loaded, 1 the stage's, 2 ours
-constexpr u16 kIceBlock = 0x881A;           // LK_FREEZ_A: the ice round Link
-constexpr u16 kIceBreak[2] = {0x8818, 0x8819};   // LK_FREEZEND_A/B: it breaking away
+constexpr u16 kIceBlock = psr_freeze::kFxIceBlock;   // the ice round Link
+constexpr u16 kIceBreak[2] = {psr_freeze::kFxIceBreakA, psr_freeze::kFxIceBreakB};   // it breaking away
+constexpr bool ourFx(u16 id) { return (id & 0xFF00) == 0xF000; }
 constexpr int kFrozenFrames = 180;          // six seconds
 constexpr f32 kLinkHeight = 140.0f;         // what the effect is sized for (Link: 1 x 1.8 x 1)
 const GXColorS10 kFrozenTint = {25, 30, 40, 0};   // Link's own frozen tint
@@ -51,30 +52,19 @@ bool ensureSlot() {
     return true;
 }
 
-// The game's own draw-group choice for an effect (dPa_group_id_change, a file-local helper).
-u8 drawGroup(u32 work) {
-    u8 g = 0;
-    if (work & 1) g = 0;
-    else if (work & 2) g = 1;
-    else if (work & 4) g = 2;
-    else if (work & 8) g = 3;
-    else if (work & 0x4000) g = 4;
-    else if (work & 0x8000) g = 5;
-    if (work & 0x10) g = static_cast<u8>(g + 8);   // the same groups, drawn later (0..3 -> 8..11)
-    return g;
+// The game's effect routine picks a pack from the effect's number alone (dPa_control_c::getRM_ID: top
+// bit set, the stage's; else the always-loaded one). Ours are numbered 0xF0xx, which no game pack uses:
+// for those it gets our slot instead, so the routine does everything else as it does for its own.
+DEFINE_HOOK_SYMBOL("dPa_control_c::getRM_ID", u8(u16), PackLookup);
+void onPackLookupPost(ModContext*, void* args, void* retval, void*) {
+    if (!ourFx(mods::arg<u16>(args, 0)) || !ensureSlot()) return;
+    *static_cast<u8*>(retval) = kOurPackSlot;
 }
 
 JPABaseEmitter* emit(u16 id, const cXyz& pos, s16 yaw, const cXyz& scale) {
-    if (!ensureSlot()) return nullptr;
-    const u32 work = g_pack->getResUserWork(id);
-    JGeometry::TVec3<f32> at(pos.x, pos.y, pos.z);
-    JPABaseEmitter* e = dPa_control_c::mEmitterMng->createSimpleEmitterID(at, id, drawGroup(work), kOurPackSlot,
-                                                                          nullptr, nullptr);
-    if (e == nullptr) return nullptr;
-    e->setGlobalRotation(JGeometry::TVec3<s16>(0, yaw, 0));
-    e->setGlobalScale(JGeometry::TVec3<f32>(scale.x, scale.y, scale.z));
-    e->setGlobalAlpha(0xFF);
-    return e;
+    if (!ourFx(id) || !ensureSlot()) return nullptr;
+    const csXyz angle(0, yaw, 0);
+    return dComIfGp_particle_set(id, &pos, &angle, &scale);
 }
 
 // --- frozen monsters --------------------------------------------------------------------------
@@ -225,6 +215,9 @@ bool freeze(fopAc_ac_c* enemy) {
     return true;
 }
 
-bool install() { return mods::hook::add_pre<ActorExecute>(onActorExecutePre) == MOD_OK; }
+bool install() {
+    return mods::hook::add_pre<ActorExecute>(onActorExecutePre) == MOD_OK &&
+           mods::hook::add_post<PackLookup>(onPackLookupPost) == MOD_OK;
+}
 
 }  // namespace psr_freeze
