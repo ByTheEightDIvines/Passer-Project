@@ -1,7 +1,6 @@
 #include "global.h"
 #include "player_camp.hpp"
 
-#include "freeze.hpp"
 #include "mod_lights.hpp"
 #include "tent_actor.hpp"
 #include "travellers.hpp"
@@ -10,7 +9,6 @@
 #include "SSystem/SComponent/c_math.h"
 #include "SSystem/SComponent/c_phase.h"
 #include "d/actor/d_a_alink.h"
-#include "d/actor/d_a_midna.h"
 #include "d/actor/d_a_npc.h"
 #include "d/actor/d_a_player.h"
 #include "d/d_bg_s_gnd_chk.h"
@@ -53,12 +51,6 @@ constexpr s16 kBenchAngle = 0x1C00;        // the bench in front of the fire, a 
 constexpr f32 kBenchRing = 230.0f;
 constexpr f32 kDoorOut = 70.0f;            // where Link stands to check the tent: just out from its door
 constexpr f32 kCheckReach = 230.0f;        // ...within this of that spot
-constexpr f32 kFireReach = 260.0f;         // a wolf this close to an unlit fire can ask Midna to light it
-// Midna's snap, as when she takes the Ordon sword and shield from the wolf (demo10, the Faron spring's
-// pack; copied into our own psr_fx.jpc): the two effects at her hand, the two on the thing she sparks.
-constexpr u16 kSnapHand[2] = {0x86BC, 0x86BD};
-constexpr u16 kSnapThing[2] = {0x86BA, 0x86C2};
-constexpr int kSnapDelay = 8;              // frames from her snap to the fire catching
 
 // --- Midna's menu (the game's Midna flow in message group 0, as read from zel_00.bmg) --------------
 constexpr u16 kMidnaGroup = 0;
@@ -245,7 +237,7 @@ std::vector<std::vector<uint8_t>> g_labelText;   // the relabelled choice lists 
 mods::flow::Graph g_menuGraph, g_talkGraph;
 mods::flow::Query g_qAllowed, g_qExists, g_qSpot;
 mods::flow::Event g_eSummon, g_eSleep;
-u16 g_tentNode = 0xFFFF, g_wolfFireNode = 0xFFFF, g_wakeMorningNode = 0xFFFF, g_wakeEveningNode = 0xFFFF;
+u16 g_tentNode = 0xFFFF, g_wakeMorningNode = 0xFFFF, g_wakeEveningNode = 0xFFFF;
 bool g_flowsReady = false;
 
 constexpr std::array kLanguages{
@@ -356,14 +348,11 @@ ModResult registerFlows() {
     // ---- the camp's own talk (group 8) ----
     const int askSleep = registerMessage(kTalkGroup, mods::flow::MessageBuilder{}
         .box_kind(MESSAGE_BOX_TALK).text("Go to sleep?").options("Yes", "No"));
-    const int wolfFire = registerMessage(kTalkGroup, mods::flow::MessageBuilder{kMidnaStyle}
-        .text("Do I have to do ").text_color(MESSAGE_COLOR_RED).text("everything").text_color(MESSAGE_COLOR_DEFAULT)
-        .text("\naround here?"));
     const int wakeMorning = registerMessage(kTalkGroup, mods::flow::MessageBuilder{kMidnaStyle}
         .text("Rise and shine!\nYou know you snore, right?"));
     const int wakeEvening = registerMessage(kTalkGroup, mods::flow::MessageBuilder{kMidnaStyle}
         .text("Finally! You slept the whole\nday away, sleepyhead."));
-    if (askSleep < 0 || wolfFire < 0 || wakeMorning < 0 || wakeEvening < 0) return report("the camp's lines", MOD_ERROR);
+    if (askSleep < 0 || wakeMorning < 0 || wakeEvening < 0) return report("the camp's lines", MOD_ERROR);
     {
         mods::flow::GraphBuilder graph{kTalkGroup};
         auto sleep = graph.add_event(g_eSleep.id(), {0, 0, 0, 0});
@@ -372,8 +361,6 @@ ModResult registerFlows() {
         yes.results({sleep.id(), mods::flow::kEnd, mods::flow::kEnd});
         auto ask = graph.add_message(static_cast<u16>(askSleep));
         ask.next(yes.id());
-        auto fire = graph.add_message(static_cast<u16>(wolfFire));
-        fire.next(mods::flow::kEnd);
         auto morning = graph.add_message(static_cast<u16>(wakeMorning));
         morning.next(mods::flow::kEnd);
         auto evening = graph.add_message(static_cast<u16>(wakeEvening));
@@ -381,7 +368,6 @@ ModResult registerFlows() {
         g_talkGraph = graph.commit();
         if (!g_talkGraph) return report("the camp's talk", g_talkGraph.result());
         g_tentNode = ask.id();
-        g_wolfFireNode = fire.id();
         g_wakeMorningNode = morning.id();
         g_wakeEveningNode = evening.id();
     }
@@ -411,7 +397,7 @@ const dCcD_SrcCyl kFireCyl = {
 class psrPCamp_c : public fopAc_ac_c {
 public:
     enum State : u8 { ST_IDLE, ST_SUMMON, ST_TALK, ST_SLEEP, ST_WAKE };
-    enum Talk : u8 { TALK_NONE, TALK_TENT, TALK_FIRE };
+    enum Talk : u8 { TALK_NONE, TALK_TENT };
 
     request_of_phase_process_class mPhCamp;
     request_of_phase_process_class mPhPack;
@@ -439,7 +425,6 @@ public:
     Talk mTalk = TALK_NONE;
     int mTimer = 0;
     int mWait = 0;
-    int mSnap = 0;               // frames since Midna snapped her fingers at the cold fire
     bool mFlowStarted = false;
     dMsgFlow_c mFlow;
     f32 mSleepFrom = 0.0f;
@@ -452,8 +437,7 @@ public:
     int Draw();
     void placeModels();
     void makeTent();
-    void light(bool spark);
-    void snap();
+    void light();
     void updateFire();
     void updateAttention();
     bool waitForEvent();
@@ -503,7 +487,6 @@ cPhs_Step psrPCamp_c::create() {
     if (a != cPhs_COMPLEATE_e) return a;
     if (b != cPhs_COMPLEATE_e) return b;
     mLoaded = true;
-    psr_freeze::loadEffects();   // our effects pack (Midna's snap) lives in PsrPack
     if (!fopAcM_entrySolidHeap(this, createHeapCallBack, 0x20000)) return cPhs_ERROR_e;
     mCenter = current.pos;
     mYaw = shape_angle.y;
@@ -583,43 +566,20 @@ void psrPCamp_c::placeModels() {
     }
 }
 
-void psrPCamp_c::light(bool spark) {
+void psrPCamp_c::light() {
     if (mLit) return;
     mLit = true;
     g_save.lit = 1;
     store();
     mDoAud_seStart(Z2SE_OBJ_FIRE_IGNITION, &mFlamePos, 0, dComIfGp_getReverb(fopAcM_GetRoomNo(this)));
-    if (spark) {
-        // her snap lands on the wood: the sparkle she makes things appear and vanish with
-        const cXyz at(mCenter.x, mCenter.y + 30.0f, mCenter.z);
-        const cXyz one(1.0f, 1.0f, 1.0f);
-        for (u16 id : kSnapThing) psr_freeze::effect(id, at, mYaw, one);
-    }
-    travellers::diagLine("pcamp   fire lit (%s)", spark ? "Midna's spark" : "lantern");
-}
-
-// Midna snaps her fingers (her "magic" from the sword and shield scene), with the sparkle at her hand.
-void psrPCamp_c::snap() {
-    psr_freeze::loadEffects();   // (PsrPack is ours to read: this actor loaded it)
-    cXyz hand = mCenter;
-    if (daMidna_c* midna = daPy_py_c::getMidnaActor()) {
-        hand = midna->current.pos;
-        hand.y += 40.0f;
-    } else if (daPy_py_c* link = player()) {
-        hand = link->current.pos;
-        hand.y += 130.0f;
-    }
-    const cXyz one(1.0f, 1.0f, 1.0f);
-    for (u16 id : kSnapHand) psr_freeze::effect(id, hand, mYaw, one);
-    mDoAud_seStart(Z2SE_D10_MDN_MAGIC, &hand, 0, dComIfGp_getReverb(fopAcM_GetRoomNo(this)));
-    travellers::diagLine("pcamp   Midna snaps at %.0f %.0f %.0f", hand.x, hand.y, hand.z);
+    travellers::diagLine("pcamp   fire lit");
 }
 
 // Coro's flame, glow and crackle, and his fire's collision: a lantern swing lights it.
 void psrPCamp_c::updateFire() {
     if (mShown && mCyl.ChkTgHit()) {
         dCcD_GObjInf* hit = mCyl.GetTgHitGObj();
-        if (hit != NULL && hit->GetAtType() == AT_TYPE_LANTERN_SWING && hit->GetAtMtrl() == dCcD_MTRL_FIRE) light(false);
+        if (hit != NULL && hit->GetAtType() == AT_TYPE_LANTERN_SWING && hit->GetAtMtrl() == dCcD_MTRL_FIRE) light();
     }
     mCyl.SetAtMtrl(mLit ? dCcD_MTRL_FIRE : dCcD_MTRL_NONE);
     mCyl.SetR(50.0f);
@@ -639,7 +599,7 @@ void psrPCamp_c::updateFire() {
     }
 }
 
-// What Link can check here: the tent (from just out of its door), or, as a wolf, the unlit fire.
+// What Link can check here: the tent (from just out of its door). (Only human Link lights the fire: his lantern.)
 void psrPCamp_c::updateAttention() {
     attention_info.flags = 0;
     mTalk = TALK_NONE;
@@ -648,13 +608,9 @@ void psrPCamp_c::updateAttention() {
     const cXyz door = doorPoint(mCenter, mYaw);
     const cXyz& at = link->current.pos;
     const f32 dDoor = std::hypot(at.x - door.x, at.z - door.z);
-    const f32 dFire = std::hypot(at.x - mCenter.x, at.z - mCenter.z);
     if (dDoor < kCheckReach) {
         mTalk = TALK_TENT;
         current.pos = door;
-    } else if (!mLit && daPy_py_c::checkNowWolf() && dFire < kFireReach) {
-        mTalk = TALK_FIRE;
-        current.pos = mCenter;
     } else {
         current.pos = mCenter;
         return;
@@ -730,28 +686,14 @@ void psrPCamp_c::runSummon() {
     if (mTimer >= 126) endEvent();
 }
 
-// Link checked the tent, or (a wolf) the cold fire: the line, then what it leads to.
+// Link checked the tent: "Go to sleep?", and on into the night if he says yes.
 void psrPCamp_c::runTalk() {
     if (!mFlowStarted) {
         g_sleepYes = false;
-        mFlow.init(this, mTalk == TALK_TENT ? g_tentNode : g_wolfFireNode, 0, NULL);
+        mFlow.init(this, g_tentNode, 0, NULL);
         mFlowStarted = true;
     }
-    if (mTalk == TALK_FIRE && mSnap > 0) {
-        // after her line: the snap at her hand, then the fire catches
-        if (++mSnap == kSnapDelay) light(true);
-        if (mSnap >= kSnapDelay + 20) {
-            mSnap = 0;
-            endEvent();
-        }
-        return;
-    }
     if (mFlow.doFlow(this, NULL, 0) == 0) return;
-    if (mTalk == TALK_FIRE) {
-        snap();
-        mSnap = 1;
-        return;
-    }
     if (mTalk == TALK_TENT && g_sleepYes) {
         // into the tent: the event stays on through the night
         g_sleepYes = false;

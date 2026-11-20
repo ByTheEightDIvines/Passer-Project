@@ -3,7 +3,7 @@
 // her menu's last choice becomes "More...", with "Set up camp" in it. She summons the camp onto the
 // flattest open ground near Link (clear of the travellers' camps and the roads): Coro's fire (no pot),
 // a bench and a small tent, all from the mod's own camp pieces. Link lights the fire with a lantern
-// swing, as Coro's; as a wolf, Midna sparks it for him. Checking the tent asks "Go to sleep?": yes, and
+// swing, as Coro's (human Link only). Checking the tent asks "Go to sleep?": yes, and
 // the camera pulls back over the camp while the sky rolls on twelve hours, and Midna wakes him.
 //
 // One camp at a time: summoning again moves it. Where it stands is kept with the save file.
