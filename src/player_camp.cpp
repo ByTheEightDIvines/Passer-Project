@@ -53,8 +53,13 @@ constexpr f32 kFlameY = -30.0f;            // Coro's flame comes up from under h
 constexpr f32 kTentBack = 650.0f;          // the tent behind the fire, its door to it
 constexpr s16 kBenchAngle = 0x1C00;        // the bench in front of the fire, a little to the side
 constexpr f32 kBenchRing = 230.0f;
-constexpr f32 kDoorOut = 70.0f;            // where Link stands to check the tent: just out from its door
-constexpr f32 kCheckReach = 230.0f;        // ...within this of that spot
+// The small tent's door: its front (the flaps' plane, 126.2 in the model) at its 1.3 scale. Link checks it
+// from within kCheckReach of a spot just out from the door; what he faces (the talk point) is just inside
+// it, so he looks into the tent, never back over his shoulder.
+constexpr f32 kDoorFront = 126.2f * 1.3f;
+constexpr f32 kDoorOut = 60.0f;            // where he stands to check it: this far out from the door
+constexpr f32 kDoorIn = 40.0f;             // what he faces: this far in
+constexpr f32 kCheckReach = 190.0f;        // ...within this of where he stands
 // Midna's pop, as when she takes the Ordon sword and shield (demo10; copied from the Faron spring's
 // pack into our own psr_fx.jpc): the sparkle she makes things appear and vanish with, one per piece.
 // (Not Link's warp sparkle, ZI_J_LK_WARP_APP_A: played away from Link and three at once, the graphics
@@ -156,8 +161,11 @@ cXyz benchPoint(const cXyz& center, s16 yaw) {
     const s16 a = static_cast<s16>(yaw + kBenchAngle);
     return cXyz(center.x + cM_ssin(a) * kBenchRing, center.y, center.z + cM_scos(a) * kBenchRing);
 }
-cXyz doorPoint(const cXyz& center, s16 yaw) {
-    return campPoint(center, yaw, 0.0f, -kTentBack + psr_tent::kFootZ[PSR_TENT_A] + kDoorOut);
+cXyz doorPoint(const cXyz& center, s16 yaw) {   // where Link stands to check the tent
+    return campPoint(center, yaw, 0.0f, -kTentBack + kDoorFront + kDoorOut);
+}
+cXyz doorFace(const cXyz& center, s16 yaw) {    // what he looks at: just inside the doorway
+    return campPoint(center, yaw, 0.0f, -kTentBack + kDoorFront - kDoorIn);
 }
 
 // The flattest open ground near Link for the whole camp: the fire facing him, the tent behind it.
@@ -693,7 +701,7 @@ void psrPCamp_c::updateAttention() {
     const f32 dDoor = std::hypot(at.x - door.x, at.z - door.z);
     if (dDoor < kCheckReach) {
         mTalk = TALK_TENT;
-        current.pos = door;
+        current.pos = doorFace(mCenter, mYaw);
     } else {
         current.pos = mCenter;
         return;
