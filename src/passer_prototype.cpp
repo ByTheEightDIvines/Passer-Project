@@ -1161,6 +1161,11 @@ void onCreateInitPost(ModContext*, void* args, void*, void*) {
     setDamageable(passer);
 }
 
+// A wagon driver still on his bench (held there by his convoy; once every escort's down he's let go and runs).
+bool onBench(daNpcPasser_c* passer) {
+    return travellers::crewHeld(passer) && convoys::isRider(travellers::slotIndex(passer));
+}
+
 // Runs at the start of every action function, after execute() has set this frame's wall check.
 // Returns true when the action should be skipped (dead, talking or waiting at the road's end).
 bool gateAction(daNpcPasser_c* passer) {
@@ -1745,6 +1750,8 @@ void onRoomPathPost(ModContext*, void* args, void* retval, void*) {
 
 // After the whole frame (setCollision and setBaseMtx have run): keep the passer hittable by
 // enemies only, and tilt the model while it falls.
+void fleeTick(daNpcPasser_c* passer, PasserState& state);   // (below, with the camp music)
+
 void onProfileExecutePost(ModContext*, void* args, void*, void*) {
     auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
     auto* state = findState(passer, false);
@@ -1783,6 +1790,10 @@ void onProfileExecutePost(ModContext*, void* args, void*, void*) {
                 say(passer, *state, state->cowering ? psr_bubble::kScared : psr_bubble::kFlee);
             }
             state->wasScared = scared;
+            // running away: up off any seat, the guitar or the song stopped, and no flinch or stagger that
+            // would hand a sitting pose back (the bard ran off still strumming; sitters fled frozen in the
+            // sit, slid along by the run)
+            if (passer->mActionIdx == daNpcPasser_c::MODE_1 && passer->field_0xb1c == 1) fleeTick(passer, *state);
         }
         // Off screen, with the ground under it not loaded (or a gap in it), a traveller fell
         // forever and was lost. Far below where it last stood: put it back there.
@@ -1866,6 +1877,19 @@ void stopMusic(daNpcPasser_c* passer, PasserState& state) {
         state.anim = 0xFF;
         travellers::refreshIdle(passer);   // back onto its stool
     }
+}
+
+void fleeTick(daNpcPasser_c* passer, PasserState& state) {
+    const int slot = travellers::slotIndex(passer);
+    if (state.playing || state.songFrames > 0) {
+        stopMusic(passer, state);
+        travellers::noteAct(passer, "running: stopped playing/singing");
+    }
+    if (traveller_gear::sitting(slot)) {
+        traveller_gear::sit(passer, false);
+        travellers::noteAct(passer, "running: up off the seat");
+    }
+    fighter_anim::onFlee(passer);
 }
 
 // Sitting at a camp with nothing else to do, a camper talks now and then: the townsfolk's own
@@ -2002,7 +2026,8 @@ void musicTick(daNpcPasser_c* passer, PasserState& state, bool busy) {
     cXyz center;
     const bool atFire = travellers::campInfo(passer, &center, nullptr, nullptr) && !busy && musicTime() &&
                         !state.campCower && !state.defending && !state.toSeat && state.casting == 0 &&
-                        !fighter_anim::hitting(passer);
+                        !fighter_anim::hitting(passer) &&
+                        !(passer->mActionIdx == daNpcPasser_c::MODE_1 && passer->field_0xb1c == 1);   // not running away
     const int slot = travellers::slotIndex(passer);
     if (!atFire) {
         stopMusic(passer, state);
@@ -2944,7 +2969,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
             const int slot = travellers::slotIndex(passer);
             if (travellers::isBeedle(passer)) return HOOK_CONTINUE;
             state->invuln = kHurtInvulnFrames;
-            if (traveller_gear::sitting(slot) || convoys::isRider(slot)) fighter_anim::sitFlinch(passer);   // where they sit
+            if (traveller_gear::sitting(slot) || onBench(passer)) fighter_anim::sitFlinch(passer);   // where they sit
             else fighter_anim::hit(passer, attacker->current.pos);               // the stagger, facing him
             state->voiceWait = 0;
             callOut(passer, *state, kVoiceYelp, 30);
@@ -2981,13 +3006,19 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
         if (life > 0) {
             // the blow shows: a stagger (sat on a bench or the wagon's: a flinch where they sit)
             const int hs = travellers::slotIndex(passer);
-            if (traveller_gear::sitting(hs) || convoys::isRider(hs)) fighter_anim::sitFlinch(passer);
+            if (traveller_gear::sitting(hs) || onBench(passer)) fighter_anim::sitFlinch(passer);
             else fighter_anim::hit(passer, attacker->current.pos);
         }
         state->voiceWait = 0;
         callOut(passer, *state, kVoiceYelp, 30);                           // and is heard
         say(passer, *state, travellers::isFighter(passer) ? psr_bubble::kAngry : psr_bubble::kScared);
         if (byLink && life <= kQuartersPerHeart) grudge::yield(passer);   // "Mercy! I yield!"
+        // a driver on the wagon's bench flinches where he sits and keeps driving (the run order below
+        // left him running on the spot on the bench); he only gets down when every escort's down
+        if (life > 0 && onBench(passer)) {
+            travellers::noteAct(passer, "hit on the wagon's bench: flinches, keeps driving");
+            return HOOK_CONTINUE;
+        }
         if (byWolf) {
             // bitten: from now on it's like any other traveller with the wolf: runs from him, never fights
             fighter_anim::drop(passer);

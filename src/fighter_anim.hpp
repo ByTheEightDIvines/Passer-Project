@@ -77,6 +77,13 @@ bool forcedTick(daNpcPasser_c* passer);
 bool forcedDone(const daNpcPasser_c* passer);
 // Mid hit reaction.
 bool hitting(const daNpcPasser_c* passer);
+// For someone a convoy places by hand (the drivers, the marching escorts), in place of forcedTick: the
+// hit or flinch plays to its end without pinning them (the convoy moves them: the wagon carries its
+// drivers). True while one is playing; once it's over the convoy gives them their own animation back.
+bool heldReaction(daNpcPasser_c* passer);
+// They've just started running away: no sitting flinch any more, and nothing that hands a sitting pose
+// back once a stagger is over (they'd run along in it).
+void onFlee(daNpcPasser_c* passer);
 
 
 // --- layering (any traveller) ---

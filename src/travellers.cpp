@@ -2445,6 +2445,16 @@ void update() {
              idx / 1024, vtx / 1024, fs != nullptr ? fs->drawCallCount : 0, wc.actors, wc.enemies, wc.passers, wc.ours,
              wc.passersDrawn, g_redirects);
         g_redirects = 0;
+        // Beedle (the user hadn't met him in a long while): where he is, every ten seconds
+        if (g_frame % 300 == 0) {
+            const Traveller& b = g_t[kBeedleSlot];
+            const auto& n = kNodes[std::clamp(b.node, 0, kNodeCount - 1)];
+            const f32 dx = n.x - link.x, dz = n.z - link.z;
+            diag("beedle  used %d state %d node %d (stage %d room %d, %.0f from Link) spawned %d dead %d leg %d/%d",
+                 static_cast<int>(b.used), static_cast<int>(b.state), b.node, n.stage, n.room,
+                 std::sqrt(dx * dx + dz * dz), static_cast<int>(b.spawned), static_cast<int>(b.dead), b.leg,
+                 static_cast<int>(b.route.size()));
+        }
     }
     // Buffer getting full: write it down every few frames, and once a second list which actor types
     // are most common, so the last lines before a crash show what was filling it.

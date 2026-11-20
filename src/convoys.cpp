@@ -60,6 +60,8 @@ constexpr f32 kFightRadius = 1800.0f;   // a monster this near the wagon stops i
 constexpr f32 kCalmRadius = 2600.0f;    // ...and none this near for a while lets it go on
 constexpr int kCalmFrames = 150;
 constexpr f32 kLeash = 1400.0f;        // an escort this far from its place stops fighting and runs back
+constexpr f32 kBackAtSpot = 300.0f;     // ...all the way back: this near his place
+constexpr int kRecallFrames = 90;       // ...and he marches this long there before he'll fight again
 constexpr int kGorgeEvery = 12 * 60, kWestEvery = 12 * 60, kRoyalEvery = 24 * 60;   // game minutes
 constexpr f32 kSideOut = 230.0f;        // the escorts walk this far out from the wagon's middle
 constexpr f32 kSitDrop = 37.0f;         // the bench sit puts the seat this far under the feet
@@ -81,7 +83,9 @@ struct Member {
     f32 x = 0.0f, z = 0.0f;       // where it walks or sits, in the wagon's frame (+z forward, from the hitch)
     s16 face = 0;                 // bystanders: which way they stand, from the wagon's way
     u8 anim = 0xFF;
+    J3DAnmTransform* set = nullptr;   // what setAnim gave it (anything else playing: given it again)
     bool fighting = false;
+    int recall = 0;               // escorts: pulled back off a fight by the leash; marching frames still owed
     int scared = 0;               // frames still off running from one of Link's bombs (drivers never)
     bool archer = false;          // shoots (the bowman, the royal bow): he can deal with a foe up a ledge
     int order = 0;                // escorts: which one (0, 1, ...), for single file behind the wagon
@@ -567,8 +571,16 @@ void tickConvoy(Convoy& c) {
                 auto* a = travellers::crewActor(m.slot);
                 const f32 behind = a != nullptr ? a->current.pos.absXZ(wagonFrame(w, m.x, 0.0f, m.z)) : 0.0f;
                 // (and the royal escort, all of them, while they're after Link over his bombs)
-                const bool fight = (c.halted && !c.fleeing && behind < kLeash) || (c.kind == K_ROYAL && grudge::squadHostile(2));
+                // the leash: past it he's called back, and he goes all the way to his place and marches
+                // there a while before he'll go after anything again (it used to let him go the moment
+                // he was a step inside it: fight, march, fight several times a second, the whole group
+                // drawing and stowing their weapons while being slid along)
+                if (m.fighting && behind >= kLeash) m.recall = kRecallFrames;
+                else if (!m.fighting && m.recall > 0 && behind < kBackAtSpot) m.recall = std::max(0, m.recall - 10);
+                const bool hostile = c.kind == K_ROYAL && grudge::squadHostile(2);
+                const bool fight = hostile || (c.halted && !c.fleeing && behind < kLeash && m.recall == 0);
                 if (m.fighting == fight) continue;
+                if (!fight && !hostile && behind >= kLeash && a != nullptr) travellers::noteAct(a, "too far from the wagon: back to his place");
                 m.fighting = fight;
                 travellers::crewHold(m.slot, !fight);
                 // let go: its own fighting takes over from where it stands (not from where it came out);
@@ -693,6 +705,7 @@ void setAnim(daNpcPasser_c* p, Member& m, u8 idx, f32 rate) {
             }
         }
         if (a != nullptr) p->setAnm(a, rate, 8.0f, J3DFrameCtrl::EMode_LOOP, 0, -1);
+        m.set = p->mpMorf != nullptr ? p->mpMorf->getAnm() : nullptr;
     }
     if (p->mpMorf != nullptr) p->mpMorf->setPlaySpeed(rate);
 }
@@ -727,6 +740,12 @@ void placeHeld(daNpcPasser_c* p) {
     if (m == nullptr || w == nullptr) return;
     p->speedF = 0.0f;
     p->speed.y = 0.0f;
+    // a flinch on the bench or a stagger on the march plays out where they are (the wagon carries its
+    // drivers on with it); after it, or if anything else got put on them meanwhile (being hit tells a
+    // body to run, and the wagon's bench is no place for it: they ran on the spot), their own again
+    const bool reacting = fighter_anim::heldReaction(p);
+    if (reacting) m->anim = 0xFF;
+    else if (m->anim != 0xFF && p->mpMorf != nullptr && p->mpMorf->getAnm() != m->set) m->anim = 0xFF;
     if (m->role != R_RIDER && dialogue::talker() == p) {
         // talking with Link: standing, turned to him
         if (auto* link = dComIfGp_getPlayer(0)) {
@@ -746,7 +765,7 @@ void placeHeld(daNpcPasser_c* p) {
         p->current.pos = seat;
         p->old.pos = seat;
         p->current.angle.y = p->shape_angle.y = w->coachYaw();
-        setAnim(p, *m, 14, 1.0f);
+        if (!reacting) setAnim(p, *m, 14, 1.0f);
     } else {
         // walking at the wagon's side (or standing by it): head for the spot, at most a brisk walk
         cXyz to = escortSpot(w, *m);
@@ -754,7 +773,7 @@ void placeHeld(daNpcPasser_c* p) {
         d.y = 0.0f;
         const f32 dist = d.absXZ();
         const bool running = dist > 300.0f || convoyFleeing(w);   // fallen behind, or the wagon's off fast
-        f32 step = std::min(dist, kSpeed * (running ? 3.2f : 1.6f));
+        f32 step = reacting ? 0.0f : std::min(dist, kSpeed * (running ? 3.2f : 1.6f));   // (staggering: not a step)
         if (dist > 1.0f) {
             // never off an edge: no ground where the step lands, or a drop, and he waits there
             const f32 nx = p->current.pos.x + d.x / dist * std::max(step, 30.0f);
@@ -776,7 +795,8 @@ void placeHeld(daNpcPasser_c* p) {
                          : moving ? static_cast<s16>(w->coachYaw()) : static_cast<s16>(w->coachYaw() + m->face);
         cLib_addCalcAngleS2(&p->shape_angle.y, face, 4, 0x800);
         p->current.angle.y = p->shape_angle.y;
-        if (moving && running) setAnim(p, *m, 4, 1.0f);
+        if (reacting) {}
+        else if (moving && running) setAnim(p, *m, 4, 1.0f);
         else if (moving) setAnim(p, *m, 2, Cd2_HIO_walkAnmPlaySpeed(p->m_type) * std::clamp(moved / kSpeed, 0.6f, 1.6f));
         else setAnim(p, *m, 0, 1.0f);
     }

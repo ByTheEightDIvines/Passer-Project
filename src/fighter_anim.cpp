@@ -948,6 +948,38 @@ bool hitting(const daNpcPasser_c* passer) {
     const Forced* f = activeForced(passer);
     return f != nullptr && f->restore;
 }
+
+bool heldReaction(daNpcPasser_c* passer) {
+    Forced* f = activeForced(passer);
+    if (f == nullptr || passer->mpMorf == nullptr) return false;
+    mDoExt_McaMorfSO* morf = passer->mpMorf;
+    if (morf->getAnm() != f->a) {   // something swapped it out: ours again, from where it had got to
+        morf->setAnm(f->a, J3DFrameCtrl::EMode_NONE, 0.0f, f->speed, 0, -1);
+        morf->setFrameF(f->frame);
+    }
+    f->frame = morf->getFrame();
+    if (morf->isStop() || f->frame >= morf->getEndFrame() - 1.0f) {
+        f->a = nullptr;   // over: the convoy puts its own animation back (not `before`)
+        f->before = nullptr;
+        return false;
+    }
+    return true;
+}
+
+void onFlee(daNpcPasser_c* passer) {
+    Forced* f = activeForced(passer);
+    if (f == nullptr || passer->mpMorf == nullptr || !f->restore) return;
+    auto* run = static_cast<J3DAnmTransformKey*>(passer->getAnmP(4, passer->getObjNum()));
+    auto* sit = passer->getAnmP(14, 0);
+    if (f->a == borrowed(passer, "sitflinch")) {
+        // a flinch where they sat: they're up and off now, so straight into the run
+        f->a = nullptr;
+        f->before = nullptr;
+        if (run != nullptr) passer->mpMorf->setAnm(run, J3DFrameCtrl::EMode_LOOP, 4.0f, 1.0f, 0, -1);
+        return;
+    }
+    if (f->before != nullptr && f->before == sit) f->before = run;   // a stagger gives back the run, not the sit
+}
 void layerTick(daNpcPasser_c* passer, bool carryLight) {
     const int slot = travellers::slotIndex(passer);
     if (slot < 0 || slot >= static_cast<int>(g_layer.size()) || passer->mpMorf == nullptr) return;
