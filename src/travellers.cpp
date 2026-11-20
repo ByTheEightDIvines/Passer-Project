@@ -1235,9 +1235,13 @@ struct CampTents {
     s16 tentYaw[4] = {};
     int tents = 0;
     bool rolled = false;   // tonight's stay-ups picked
-    // the guards' camp: the game's own Castle Town pennant on their tent's ridge, shrunk once made
-    fpc_ProcID flag = fpcM_ERROR_PROCESS_ID_e;
-    bool flagShrunk = false;
+    // the guards' camp: the game's own Castle Town pennant on each end of every guard tent's ridge (its
+    // two poles), shrunk once made
+    static constexpr int kFlags = 6;
+    std::array<fpc_ProcID, kFlags> flag{fpcM_ERROR_PROCESS_ID_e, fpcM_ERROR_PROCESS_ID_e, fpcM_ERROR_PROCESS_ID_e,
+                                        fpcM_ERROR_PROCESS_ID_e, fpcM_ERROR_PROCESS_ID_e, fpcM_ERROR_PROCESS_ID_e};
+    std::array<bool, kFlags> flagShrunk{};
+    int flags = 0;
 };
 std::array<CampTents, kCampCount> g_camps{};
 
@@ -1544,39 +1548,48 @@ constexpr f32 kGuardTentSide = 1150.0f;   // fire to each side tent's middle
 constexpr f32 kPennantScale = 0.3f;
 constexpr u32 kPennantPole = 0x000C;      // @bg000c: Castle Town's pennant pole (its spec height is 500)
 constexpr s16 kPennantCloth = 1;          // FlagObj01: the orange crest
-// Where the pennant stands on the tent: the front end of the ridge (tent space, before its 1.3 scale
-// and with the pole's foot a little into the ridge).
+// Where the pennants stand on the tent: each end of the ridge, on its pole (tent space, before its 1.3
+// scale and with the pole's foot a little into the ridge; the model's poles are at +-236, symmetric).
 constexpr f32 kRidgeY = 370.0f, kRidgeFrontZ = 313.0f;
 
-void spawnPennant(CampTents& c, const cXyz& tent, s16 yaw, s8 room) {
+void spawnPennants(CampTents& c, const cXyz& tent, s16 yaw, s8 room) {
     const f32 fx = cM_ssin(yaw), fz = cM_scos(yaw);
-    cXyz at(tent.x + fx * kRidgeFrontZ, tent.y + kRidgeY, tent.z + fz * kRidgeFrontZ);
     const csXyz angle(kPennantCloth, 0, 0);   // shape_angle.x: which cloth
-    c.flag = fopAcM_create(fpcNm_Obj_Flag2_e, kPennantPole, &at, room, &angle, nullptr, -1);
-    c.flagShrunk = false;
+    for (f32 end : {kRidgeFrontZ, -kRidgeFrontZ}) {   // front pole, back pole
+        if (c.flags >= CampTents::kFlags) return;
+        cXyz at(tent.x + fx * end, tent.y + kRidgeY, tent.z + fz * end);
+        c.flag[c.flags] = fopAcM_create(fpcNm_Obj_Flag2_e, kPennantPole, &at, room, &angle, nullptr, -1);
+        c.flagShrunk[c.flags] = false;
+        ++c.flags;
+    }
 }
 
 // The pennant actor has no scale of its own: once it's made, shrink its pole and its cloth (both are
 // placed once, when it's created) about the pole's foot.
 void shrinkPennant(CampTents& c) {
-    if (c.flagShrunk || c.flag == fpcM_ERROR_PROCESS_ID_e) return;
-    auto* f = static_cast<daObjFlag2_c*>(fopAcM_SearchByID(c.flag));
-    if (f == nullptr || f->mModel == nullptr) return;
-    const cXyz k(kPennantScale, kPennantScale, kPennantScale);
-    f->mModel->setBaseScale(k);
-    mDoMtx_stack_c::transS(f->current.pos.x, f->current.pos.y + 500.0f * kPennantScale, f->current.pos.z);
-    mDoMtx_stack_c::scaleM(kPennantScale, kPennantScale, kPennantScale);
-    cMtx_copy(mDoMtx_stack_c::get(), f->mFlagCloth.mModelMtx);
-    f->mCyl.SetH(200.0f * kPennantScale);
-    c.flagShrunk = true;
+    for (int i = 0; i < c.flags; ++i) {
+        if (c.flagShrunk[i] || c.flag[i] == fpcM_ERROR_PROCESS_ID_e) continue;
+        auto* f = static_cast<daObjFlag2_c*>(fopAcM_SearchByID(c.flag[i]));
+        if (f == nullptr || f->mModel == nullptr) continue;
+        const cXyz k(kPennantScale, kPennantScale, kPennantScale);
+        f->mModel->setBaseScale(k);
+        mDoMtx_stack_c::transS(f->current.pos.x, f->current.pos.y + 500.0f * kPennantScale, f->current.pos.z);
+        mDoMtx_stack_c::scaleM(kPennantScale, kPennantScale, kPennantScale);
+        cMtx_copy(mDoMtx_stack_c::get(), f->mFlagCloth.mModelMtx);
+        f->mCyl.SetH(200.0f * kPennantScale);
+        c.flagShrunk[i] = true;
+    }
 }
 
 void dropPennant(CampTents& c, bool deleteIt) {
-    if (deleteIt && c.flag != fpcM_ERROR_PROCESS_ID_e) {
-        if (auto* f = fopAcM_SearchByID(c.flag)) fopAcM_delete(f);
+    for (int i = 0; i < c.flags; ++i) {
+        if (deleteIt && c.flag[i] != fpcM_ERROR_PROCESS_ID_e) {
+            if (auto* f = fopAcM_SearchByID(c.flag[i])) fopAcM_delete(f);
+        }
+        c.flag[i] = fpcM_ERROR_PROCESS_ID_e;
+        c.flagShrunk[i] = false;
     }
-    c.flag = fpcM_ERROR_PROCESS_ID_e;
-    c.flagShrunk = false;
+    c.flags = 0;
 }
 
 void updateCamps(int stage, const cXyz& link) {
@@ -1601,7 +1614,7 @@ void updateCamps(int stage, const cXyz& link) {
                 const f32 y = probeGround(at.x, at.y, at.z);
                 if (y != -G_CM3D_F_INF && std::fabs(y - at.y) < 150.0f) at.y = y;
                 spawnTent(c, PSR_TENT_GUARD, at, face, n.room);
-                spawnPennant(c, at, face, n.room);
+                spawnPennants(c, at, face, n.room);
                 // two more tents for the bigger watch: either side of the fire, doors turned to it
                 for (int side = -1; side <= 1; side += 2) {
                     const s16 sideFace = static_cast<s16>(face + side * 0x4000);   // pointing out to that side
@@ -1610,6 +1623,7 @@ void updateCamps(int stage, const cXyz& link) {
                     if (y2 == -G_CM3D_F_INF || std::fabs(y2 - t2.y) > 150.0f) continue;   // no good ground there
                     t2.y = y2;
                     spawnTent(c, PSR_TENT_GUARD, t2, static_cast<s16>(sideFace + 0x8000), n.room);
+                    spawnPennants(c, t2, static_cast<s16>(sideFace + 0x8000), n.room);
                 }
             } else if (n.kind == NK_BEEDLE) {
                 TentSpot b{mid, face, 0.0f, 0.0f};
@@ -2410,7 +2424,7 @@ void update() {
         // put them up again when Link is back
         for (CampTents& c : g_camps) {
             c.ids.clear(); c.up = false; c.tents = 0;
-            c.flag = fpcM_ERROR_PROCESS_ID_e; c.flagShrunk = false;
+            c.flag.fill(fpcM_ERROR_PROCESS_ID_e); c.flagShrunk.fill(false); c.flags = 0;
         }
         const char* sn = dComIfGp_getStartStageName();
         diag("world   %s stage %s (net %d) room %d darkworld %d", inWorld ? "IN" : "OUT", sn ? sn : "?", stage,
