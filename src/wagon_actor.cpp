@@ -1,3 +1,4 @@
+#include "psr_heap.hpp"
 #include "global.h"
 #include "mod_lights.hpp"
 
@@ -175,9 +176,9 @@ void psrWagon_c::hitTick() {
 
 cPhs_Step psrWagon_c::create() {
     fopAcM_ct(this, psrWagon_c);
-    cPhs_Step step = dComIfG_resLoad(&mPhaseCoach, kCoachArc);
+    cPhs_Step step = dComIfG_resLoad(&mPhaseCoach, kCoachArc, psrHeap());
     if (step != cPhs_COMPLEATE_e) return step;
-    step = dComIfG_resLoad(&mPhaseOwn, kOwnArc);
+    step = dComIfG_resLoad(&mPhaseOwn, kOwnArc, psrHeap());
     if (step != cPhs_COMPLEATE_e) return step;
     mKind = static_cast<u8>(fopAcM_GetParam(this) & 0xFF) == PSR_WAGON_ROYAL ? PSR_WAGON_ROYAL : PSR_WAGON_TRAVELLER;
     mDriven = (fopAcM_GetParam(this) & kPsrWagonDriven) != 0;

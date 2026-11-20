@@ -1,3 +1,4 @@
+#include "psr_heap.hpp"
 #include "global.h"
 
 #include <cmath>
@@ -35,7 +36,7 @@ psrNote_c::~psrNote_c() {
 
 cPhs_Step psrNote_c::create() {
     fopAcM_ct(this, psrNote_c);
-    const cPhs_Step step = dComIfG_resLoad(&mPhase, kArc);
+    const cPhs_Step step = dComIfG_resLoad(&mPhase, kArc, psrHeap());
     if (step != cPhs_COMPLEATE_e) {
         return step;
     }

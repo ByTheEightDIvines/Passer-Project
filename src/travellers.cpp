@@ -1,3 +1,4 @@
+#include "psr_heap.hpp"
 #include "global.h"
 
 #include "travellers.hpp"
@@ -841,13 +842,13 @@ void holdPackInField() {
     const bool want = currentStage() >= 0;
     if (want && !s_loaded) {
         s_requested = true;
-        if (dComIfG_resLoad(&s_phase, "PsrPack") == cPhs_COMPLEATE_e) {
+        if (dComIfG_resLoad(&s_phase, "PsrPack", psrHeap()) == cPhs_COMPLEATE_e) {
             s_loaded = true;
             diag("memory  holding the pack for the field (until Link leaves it)");
         }
     } else if (!want && s_requested) {
         if (!s_loaded) {   // still loading: let it finish, then let it go
-            if (dComIfG_resLoad(&s_phase, "PsrPack") != cPhs_COMPLEATE_e) return;
+            if (dComIfG_resLoad(&s_phase, "PsrPack", psrHeap()) != cPhs_COMPLEATE_e) return;
         }
         dComIfG_resDelete(&s_phase, "PsrPack");
         s_phase = request_of_phase_process_class{};

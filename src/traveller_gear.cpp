@@ -10,6 +10,7 @@
 // Packs: each traveller also loads PsrPack.arc, makes its pack model in its own heap while the
 // game builds it (so it is freed with it), and draws it glued to the backbone joint every frame,
 // lit like the traveller (the same way the game draws the things townsfolk carry).
+#include "psr_heap.hpp"
 #include "global.h"
 #include "mod_lights.hpp"
 
@@ -421,14 +422,14 @@ HookAction onLoadResrcPre(ModContext*, void* args, void* retval, void*) {
             travellers::diagLine("look    loading %s (%s) for type %d", look->arc, look->bmd, type);
         }
     }
-    int result = dComIfG_resLoad(&npc->mPhase1, look->arc);
-    if (result == cPhs_COMPLEATE_e) result = dComIfG_resLoad(&npc->mPhase4, "object");
-    if (result == cPhs_COMPLEATE_e) result = dComIfG_resLoad(&npc->mPhase2, generalArc(type));
-    if (result == cPhs_COMPLEATE_e) result = dComIfG_resLoad(&npc->mPhase3, specialArc(type));
+    int result = dComIfG_resLoad(&npc->mPhase1, look->arc, psrHeap());
+    if (result == cPhs_COMPLEATE_e) result = dComIfG_resLoad(&npc->mPhase4, "object", psrHeap());
+    if (result == cPhs_COMPLEATE_e) result = dComIfG_resLoad(&npc->mPhase2, generalArc(type), psrHeap());
+    if (result == cPhs_COMPLEATE_e) result = dComIfG_resLoad(&npc->mPhase3, specialArc(type), psrHeap());
     Gear* g = gearFor(npc);
     if (result == cPhs_COMPLEATE_e) {
         if (g != nullptr) {
-            result = dComIfG_resLoad(&g->packPhase, kPackArc);
+            result = dComIfG_resLoad(&g->packPhase, kPackArc, psrHeap());
             g->packLoaded = result == cPhs_COMPLEATE_e;
             g->owner = fopAcM_GetID(npc);
             g->pack = nullptr;

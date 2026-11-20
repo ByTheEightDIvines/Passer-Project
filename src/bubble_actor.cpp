@@ -1,3 +1,4 @@
+#include "psr_heap.hpp"
 #include "global.h"
 
 #include <cmath>
@@ -63,7 +64,7 @@ psrBubble_c::~psrBubble_c() { dComIfG_resDelete(&mPhase, kArc); }
 
 cPhs_Step psrBubble_c::create() {
     fopAcM_ct(this, psrBubble_c);
-    const cPhs_Step step = dComIfG_resLoad(&mPhase, kArc);
+    const cPhs_Step step = dComIfG_resLoad(&mPhase, kArc, psrHeap());
     if (step != cPhs_COMPLEATE_e) return step;
     mPacket.mpOwner = this;
     if (auto* res = static_cast<ResTIMG*>(dComIfG_getObjectRes(kArc, kTex))) {

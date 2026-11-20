@@ -1,3 +1,4 @@
+#include "psr_heap.hpp"
 #include "global.h"
 #include "player_camp.hpp"
 
@@ -576,8 +577,8 @@ psrPCamp_c::~psrPCamp_c() {
 cPhs_Step psrPCamp_c::create() {
     fopAcM_ct(this, psrPCamp_c);
     g_camp = this;
-    const cPhs_Step a = dComIfG_resLoad(&mPhCamp, kCampArc);
-    const cPhs_Step b = dComIfG_resLoad(&mPhPack, kPackArc);
+    const cPhs_Step a = dComIfG_resLoad(&mPhCamp, kCampArc, psrHeap());
+    const cPhs_Step b = dComIfG_resLoad(&mPhPack, kPackArc, psrHeap());
     if (a == cPhs_ERROR_e || b == cPhs_ERROR_e) return cPhs_ERROR_e;
     if (a != cPhs_COMPLEATE_e) return a;
     if (b != cPhs_COMPLEATE_e) return b;

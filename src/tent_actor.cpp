@@ -1,3 +1,4 @@
+#include "psr_heap.hpp"
 #include "global.h"
 #include "mod_lights.hpp"
 
@@ -96,17 +97,17 @@ psrTent_c::~psrTent_c() {
 
 cPhs_Step psrTent_c::create() {
     fopAcM_ct(this, psrTent_c);
-    cPhs_Step step = dComIfG_resLoad(&mPhase, kArcName);
+    cPhs_Step step = dComIfG_resLoad(&mPhase, kArcName, psrHeap());
     if (step != cPhs_COMPLEATE_e) {
         return step;
     }
     if ((fopAcM_GetParam(this) & 0xFF) == PSR_TENT_BEEDLE) {
         // The entry lantern: our renamed copy of the game's (PsrPack psr_shop_kntr.bmd), see shop_lamps.cpp.
-        const cPhs_Step l = dComIfG_resLoad(&mPhaseLamp, "PsrPack");
+        const cPhs_Step l = dComIfG_resLoad(&mPhaseLamp, "PsrPack", psrHeap());
         if (l != cPhs_COMPLEATE_e) {
             return l;
         }
-        const cPhs_Step r = dComIfG_resLoad(&mPhaseRoom, kRoomArc);
+        const cPhs_Step r = dComIfG_resLoad(&mPhaseRoom, kRoomArc, psrHeap());
         if (r != cPhs_COMPLEATE_e) {
             return r;
         }

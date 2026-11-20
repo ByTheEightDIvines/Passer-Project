@@ -1,3 +1,4 @@
+#include "psr_heap.hpp"
 #include "global.h"
 
 #include <cmath>
@@ -38,7 +39,7 @@ psrSoul_c::~psrSoul_c() {
 
 cPhs_Step psrSoul_c::create() {
     fopAcM_ct(this, psrSoul_c);
-    const cPhs_Step step = dComIfG_resLoad(&mPhase, kArc);
+    const cPhs_Step step = dComIfG_resLoad(&mPhase, kArc, psrHeap());
     if (step != cPhs_COMPLEATE_e) {
         return step;
     }

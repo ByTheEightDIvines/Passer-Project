@@ -1,3 +1,4 @@
+#include "psr_heap.hpp"
 #include "global.h"
 #include "mod_lights.hpp"
 
@@ -44,7 +45,7 @@ psrShopLamps_c::~psrShopLamps_c() {
 
 cPhs_Step psrShopLamps_c::create() {
     fopAcM_ct(this, psrShopLamps_c);
-    const cPhs_Step step = dComIfG_resLoad(&mPhase, kArc);
+    const cPhs_Step step = dComIfG_resLoad(&mPhase, kArc, psrHeap());
     if (step != cPhs_COMPLEATE_e) {
         return step;
     }

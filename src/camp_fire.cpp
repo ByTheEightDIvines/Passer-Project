@@ -1,3 +1,4 @@
+#include "psr_heap.hpp"
 #include "global.h"
 #include "mod_lights.hpp"
 
@@ -102,9 +103,9 @@ psrFire_c::~psrFire_c() {
 cPhs_Step psrFire_c::create() {
     fopAcM_ct(this, psrFire_c);
     const cPhs_Step steps[] = {
-        dComIfG_resLoad(&mPhCamp, kCampArc), dComIfG_resLoad(&mPhPack, kPackArc),
-        dComIfG_resLoad(&mPhSoup, "SnowSoup"), dComIfG_resLoad(&mPhBarrel, "J_taru00"),
-        dComIfG_resLoad(&mPhCrate, "Obj_kbox"),
+        dComIfG_resLoad(&mPhCamp, kCampArc, psrHeap()), dComIfG_resLoad(&mPhPack, kPackArc, psrHeap()),
+        dComIfG_resLoad(&mPhSoup, "SnowSoup", psrHeap()), dComIfG_resLoad(&mPhBarrel, "J_taru00", psrHeap()),
+        dComIfG_resLoad(&mPhCrate, "Obj_kbox", psrHeap()),
     };
     for (cPhs_Step s : steps) {
         if (s == cPhs_ERROR_e) return cPhs_ERROR_e;
