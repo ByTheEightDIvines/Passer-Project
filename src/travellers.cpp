@@ -2013,6 +2013,11 @@ void initialize() {
 bool inNetworkStage() { return currentStage() >= 0; }
 int networkStage() { return currentStage(); }
 
+f32 vertexFill() {
+    const FrameStats* fs = frameStats();
+    return fs != nullptr ? static_cast<f32>(fs->lastVertSize) / static_cast<f32>(kVertexBufferSize) : -1.0f;
+}
+
 f32 groundBump(const cXyz& at, s16 yaw, f32 hx, f32 hz, f32 refY, bool fine) {
     return bumpiness(at, yaw, hx, hz, refY, fine);
 }

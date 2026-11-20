@@ -241,6 +241,7 @@ void songEnd() {
 // --- the camera for the camp's scenes (Dusklight's camera operator) ------------------------------
 struct CamShot {
     bool active = false;
+    f32 zoom = 1.0f;        // how far out the shot may go (1 = as framed): drawn in while the field's too much
     bool capture = false;   // take the game camera's view as the starting point on the next frame
     cXyz fromEye{}, fromCenter{};
     f32 fromFovy = 60.0f;
@@ -263,6 +264,28 @@ bool operateCamera(ModContext*, CameraOperatorState* state, void*) {
     state->fovy = g_cam.fovy;
     state->bank_degrees = 0.0f;
     return true;
+}
+
+// The wide shots take in a lot of Hyrule Field: grass and ground to the horizon. The game has one fixed
+// space per frame for all of it (aurora's 5 MB vertex buffer; full, and the graphics worker closes the
+// game). While a camp scene runs, watch how full it was last frame and draw the camera in toward the
+// camp before it gets near; let it back out slowly once there's room again.
+void guardZoom() {
+    const f32 fill = travellers::vertexFill();
+    if (fill < 0.0f) {
+        g_cam.zoom = std::min(g_cam.zoom, 0.6f);   // can't see the meter: stay well in
+        return;
+    }
+    if (fill > 0.55f) {
+        g_cam.zoom = std::max(0.25f, g_cam.zoom - 0.08f);
+        travellers::diagLine("pcamp   field geometry %.0f%% full: camera in to %.2f", fill * 100.0f, g_cam.zoom);
+    }
+    else if (fill < 0.40f) g_cam.zoom = std::min(1.0f, g_cam.zoom + 0.01f);
+}
+// a shot's eye, brought in toward what it looks at by the guard
+cXyz guarded(const cXyz& eye, const cXyz& center) {
+    return cXyz(center.x + (eye.x - center.x) * g_cam.zoom, center.y + (eye.y - center.y) * g_cam.zoom,
+                center.z + (eye.z - center.z) * g_cam.zoom);
 }
 
 f32 ease(f32 t) {
@@ -722,14 +745,16 @@ void psrPCamp_c::runSummon() {
     }
     if (mTimer == 0) {
         g_cam.capture = true;
-        shotWide(1500.0f, 650.0f, 520.0f, 160.0f, &mShotEye, &mShotCenter);
+        g_cam.zoom = 1.0f;
+        shotWide(1000.0f, 420.0f, 330.0f, 170.0f, &mShotEye, &mShotCenter);   // close: not across the whole field
     }
+    guardZoom();
     ++mTimer;
     if (mTimer == 2) g_cam.active = true;
     const f32 in = ease((mTimer - 2) / 30.0f);
     const f32 out = ease((mTimer - 100) / 24.0f);
     const f32 t = in * (1.0f - out);
-    g_cam.eye = lerp(g_cam.fromEye, mShotEye, t);
+    g_cam.eye = lerp(g_cam.fromEye, guarded(mShotEye, mShotCenter), t);
     g_cam.center = lerp(g_cam.fromCenter, mShotCenter, t);
     g_cam.fovy = g_cam.fromFovy + (60.0f - g_cam.fromFovy) * t;
     if (mTimer == kPopFrame) {
@@ -776,6 +801,7 @@ void psrPCamp_c::runSleep() {
     daPy_py_c* link = player();
     if (mTimer == 0) {
         g_cam.capture = true;
+        g_cam.zoom = 1.0f;
         shotWide(1900.0f, 750.0f, 260.0f, 520.0f, &mShotEye, &mShotCenter);
         mSleepFrom = dComIfGs_getTime();
         g_sleeping = true;
@@ -787,6 +813,7 @@ void psrPCamp_c::runSleep() {
         travellers::diagLine("pcamp   Link goes to sleep at %.1f (hour %d)", mSleepFrom, dKy_getdaytime_hour());
     }
     ++mTimer;
+    guardZoom();
     if (mTimer == 2) g_cam.active = true;
     if (mTimer == kIn) songPlay();
     if (mTimer == kIn + kRoll + kHold) songEnd();
@@ -799,7 +826,7 @@ void psrPCamp_c::runSleep() {
     const cXyz drift = campPoint(cXyz(0.0f, 0.0f, 0.0f), mYaw, -400.0f * roll, 0.0f);
     eye.x += drift.x;
     eye.z += drift.z;
-    g_cam.eye = lerp(g_cam.fromEye, eye, t);
+    g_cam.eye = lerp(g_cam.fromEye, guarded(eye, mShotCenter), t);
     g_cam.center = lerp(g_cam.fromCenter, mShotCenter, t);
     g_cam.fovy = g_cam.fromFovy + (62.0f - g_cam.fromFovy) * t;
     if (mTimer > kIn && mTimer <= kIn + kRoll) {

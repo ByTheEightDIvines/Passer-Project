@@ -116,6 +116,9 @@ int networkStage();
 // How bumpy the ground under a footprint is (highest minus lowest of a 5 x 5 grid of probes), or -1
 // if it can't stand there (no ground, water, or a ledge well above or below refY).
 f32 groundBump(const cXyz& at, s16 yaw, f32 hx, f32 hz, f32 refY, bool fine);
+// How full the frame's geometry space was last frame (0..1, aurora's 5 MB vertex buffer); -1 if unknown.
+// Past 1 the graphics worker gives up and the game closes.
+f32 vertexFill();
 // Clear of every camp and Beedle's tent by campClear, and of every road by roadClear (xz).
 bool clearOfCampsAndRoads(const cXyz& at, f32 campClear, f32 roadClear);
 // Diagnostics: an enemy's targeting answer was swapped from Link to a traveller.
