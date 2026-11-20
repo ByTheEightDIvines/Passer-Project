@@ -65,7 +65,9 @@ constexpr f32 kCheckReach = 190.0f;        // ...within this of where he stands
 // (Not Link's warp sparkle, ZI_J_LK_WARP_APP_A: played away from Link and three at once, the graphics
 // worker gave up drawing it.)
 constexpr u16 kPop[2] = {0x86BA, 0x86C2};
-constexpr int kPopFrame = 22, kShowFrame = 28;   // the sparkle, then the camp is there
+// (Diagnosing a crash in the summon: the three steps a frame apart in time, and every frame logged, so the
+// diary's last line names the step if the frame's geometry space overflows again.)
+constexpr int kPopFrame = 22, kShowFrame = 40, kTentFrame = 58;   // the sparkle, the fire and bench, the tent
 
 // --- Midna's menu (the game's Midna flow in message group 0, as read from zel_00.bmg) --------------
 constexpr u16 kMidnaGroup = 0;
@@ -793,10 +795,11 @@ void psrPCamp_c::runSummon() {
         }
         mDoAud_seStart(Z2SE_D10_MDN_MAGIC, &mCenter, 0, dComIfGp_getReverb(fopAcM_GetRoomNo(this)));
     }
-    if (mTimer == kShowFrame) {
-        mShown = true;
-        makeTent();
-    }
+    if (mTimer == kShowFrame) mShown = true;
+    if (mTimer == kTentFrame) makeTent();
+    travellers::diagLine("pcamp   summon f%d fill %.0f%% zoom %.2f%s", mTimer, travellers::vertexFill() * 100.0f, g_cam.zoom,
+                         mTimer == kPopFrame ? " <- sparkle" : mTimer == kShowFrame ? " <- fire and bench drawn" :
+                         mTimer == kTentFrame ? " <- tent made" : "");
     if (mTimer >= 126) endEvent();
 }
 
