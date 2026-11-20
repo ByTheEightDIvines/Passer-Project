@@ -734,23 +734,40 @@ void psrPCamp_c::shotWide(f32 back, f32 side, f32 up, f32 lookUp, cXyz* eye, cXy
 
 // Midna's summon: the camera pulls back, her twilight gathers at the spot, and the camp is there.
 void psrPCamp_c::runSummon() {
-    if (mTimer == 0 && !waitForEvent()) {
-        if (++mWait > 300) {   // the game never gave us the scene: the camp is simply there
-            mShown = true;
-            makeTent();
-            mState = ST_IDLE;
-            travellers::diagLine("pcamp   summon scene never started; camp shown without it");
-        }
-        return;
-    }
+    // Before the scene: hold the camera where it is (so the game's own talk camera never gets a frame:
+    // with the camp ten metres off, it pulled right back to fit Link and the camp in, and drawing that much
+    // of the field at once overflowed the frame's geometry space), and stand our "talker" at Link's side.
     if (mTimer == 0) {
-        g_cam.capture = true;
-        g_cam.zoom = 1.0f;
+        if (mWait == 0) {
+            g_cam.capture = true;   // the view as it is now, on the camera's next run
+            g_cam.zoom = 1.0f;
+        } else {
+            g_cam.eye = g_cam.fromEye;
+            g_cam.center = g_cam.fromCenter;
+            g_cam.fovy = g_cam.fromFovy;
+            g_cam.active = true;
+        }
+        if (daPy_py_c* link = player()) {
+            current.pos = link->current.pos;
+            current.pos.x += cM_ssin(link->shape_angle.y) * 60.0f;   // just in front of him: he needn't turn
+            current.pos.z += cM_scos(link->shape_angle.y) * 60.0f;
+        }
+        if (mWait++ == 0 || !waitForEvent()) {
+            if (mWait > 300) {   // the game never gave us the scene: the camp is simply there
+                mShown = true;
+                makeTent();
+                g_cam.active = false;   // (no event of ours to end: the game never gave it)
+                mState = ST_IDLE;
+                mTimer = 0;
+                travellers::diagLine("pcamp   summon scene never started; camp shown without it");
+            }
+            return;
+        }
         shotWide(1000.0f, 420.0f, 330.0f, 170.0f, &mShotEye, &mShotCenter);   // close: not across the whole field
+        travellers::diagLine("pcamp   summon scene starts (waited %d frames)", mWait);
     }
     guardZoom();
     ++mTimer;
-    if (mTimer == 2) g_cam.active = true;
     const f32 in = ease((mTimer - 2) / 30.0f);
     const f32 out = ease((mTimer - 100) / 24.0f);
     const f32 t = in * (1.0f - out);
