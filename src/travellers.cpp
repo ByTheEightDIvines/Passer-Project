@@ -827,6 +827,35 @@ int currentStage() {
     return -1;
 }
 
+// Our big pack (PsrPack.arc, 4.9 MB: the travellers' gear, animations, effects) is held for as long as
+// Link is in Hyrule Field, loaded once on the way in while memory is fresh. It used to come and go with
+// its users: when everyone nearby was cleared away (riding into another part of the field) it unloaded,
+// and the next traveller asked for it back a moment later, by when the archive pool had 10 MB free but no
+// single 4.8 MB gap left (the diary showed it: 10653 KB free, the largest gap 4926 KB, then a few small
+// loads), and the game aborted. Held here, it never reloads mid-ride; it's let go on leaving the field
+// (a dungeon or town gets its memory back) and taken again on the way back out.
+void holdPackInField() {
+    static request_of_phase_process_class s_phase{};
+    static bool s_requested = false;   // loading or loaded
+    static bool s_loaded = false;
+    const bool want = currentStage() >= 0;
+    if (want && !s_loaded) {
+        s_requested = true;
+        if (dComIfG_resLoad(&s_phase, "PsrPack") == cPhs_COMPLEATE_e) {
+            s_loaded = true;
+            diag("memory  holding the pack for the field (until Link leaves it)");
+        }
+    } else if (!want && s_requested) {
+        if (!s_loaded) {   // still loading: let it finish, then let it go
+            if (dComIfG_resLoad(&s_phase, "PsrPack") != cPhs_COMPLEATE_e) return;
+        }
+        dComIfG_resDelete(&s_phase, "PsrPack");
+        s_phase = request_of_phase_process_class{};
+        s_requested = s_loaded = false;
+        diag("memory  left the field: the pack let go");
+    }
+}
+
 int slotOf(const fopAc_ac_c* actor) {
     if (actor == nullptr || fopAcM_GetName(const_cast<fopAc_ac_c*>(actor)) != fpcNm_NPC_PASSER_e) return -1;
     const int pathId = (fopAcM_GetParam(actor) >> 16) & 0xFF;
@@ -2396,6 +2425,7 @@ void update() {
             svc_log->warn(mod_ctx, "travellers: could not open mod_data/travellers_diag.log");
         }
     }
+    holdPackInField();
     if (!g_started) {
         g_rng ^= static_cast<u32>(dKy_getdaytime_minute() * 7919 + hour() * 104729);
         refreshBridge();
