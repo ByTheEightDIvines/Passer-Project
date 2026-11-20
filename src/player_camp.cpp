@@ -11,6 +11,7 @@
 #include "SSystem/SComponent/c_math.h"
 #include "SSystem/SComponent/c_phase.h"
 #include "d/actor/d_a_alink.h"
+#include "d/actor/d_a_midna.h"
 #include "d/actor/d_a_npc.h"
 #include "d/actor/d_a_player.h"
 #include "d/d_bg_s_gnd_chk.h"
@@ -275,9 +276,17 @@ std::vector<mods::flow::RegisteredMessage> g_messages;
 std::vector<mods::flow::MessageOverride> g_overrides;
 std::vector<std::vector<uint8_t>> g_labelText;   // the relabelled choice lists (English), kept alive
 mods::flow::Graph g_menuGraph, g_talkGraph;
-mods::flow::Query g_qAllowed, g_qExists, g_qSpot;
+mods::flow::Query g_qAllowed, g_qExists, g_qSpot, g_qWake;
 mods::flow::Event g_eSummon, g_eSleep;
-u16 g_tentNode = 0xFFFF, g_wakeMorningNode = 0xFFFF, g_wakeEveningNode = 0xFFFF;
+u16 g_tentNode = 0xFFFF;
+// Waking up: Midna comes out of Link's shadow and says it herself, through her own talk (the game's
+// Midna flow, group 0). Her talk's two ways into her menu (0x019e) go through a check first: a wake-up
+// pending, and she says her line instead. 0 none, 1 morning, 2 evening.
+constexpr u16 kMidnaMenuEdges[2] = {0x0139, 0x013c};
+constexpr u16 kMidnaMenuRoot = 0x019e;
+int g_wakeKind = 0;
+int g_wakeWait = 0;   // frames left to get her talk going
+bool g_wakeAsked = false;
 bool g_flowsReady = false;
 
 constexpr std::array kLanguages{
@@ -299,6 +308,11 @@ u16 qSpot(ModContext*, const FlowQueryContext* q, void*) {
     daPy_py_c* link = player();
     g_spotOk = link != nullptr && findSpot(link->current.pos, &g_spotPos, &g_spotYaw, &g_spotRoom);
     return g_spotOk ? 0 : 1;
+}
+u16 qWake(ModContext*, const FlowQueryContext* q, void*) {
+    const int k = g_wakeKind;
+    if (q->phase == FLOW_QUERY_PHASE_EXECUTE) g_wakeKind = 0;   // said once
+    return static_cast<u16>(k);
 }
 void eSummon(ModContext*, const FlowEventContext*, void*) {
     if (g_spotOk) g_pendingSummon = true;
@@ -323,9 +337,10 @@ ModResult registerFlows() {
     g_qAllowed = mods::flow::register_query("psr_camp_allowed", qAllowed);
     g_qExists = mods::flow::register_query("psr_camp_exists", qExists);
     g_qSpot = mods::flow::register_query("psr_camp_spot", qSpot);
+    g_qWake = mods::flow::register_query("psr_camp_wake", qWake);
     g_eSummon = mods::flow::register_event("psr_camp_summon", eSummon);
     g_eSleep = mods::flow::register_event("psr_camp_sleep", eSleep);
-    if (!g_qAllowed || !g_qExists || !g_qSpot || !g_eSummon || !g_eSleep) return report("a query or event", MOD_ERROR);
+    if (!g_qAllowed || !g_qExists || !g_qSpot || !g_qWake || !g_eSummon || !g_eSleep) return report("a query or event", MOD_ERROR);
 
     // ---- Midna's menu (group 0) ----
     const int sayFine = registerMessage(kMidnaGroup, mods::flow::MessageBuilder{kMidnaStyle}
@@ -337,7 +352,13 @@ ModResult registerFlows() {
         .options("Yes", "No"));
     const int moreList = registerMessage(kMidnaGroup, mods::flow::MessageBuilder{}
         .speaker(kMidnaSpeaker).options("Set up camp", "Talk to Midna"));
-    if (sayFine < 0 || sayLumpy < 0 || askMove < 0 || moreList < 0) return report("Midna's camp lines", MOD_ERROR);
+    const int wakeMorning = registerMessage(kMidnaGroup, mods::flow::MessageBuilder{kMidnaStyle}
+        .text("Rise and shine!\nYou know you snore, right?"));
+    const int wakeEvening = registerMessage(kMidnaGroup, mods::flow::MessageBuilder{kMidnaStyle}
+        .text("Finally! You slept the whole\nday away, sleepyhead."));
+    if (sayFine < 0 || sayLumpy < 0 || askMove < 0 || moreList < 0 || wakeMorning < 0 || wakeEvening < 0) {
+        return report("Midna's camp lines", MOD_ERROR);
+    }
     {
         mods::flow::GraphBuilder graph{kMidnaGroup};
         auto summon = graph.add_event(g_eSummon.id(), {0, 0, 0, 0});
@@ -366,6 +387,14 @@ ModResult registerFlows() {
             allowed.results({prompt.id(), m.talkNode});
             graph.patch_edge(m.edge, allowed.id());
         }
+        // her wake-up line, at the start of her own talk
+        auto morning = graph.add_message(static_cast<u16>(wakeMorning));
+        morning.next(mods::flow::kEnd);
+        auto evening = graph.add_message(static_cast<u16>(wakeEvening));
+        evening.next(mods::flow::kEnd);
+        auto wake = graph.add_branch(g_qWake.id(), 0);
+        wake.results({kMidnaMenuRoot, morning.id(), evening.id()});
+        for (u16 e : kMidnaMenuEdges) graph.patch_edge(e, wake.id());
         g_menuGraph = graph.commit();
         if (!g_menuGraph) return report("Midna's menu", g_menuGraph.result());
     }
@@ -388,11 +417,7 @@ ModResult registerFlows() {
     // ---- the camp's own talk (group 8) ----
     const int askSleep = registerMessage(kTalkGroup, mods::flow::MessageBuilder{}
         .box_kind(MESSAGE_BOX_TALK).text("Go to sleep?").options("Yes", "No"));
-    const int wakeMorning = registerMessage(kTalkGroup, mods::flow::MessageBuilder{kMidnaStyle}
-        .text("Rise and shine!\nYou know you snore, right?"));
-    const int wakeEvening = registerMessage(kTalkGroup, mods::flow::MessageBuilder{kMidnaStyle}
-        .text("Finally! You slept the whole\nday away, sleepyhead."));
-    if (askSleep < 0 || wakeMorning < 0 || wakeEvening < 0) return report("the camp's lines", MOD_ERROR);
+    if (askSleep < 0) return report("the camp's lines", MOD_ERROR);
     {
         mods::flow::GraphBuilder graph{kTalkGroup};
         auto sleep = graph.add_event(g_eSleep.id(), {0, 0, 0, 0});
@@ -401,15 +426,9 @@ ModResult registerFlows() {
         yes.results({sleep.id(), mods::flow::kEnd, mods::flow::kEnd});
         auto ask = graph.add_message(static_cast<u16>(askSleep));
         ask.next(yes.id());
-        auto morning = graph.add_message(static_cast<u16>(wakeMorning));
-        morning.next(mods::flow::kEnd);
-        auto evening = graph.add_message(static_cast<u16>(wakeEvening));
-        evening.next(mods::flow::kEnd);
         g_talkGraph = graph.commit();
         if (!g_talkGraph) return report("the camp's talk", g_talkGraph.result());
         g_tentNode = ask.id();
-        g_wakeMorningNode = morning.id();
-        g_wakeEveningNode = evening.id();
     }
     g_flowsReady = true;
     return MOD_OK;
@@ -436,7 +455,7 @@ const dCcD_SrcCyl kFireCyl = {
 // Parameters: bit 0 = summoned just now (play Midna's scene; the pieces appear in it).
 class psrPCamp_c : public fopAc_ac_c {
 public:
-    enum State : u8 { ST_IDLE, ST_SUMMON, ST_TALK, ST_SLEEP, ST_WAKE };
+    enum State : u8 { ST_IDLE, ST_SUMMON, ST_TALK, ST_SLEEP };
     enum Talk : u8 { TALK_NONE, TALK_TENT };
 
     request_of_phase_process_class mPhCamp;
@@ -485,7 +504,6 @@ public:
     void runSummon();
     void runTalk();
     void runSleep();
-    void runWake();
     void shotWide(f32 back, f32 side, f32 up, f32 lookUp, cXyz* eye, cXyz* center) const;
     static int createHeapCallBack(fopAc_ac_c* a) { return static_cast<psrPCamp_c*>(a)->CreateHeap(); }
 
@@ -798,22 +816,14 @@ void psrPCamp_c::runSleep() {
         }
     }
     if (mTimer >= kIn + kRoll + kHold + kOut) {
-        g_cam.active = false;
-        mState = ST_WAKE;
-        mTimer = 0;
-        mFlowStarted = false;
+        endEvent();   // our scene's over: now Midna's own talk, out of his shadow
+        const int h = dKy_getdaytime_hour();
+        g_wakeKind = (h >= 5 && h < 17) ? 1 : 2;
+        g_wakeWait = 120;
+        g_wakeAsked = false;
         travellers::diagLine("pcamp   Link wakes at %.1f (hour %d, day %d)", dComIfGs_getTime(), dKy_getdaytime_hour(),
                              static_cast<int>(dComIfGs_getDate()));
     }
-}
-
-void psrPCamp_c::runWake() {
-    if (!mFlowStarted) {
-        const int h = dKy_getdaytime_hour();
-        mFlow.init(this, (h >= 5 && h < 17) ? g_wakeMorningNode : g_wakeEveningNode, 0, NULL);
-        mFlowStarted = true;
-    }
-    if (mFlow.doFlow(this, NULL, 0) != 0) endEvent();
 }
 
 int psrPCamp_c::Execute() {
@@ -831,7 +841,6 @@ int psrPCamp_c::Execute() {
     case ST_SUMMON: runSummon(); break;
     case ST_TALK: runTalk(); break;
     case ST_SLEEP: runSleep(); break;
-    case ST_WAKE: runWake(); break;
     }
     return 1;
 }
@@ -927,6 +936,16 @@ bool sleeping() { return g_sleeping; }
 
 void update() {
     daPy_py_c* link = player();
+    // Link's up: Midna comes out of his shadow with her line (her own talk, as when he calls her)
+    if (g_wakeKind != 0) {
+        daMidna_c* midna = daPy_py_c::getMidnaActor();
+        if (--g_wakeWait <= 0 || midna == nullptr || link == nullptr) {
+            g_wakeKind = 0;   // the game never let her: no line this time
+        } else if (!g_wakeAsked && dComIfGp_getEvent()->isOrderOK()) {
+            g_wakeAsked = fopAcM_orderTalkEvent(link, midna, 0, 0) != 0;   // once: never a second talk
+        }
+        if (g_wakeKind == 0) g_wakeAsked = false;
+    }
     const int stage = travellers::networkStage();
     // Midna was asked: the camp goes where she found ground (moving the old one if there was one)
     if (g_pendingSummon && link != nullptr && dComIfGp_getEvent()->isOrderOK()) {
