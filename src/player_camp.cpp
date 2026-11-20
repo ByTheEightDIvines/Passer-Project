@@ -6,6 +6,7 @@
 #include "travellers.hpp"
 
 #include "SSystem/SComponent/c_lib.h"
+#include "Z2AudioLib/Z2AudioMgr.h"
 #include "SSystem/SComponent/c_math.h"
 #include "SSystem/SComponent/c_phase.h"
 #include "d/actor/d_a_alink.h"
@@ -25,6 +26,7 @@
 #include "m_Do/m_Do_mtx.h"
 #include "mods/service.hpp"
 #include "mods/svc/actor.h"
+#include "mods/svc/audio_res.h"
 #include "mods/svc/camera.h"
 #include "mods/svc/flow.hpp"
 #include "mods/svc/save.h"
@@ -195,6 +197,37 @@ bool findSpot(const cXyz& link, cXyz* outPos, s16* outYaw, s8* outRoom) {
     }
     travellers::diagLine("pcamp   spot search: %d candidates, %s", static_cast<int>(cands.size()), found ? "found" : "none flat enough");
     return found;
+}
+
+// --- the sleep scene's song: Sun's Song (harp and oboe), a stream of ours like Beedle's shop music ---
+// It plays once; the sky turns over with it, as Ocarina of Time's does. The field's own music is ducked
+// meanwhile (the music manager's "stream over the main tune" fader, which the game leaves at full).
+constexpr const char* kSongPath = "AudioRes/Stream/psr_sunsong.ast";   // as the game's sound table spells them
+constexpr int kSongFrames = 168;   // 5.59 seconds (178954 samples at 32 kHz), in game frames
+bool g_songOk = false;
+uint16_t g_songId = 0;
+bool g_songOn = false;
+Z2SeqMgr* seqMgr() { return Z2AudioMgr::getInterface(); }   // the game's (not a mod-local JASGlobalInstance)
+u32 songSoundId() { return 0x02000000u | g_songId; }       // section 2 (streams), the allocated ID
+void songPrepare() {
+    Z2SeqMgr* seq = seqMgr();
+    if (!g_songOk || seq == nullptr) return;
+    seq->bgmStreamPrepare(songSoundId());
+}
+void songPlay() {
+    Z2SeqMgr* seq = seqMgr();
+    if (seq == nullptr) return;
+    seq->mStreamBgmMaster.move(0.0f, 20);   // the field's tune fades out under it
+    if (!g_songOk) return;
+    seq->bgmStreamPlay();
+    g_songOn = true;
+}
+void songEnd() {
+    Z2SeqMgr* seq = seqMgr();
+    if (seq == nullptr) return;
+    if (g_songOn && seq->getStreamBgmID() == songSoundId()) seq->bgmStreamStop(20);
+    g_songOn = false;
+    seq->mStreamBgmMaster.move(1.0f, 45);   // and back
 }
 
 // --- the camera for the camp's scenes (Dusklight's camera operator) ------------------------------
@@ -464,6 +497,7 @@ psrPCamp_c::~psrPCamp_c() {
     if (mState != ST_IDLE) {
         // taken away mid-scene (the room went): leave nothing hanging
         g_cam.active = false;
+        if (mState == ST_SLEEP) songEnd();
         if (g_sleeping) {
             g_sleeping = false;
             if (daPy_py_c* link = player()) {
@@ -708,7 +742,7 @@ void psrPCamp_c::runTalk() {
 // Asleep: Link is in the tent (it shuts and glows), the camera pulls back to take in the camp and the
 // sky, and the clock runs on twelve hours, the sky rolling over with it. Then back to Link.
 void psrPCamp_c::runSleep() {
-    constexpr int kIn = 60, kRoll = 330, kHold = 30, kOut = 30;
+    constexpr int kIn = 60, kRoll = kSongFrames, kHold = 30, kOut = 30;   // the sky turns over with the song
     daPy_py_c* link = player();
     if (mTimer == 0) {
         g_cam.capture = true;
@@ -719,10 +753,13 @@ void psrPCamp_c::runSleep() {
             link->onPlayerNoDraw();
             link->onPlayerShadowNoDraw();
         }
+        songPrepare();   // loads while the camera pulls back
         travellers::diagLine("pcamp   Link goes to sleep at %.1f (hour %d)", mSleepFrom, dKy_getdaytime_hour());
     }
     ++mTimer;
     if (mTimer == 2) g_cam.active = true;
+    if (mTimer == kIn) songPlay();
+    if (mTimer == kIn + kRoll + kHold) songEnd();
     const f32 in = ease((mTimer - 2) / static_cast<f32>(kIn));
     const f32 out = ease((mTimer - (kIn + kRoll + kHold)) / static_cast<f32>(kOut));
     const f32 t = in * (1.0f - out);
@@ -855,6 +892,14 @@ ModResult install() {
                                                &psrPCamp_c::sActorHandle);
         r != MOD_OK) {
         return r;
+    }
+    if (svc_audio_res != nullptr) {
+        AudioSoundTableStreamInfo info = *svc_audio_res->default_stream_info;   // stereo: left, right
+        info.volume = 1.0f;
+        info.stop_on_scene_change = true;
+        AudioSoundTableHandle handle = 0;
+        g_songOk = svc_audio_res->add_sound_table_stream(mod_ctx, kSongPath, &info, &handle, &g_songId) == MOD_OK;
+        if (!g_songOk) travellers::diagLine("pcamp   Sun's Song stream could not be added; the night passes quietly");
     }
     if (svc_camera != nullptr) {
         CameraOperatorDesc desc = CAMERA_OPERATOR_DESC_INIT;
