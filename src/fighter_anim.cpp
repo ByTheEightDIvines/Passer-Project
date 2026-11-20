@@ -596,6 +596,25 @@ bool busy(const daNpcPasser_c* passer) {
                             s->phase == Phase::Sheathing || s->phase == Phase::Swinging);
 }
 
+bool marching(const daNpcPasser_c* passer) {
+    const int slot = travellers::slotIndex(passer);
+    const u8 style = travellers::guardStyle(passer);
+    if (slot < 0 || style == 0 || style == travellers::kStyleArcher || passer->mpMorf == nullptr) return false;
+    static std::array<bool, travellers::kSlots> s_last{};
+    if (weaponOut(passer) || traveller_gear::sitting(slot)) return s_last[slot] = false;
+    auto* p = const_cast<daNpcPasser_c*>(passer);
+    J3DAnmTransform* cur = p->mpMorf->getAnm();
+    if (cur == nullptr || cur == p->getAnmP(14, 0)) return s_last[slot] = false;   // on the wagon's bench
+    if (forcedAnm(cur)) return s_last[slot];   // a flinch or a stagger: as he was
+    if (isLoco(p, cur)) return s_last[slot] = true;
+    if (style == travellers::kStyleSpear) {
+        auto* walk = static_cast<J3DAnmTransform*>(dComIfG_getObjectRes("Mspecial", "m_walk_stick.bck"));
+        auto* wait = static_cast<J3DAnmTransform*>(dComIfG_getObjectRes("Mspecial", "m_wait_stick.bck"));
+        if (cur == walk || cur == wait) return s_last[slot] = true;
+    }
+    return s_last[slot] = false;
+}
+
 bool weaponOut(const daNpcPasser_c* passer) {
     const Slot* s = slotFor(passer, false);
     return s != nullptr && s->phase != Phase::Sheathed && s->phase != Phase::Surprised;   // (the bow too)
@@ -1025,7 +1044,8 @@ void layerTick(daNpcPasser_c* passer, bool carryLight) {
     const bool picking = cur != nullptr && (cur == bodyAnm(passer, "pickup") || cur == bodyAnm(passer, "cast"));
     const bool onBench = cur != nullptr && cur == passer->getAnmP(14, 0);   // a convoy rider, seated
     // (a guard carries his shield on his back now while he isn't fighting: both arms free)
-    const bool wantArm = !guard && carryLight && !forced && !sitting && !picking && L.hold != nullptr;
+    const bool wantArm = L.hold != nullptr && !forced && !sitting && !picking &&
+                         (guard ? marching(passer) : carryLight);   // (a guard: his shield arm on the march)
     L.armW = std::clamp(L.armW + (wantArm ? kArmFade : -kArmFade), 0.0f, 1.0f);
     // a guard running or walking in a fight keeps his on-guard arms (not mid thrust, block or swing,
     // which pose them themselves)

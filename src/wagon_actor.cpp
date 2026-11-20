@@ -294,6 +294,11 @@ void psrWagon_c::addDamage(int amount) {
     if (mDamage >= kMaxDamage) {
         mWrecked = true;
         mLoose = true;
+        // what the camera checks it against was the horse (its matrix): the horse bolts off down the road
+        // and the wreck stays, so the wreck blinked in and out with the way the camera faced
+        // (while the horse is still in sight, running off, nothing is culled; Execute moves the box to
+        // the wreck once it's gone)
+        fopAcM_OffStatus(this, fopAcStts_CULL_e);
         mSmoke = kSmokeFrames;
         mBlaze = kBlazeFrames;   // however it was wrecked (fire, or monsters smashing it): it goes up in flames
         // the moment it goes: a burst of smoke and splinters (a bomb's), as the fire takes it
@@ -504,6 +509,12 @@ void psrWagon_c::setHorseAnim() {
 }
 
 int psrWagon_c::Execute() {
+    if (mWrecked && mHorseGone && !fopAcM_CheckStatus(this, fopAcStts_CULL_e)) {
+        // the horse is gone: culled again, against the wreck's own frame (the hitch) and round its pieces
+        fopAcM_SetMtx(this, mCoachMtx);
+        fopAcM_setCullSizeBox(this, -450.0f, -250.0f, -750.0f, 450.0f, 500.0f, 300.0f);
+        fopAcM_OnStatus(this, fopAcStts_CULL_e);
+    }
     if (!mDriven) mSpeed = 0.0f;
     if (mBurning && !mWrecked && ++mBurnTick >= kBurnEvery) {
         mBurnTick = 0;

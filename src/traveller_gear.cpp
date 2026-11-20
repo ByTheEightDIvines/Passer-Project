@@ -683,8 +683,10 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
     const bool bowInHand = g->bow != nullptr && fighter_anim::bowView(passer).inHand;
     // ...and whenever he isn't fighting: shield and spear slung on his back, hands free
     const bool gFighting = gStyle != 0 && fighter_anim::weaponOut(passer) && !bowInHand;
-    const bool shieldOnBack =
-        gStyle != 0 && (!gFighting || g->sitting || gOnBench || (gStyle == travellers::kStyleArcher && bowInHand));
+    // on the march the spear's in his hand and the shield on his arm; anything else, both on his back
+    const bool gMarching = fighter_anim::marching(passer);
+    const bool shieldOnBack = gStyle != 0 && ((!gFighting && !gMarching) || g->sitting || gOnBench ||
+                                              (gStyle == travellers::kStyleArcher && bowInHand));
     const bool royalArcher = gStyle == travellers::kStyleArcher;
     // fitted in the backbone's own space: the bowman's pushed under his pack; the royal archer's (no pack)
     // in layers on his back: quiver against it (Triforce out), the bow over it, the shield over the bow
@@ -749,6 +751,7 @@ void onDrawPost(ModContext*, void* args, void*, void*) {
         const bool big = passer->m_type == 1;
         const bool fighting = fighter_anim::weaponOut(passer) && !fighter_anim::bowView(passer).inHand;
         if (fighting && !shieldOnBack) drawOn(g->gSpear, kHandR, big ? &kHold_fspear_mad_a : &kHold_fspear_man_a);
+        else if (gMarching && !shieldOnBack) drawOn(g->gSpear, kHandR, big ? &kHold_spear_mad_a : &kHold_spear_man_a);
         else drawOn(g->gSpear, kBackbone, big ? &kHold_back_spear_mad_a : &kHold_back_spear_man_a);
         const bool spear = style == travellers::kStyleSpear;
         if (shieldOnBack) {   // sitting down (by the fire, on the wagon's bench), or shooting: the shield on his back

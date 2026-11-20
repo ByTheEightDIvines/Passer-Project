@@ -771,7 +771,18 @@ void placeHeld(daNpcPasser_c* p) {
         cXyz to = escortSpot(w, *m);
         cXyz d = to - p->current.pos;
         d.y = 0.0f;
-        const f32 dist = d.absXZ();
+        f32 dist = d.absXZ();
+        if (dist > 600.0f && !reacting && fopAcM_CheckCondition(p, fopAcCnd_NODRAW_e)) {
+            // well behind and out of view: simply at his place (running the whole way back across the
+            // field was the guards streaking into view)
+            if (const f32 g = groundAt(to.x, to.y, to.z); g != -G_CM3D_F_INF) {
+                travellers::noteAct(p, "out of view, well behind: back at his place");
+                p->current.pos.set(to.x, g, to.z);
+                p->old.pos = p->current.pos;
+                d.set(0.0f, 0.0f, 0.0f);
+                dist = 0.0f;
+            }
+        }
         const bool running = dist > 300.0f || convoyFleeing(w);   // fallen behind, or the wagon's off fast
         f32 step = reacting ? 0.0f : std::min(dist, kSpeed * (running ? 2.6f : 1.6f));   // (staggering: not a step)
         if (dist > 1.0f) {

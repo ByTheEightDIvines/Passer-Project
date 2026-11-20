@@ -198,6 +198,9 @@ struct PasserState {
     bool wasScared = false;   // running or cowering last frame (to scream once as it starts)
     cXyz lastGround{};      // where it last stood on solid ground (to catch it falling through the world)
     bool hasGround = false;
+    cXyz tickFrom{};          // where it stood when this tick began (to catch it being moved too far in one)
+    bool tickFromSet = false;
+    bool wasHidden = false;   // culled from view last tick (logged as it changes, near Link)
     daNpcPasser_c* actor = nullptr;
     fpc_ProcID id = 0;
     bool registered = false;  // seen by process ID at least once (create may not be registered yet)
@@ -1854,6 +1857,40 @@ void onRoomPathPost(ModContext*, void* args, void* retval, void*) {
 // enemies only, and tilt the model while it falls.
 void fleeTick(daNpcPasser_c* passer, PasserState& state);   // (below, with the camp music)
 
+// The diary: anything of ours moved further in one tick than a run goes (the "zooming"), and which
+// part moved it; and, near Link, each time one is culled from view or comes back.
+constexpr f32 kJumpLog = 30.0f;
+int g_jumpLines = 0;
+void jumpCheck(daNpcPasser_c* passer, PasserState& state, const char* by) {
+    const cXyz now = passer->current.pos;
+    if (state.tickFromSet && !state.dead && state.blast == 0 && g_jumpLines < 800) {
+        const f32 d = now.absXZ(state.tickFrom);
+        if (d > kJumpLog) {
+            ++g_jumpLines;
+            const auto* link = dComIfGp_getPlayer(0);
+            travellers::diagLine("jump    slot %d moved %.0f in a tick by %s | held %d mode %d esc %d anim %d speedF %.1f hidden %d link %.0f",
+                                 travellers::slotIndex(passer), d, by, static_cast<int>(travellers::crewHeld(passer)),
+                                 static_cast<int>(passer->mActionIdx), static_cast<int>(passer->field_0xb1c),
+                                 static_cast<int>(state.anim), passer->speedF,
+                                 static_cast<int>(fopAcM_CheckCondition(passer, fopAcCnd_NODRAW_e)),
+                                 link != nullptr ? now.absXZ(link->current.pos) : -1.0f);
+        }
+    }
+    state.tickFrom = now;
+}
+void cullCheck(daNpcPasser_c* passer, PasserState& state) {
+    const bool hidden = fopAcM_CheckCondition(passer, fopAcCnd_NODRAW_e);
+    if (hidden == state.wasHidden) return;
+    state.wasHidden = hidden;
+    const auto* link = dComIfGp_getPlayer(0);
+    const f32 d = link != nullptr ? passer->current.pos.absXZ(link->current.pos) : 1.0e9f;
+    if (d < 4000.0f && g_jumpLines < 800) {
+        ++g_jumpLines;
+        travellers::diagLine("cull    slot %d %s, %.0f from Link (held %d)", travellers::slotIndex(passer),
+                             hidden ? "hidden" : "shown", d, static_cast<int>(travellers::crewHeld(passer)));
+    }
+}
+
 void onProfileExecutePost(ModContext*, void* args, void*, void*) {
     auto* passer = mods::arg<daNpcPasser_c*>(args, 0);
     auto* state = findState(passer, false);
@@ -1861,9 +1898,14 @@ void onProfileExecutePost(ModContext*, void* args, void*, void*) {
         return;
     }
     voice_banks::tick();
+    jumpCheck(passer, *state, "its own walk/fight");
+    cullCheck(passer, *state);
     // a convoy rider or escort its convoy is placing by hand: set it where it belongs this frame
     const bool held = !state->dead && travellers::crewHeld(passer);
-    if (held) convoys::placeHeld(passer);
+    if (held) {
+        convoys::placeHeld(passer);
+        jumpCheck(passer, *state, "the convoy");
+    }
     if (state->dead) {
         psr_bubble::remove(state->bubble);
         state->bubble = fpcM_ERROR_PROCESS_ID_e;
@@ -1908,6 +1950,7 @@ void onProfileExecutePost(ModContext*, void* args, void*, void*) {
             passer->speed.y = 0.0f;
             travellers::noteAct(passer, "fell through the ground; put back where it last stood");
         }
+        jumpCheck(passer, *state, "falling/grounding");
         if (psr_tent::pushOff(passer, passer->mAcch)) {
             travellers::noteAct(passer, "stepped off a tent it had climbed");
         }
@@ -2803,6 +2846,8 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
     }
 
     (void)&logProgress;   // per-traveller logging off (too chatty with many travellers)
+    state->tickFrom = passer->current.pos;
+    state->tickFromSet = true;
 
     // The game deletes a passer the moment it is off screen once its end time of day has passed:
     // look away from a camp at the wrong moment and everyone was gone. Only far off (well out of

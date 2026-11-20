@@ -31,6 +31,10 @@ void drop(daNpcPasser_c* passer);
 bool busy(const daNpcPasser_c* passer);
 // The weapon is out of its sheath.
 bool weaponOut(const daNpcPasser_c* passer);
+// A spearman or swordsman on the march (walking, running, or a spearman standing at ease on his spear),
+// weapon not drawn: spear in his right hand, shield on his left arm. Anything else (sitting, the
+// bench, eating, sleeping, standing about) they're slung on his back. Never the royal archer.
+bool marching(const daNpcPasser_c* passer);
 // One of its own animations that should play at its own speed (not the walk's) is on.
 bool ownSpeed(const daNpcPasser_c* passer);
 // The right hand's grip frame (hand joint x fitted grip) for this body, whatever it is doing; false
