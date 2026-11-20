@@ -96,6 +96,7 @@ FlowEventId g_eBye{};
 FlowEventId g_eOhh{};
 FlowQueryId g_qGreeted{}, g_qFieldGreeted{}, g_qTwilight{}, g_qWare{};
 u16 g_fieldStart = 0xFFFF;
+u16 g_wakeStart = 0xFFFF;   // Link waking him (knocked out)
 int g_boughtSerial = 0;   // counts purchases (the tent sees one happen)
 u16 g_nothingNode = 0xFFFF;
 bool g_ready = false;
@@ -364,6 +365,15 @@ ModResult registerFlows(mods::flow::GraphBuilder& graph, const MessageLanguage* 
         auto first = graph.add_branch(g_qFieldGreeted, 0);
         first.results({ohh.id(), static_cast<u16>(back)});
         g_fieldStart = first.id();
+        // knocked out cold by the monsters, and Link wakes him: groggy, then OHHHHH, then today's ware
+        const int k3 = say("You're a real lifesaver! For my hero,\na look at today's special!", w);
+        const int k2 = say("OHHHHH! Mr. Customer! You woke me up!\nThose monsters knocked me clean out!", static_cast<u16>(k3));
+        if (k2 < 0 || k3 < 0) return g_lastErr != MOD_OK ? g_lastErr : MOD_ERROR;
+        auto kOhh = graph.add_event(g_eOhh, {0, 0, 0, 0});
+        kOhh.next(static_cast<u16>(k2));
+        const int k1 = say("Nnngh... Wh-what hit me...?", kOhh.id());
+        if (k1 < 0) return g_lastErr != MOD_OK ? g_lastErr : MOD_ERROR;
+        g_wakeStart = static_cast<u16>(k1);
     }
     // --- his tent as a real shop (dShopSystem_c, see tent_beedle.cpp) ---------------------------------
     // The game's shop finds its talk by flow number: the shopkeeper's own (G: his welcome; G+1: the
@@ -500,8 +510,13 @@ int boughtSerial() { return g_boughtSerial; }
 int lastBought() { return g_lastBought; }
 void sayGoodbye(const fopAc_ac_c* at) { playVoice(g_goodbye, at); }
 
-u16 talkNode() {
+u16 talkNode(const fopAc_ac_c* who, bool knockedOut) {
     if (!g_ready) return 0xFFFF;
+    if (knockedOut) {
+        if (who != nullptr) g_fieldGreeted = fopAcM_GetID(who);   // (they've met now: next time it's "back again")
+        g_talkWare = todaysWare();
+        return g_wakeStart;
+    }
     g_talkWare = todaysWare();
     if (g_talkWare >= 0) {
         travellers::diagLine("beedle  today (day %d): %s", dComIfGs_getDate(), kWares[g_talkWare].name);

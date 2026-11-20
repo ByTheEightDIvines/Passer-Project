@@ -324,6 +324,11 @@ enum PathEnd : u8 { PE_CONTINUE, PE_ARRIVE, PE_VANISH };
 struct Traveller {
     bool used = false;
     bool beedle = false;   // Beedle: wanders the field day and night, never camps, never near his tent
+    // Beedle's comings and goings: away (nowhere) until backAt (game minutes), then put on a road near
+    // Link; waitSpawn counts the frames he has been waiting there for his room's spawner to bring him in
+    bool away = false;
+    s32 backAt = 0;
+    int waitSpawn = 0;
     u8 type = 8;
     State state = ST_WALK;
     std::vector<Leg> route;
@@ -628,7 +633,20 @@ int nearestGate(int from) {
     return best;
 }
 
-bool beedleNodeOk(int n) { return !(kNodes[n].stage == 1 && kNodes[n].room == 8); }
+// Beedle's tent's room (F_SP122 room 8): he is never in it, whatever he's doing
+bool beedleRoomOk(int stage, int room) { return !(stage == 1 && room == 8); }
+// the provinces with camps in them: the rooms Beedle wanders and turns up in
+bool campRoom(int stage, int room) {
+    for (int n = 0; n < kNodeCount; ++n) {
+        if (kNodes[n].kind == NK_CAMP && kNodes[n].stage == stage && kNodes[n].room == room) return true;
+    }
+    return false;
+}
+bool beedleNodeOk(int n) { return beedleRoomOk(kNodes[n].stage, kNodes[n].room) && campRoom(kNodes[n].stage, kNodes[n].room); }
+s32 gameMinutesNow() {
+    return static_cast<s32>(dComIfGs_getDate()) * 1440 + dKy_getdaytime_hour() * 60 + dKy_getdaytime_minute();
+}
+constexpr s32 kBeedleAwayMinutes = 180;   // gone from Link's part of the world: back near him three game hours later
 
 // --- home: how far a local goes from its home camp ---------------------------------------------------
 // A local keeps within its home's reach: by road, no further than the third nearest camp from home (about
@@ -754,7 +772,7 @@ void newRoute(Traveller& t, int from) {
     t.node = from;
     if (t.route.empty()) {
         t.state = ST_REST;
-        t.timer = rndRange(600, 1800);
+        t.timer = t.beedle ? 30 : rndRange(600, 1800);
         t.restUntilMorning = false;
     } else {
         t.state = ST_WALK;
@@ -777,10 +795,10 @@ void arrive(Traveller& t, int node) {
     t.leg = 0;
     t.dist = 0.0f;
     t.idleSet = false;
-    if (t.beedle) {   // a short look round, then on his way again
-        t.state = ST_REST;
+    if (t.beedle) {   // he never rests: straight on to somewhere else
         t.restUntilMorning = false;
-        t.timer = rndRange(150, 500);
+        newRoute(t, node);
+        if (t.state == ST_REST) t.timer = 30;   // (nowhere to go from here just now: try again in a second)
         return;
     }
     switch (kNodes[node].kind) {
@@ -961,6 +979,7 @@ f32 awayScore(const Leg& l, f32 d, const cXyz& here, const cXyz& threat) {
 // every fork, up to kFleeDistance (stopping at a camp, gate, loading zone or unloaded room).
 void buildFleePath(int slot, const cXyz& from, const cXyz& threat) {
     Traveller& t = g_t[slot];
+    PlanAs as(t.beedle);   // (Beedle never runs into his tent's part of the field)
     std::vector<cXyz> pts{from};
     t.fleeMap.clear();
     t.fleeLegs.clear();
@@ -999,7 +1018,8 @@ void buildFleePath(int slot, const cXyz& from, const cXyz& threat) {
             while (i < n && legPointDist(leg, i) <= d) ++i;   // next point ahead
             for (; i < n && run < kFleeDistance && static_cast<int>(pts.size()) < kMaxPathPoints; ++i) {
                 const Point& p = legPoint(leg, i);
-                if (p.stage != stage0 || p.room < 0 || !dComIfGp_roomControl_checkRoomDisp(p.room)) {
+                if (p.stage != stage0 || p.room < 0 || !dComIfGp_roomControl_checkRoomDisp(p.room) ||
+                    (t.beedle && !beedleRoomOk(p.stage, p.room))) {
                     done = true;
                     break;
                 }
@@ -1133,6 +1153,7 @@ void stepVirtual(Traveller& t) {
     }
 }
 
+int randomOpenNode(bool beedle);
 void stepRestOrTown(Traveller& t) {
     if (t.guard) {
         // A guard never takes to the road. One knocked out comes back to the fire after a while.
@@ -1154,6 +1175,11 @@ void stepRestOrTown(Traveller& t) {
         }
         if (--t.timer <= 0) newRoute(t, t.node);
     } else if (t.state == ST_TOWN) {
+        if (t.beedle) {   // never in town: straight back out on the roads
+            const int n = randomOpenNode(true);
+            if (n >= 0) newRoute(t, n);
+            return;
+        }
         if (--t.timer > 0) return;
         if (isEvening()) {           // stays in town overnight, out again in the morning (not all at once)
             t.timer = rndRange(600, 7200);
@@ -1846,7 +1872,7 @@ void refreshStory() {
 }
 
 // Somewhere open to be: a road spot or a camp in an open room with an open road out of it.
-int randomOpenNode(bool beedle = false) {
+int randomOpenNode(bool beedle) {
     PlanAs as(beedle);
     for (int tries = 0; tries < 40; ++tries) {
         const int n = static_cast<int>(rnd() % kNodeCount);
@@ -1866,6 +1892,7 @@ void rehomeStranded() {
         Traveller& t = g_t[s];
         if (!t.used || t.spawned || t.guard || t.crew || t.dead) continue;
         if (t.state == ST_REST && !t.beedle) continue;   // at a camp the story hasn't opened: it waits there
+        if (t.beedle && t.away) continue;                 // (Beedle away: he turns up near Link)
         PlanAs as(t.beedle);
         bool stuck = !nodeOpen(t.node) || (t.beedle && !beedleNodeOk(t.node));
         if (!stuck && t.state == ST_WALK && t.leg < static_cast<int>(t.route.size())) {
@@ -1923,6 +1950,8 @@ void becomePerson(Traveller& t, int s) {
     if (s == kBeedleSlot) {
         t.type = kBeedleType;
         t.beedle = true;
+        t.away = true;      // he turns up near Link (beedleTick), not somewhere on the map
+        t.backAt = 0;
         return;
     }
     const people::Person* p = people::get(s);
@@ -1970,14 +1999,7 @@ void placeTraveller(int s) {
     Traveller& t = g_t[s];
     becomePerson(t, s);
     if (!t.used) return;
-    if (t.beedle) {   // Beedle wanders: anywhere open along the roads
-        const int start = randomOpenNode(true);
-        newRoute(t, start >= 0 ? start : kCamps[0].node);
-        if (t.state == ST_WALK && !t.route.empty()) {
-            t.dist = static_cast<f32>(rnd() % 1000) / 1000.0f * edgeLength(t.route[0].edge);
-        }
-        return;
-    }
+    if (t.beedle) return;   // Beedle: away until he turns up near Link (becomePerson)
     int camp = wakeCamp(s);
     if (camp < 0) camp = fireNodes().front();
     releaseSeat(t);
@@ -2127,6 +2149,22 @@ bool isGuard(const fopAc_ac_c* actor) {
     return s >= 0 && g_t[s].guard;
 }
 int slotIndex(const fopAc_ac_c* actor) { return slotOf(actor); }
+// The hard rule: Beedle is never in his tent's room. If he's ever standing in it (run there, pushed
+// there), he turns and runs out of it, away from the tent.
+void beedleKeepOut(daNpcPasser_c* p) {
+    const int slot = slotOf(p);
+    if (slot < 0 || !g_t[slot].beedle || (g_frame % 10) != 0 || !p->mAcch.ChkGroundHit()) return;
+    const int room = dComIfG_Bgsp().GetRoomId(p->mAcch.m_gnd);
+    if (beedleRoomOk(currentStage(), room)) return;
+    for (int n = 0; n < kNodeCount; ++n) {
+        if (kNodes[n].kind != NK_BEEDLE) continue;
+        diag("beedle  in his tent's room: out of it");
+        startFlee(p, cXyz(kNodes[n].x, kNodes[n].y, kNodes[n].z));
+        p->setAction(daNpcPasser_c::MODE_1);
+        return;
+    }
+}
+
 bool isBeedle(const fopAc_ac_c* actor) {
     const int s = slotOf(actor);
     return s >= 0 && g_t[s].beedle;
@@ -2191,6 +2229,12 @@ bool onPathEnd(daNpcPasser_c* passer) {
     case PE_ARRIVE:
     default:
         if (t.state == ST_WALK && !t.route.empty()) arrive(t, legEnd(t.route.back()));
+        if (t.beedle && t.state == ST_WALK && !t.route.empty() && !passer->checkFearSituation()) {
+            // Beedle doesn't stop: straight on along his next road
+            buildWalkPath(slot, passer->current.pos);
+            setOwnPath(passer, kWalkPathBase + slot);
+            return true;
+        }
         // Resting skips vanilla's walking code, and with it the fear check: do it here, so people
         // waiting at a junction run too. Settled campers don't run: fighters defend the fire and
         // the rest cower (passer_prototype's camp guard).
@@ -2412,6 +2456,55 @@ daNpcPasser_c* nearestActor(const cXyz& pos, f32 maxDist) {
     return best;
 }
 
+// Beedle out of sight: away until his time comes, then put on a road near Link (out of sight of him,
+// in a province with camps, never his tent's room), where his room's spawner brings him in. If it
+// can't (Link moved off, or the spot's in view) he's put somewhere else near Link after a while.
+constexpr int kBeedleWaitFrames = 30 * 45;
+constexpr f32 kBeedleNearMin = kNoArrivalRadius + 300.0f, kBeedleNearMax = 5500.0f;   // (past 6000 out of sight the game tidies a walker away)
+bool beedlePlace(Traveller& t, const cXyz& link) {
+    const int stage = currentStage();
+    if (stage < 0) return false;
+    PlanAs as(true);
+    std::vector<int> spots, behind;
+    auto* player = dComIfGp_getPlayer(0);
+    const s16 facing = player != nullptr ? player->shape_angle.y : 0;
+    for (int n = 0; n < kNodeCount; ++n) {
+        const Node& k = kNodes[n];
+        if (k.stage != stage || (k.kind != NK_ROAD && k.kind != NK_CAMP) || !beedleNodeOk(n) || !nodeOpen(n)) continue;
+        if (!dComIfGp_roomControl_checkRoomDisp(k.room)) continue;
+        const f32 dx = k.x - link.x, dz = k.z - link.z;
+        const f32 d = std::sqrt(dx * dx + dz * dz);
+        if (d < kBeedleNearMin || d > kBeedleNearMax) continue;
+        spots.push_back(n);
+        if (std::abs(static_cast<int>(static_cast<s16>(cM_atan2s(dx, dz) - facing))) > 0x5000) behind.push_back(n);
+    }
+    std::vector<int>& from = !behind.empty() ? behind : spots;
+    for (int tries = 0; tries < 6 && !from.empty(); ++tries) {
+        const int n = from[rnd() % from.size()];
+        t.route.clear();
+        newRoute(t, n);
+        if (t.state == ST_WALK && !t.route.empty()) {
+            diag("beedle  turns up at node %d (stage %d room %d), %.0f from Link", n, kNodes[n].stage, kNodes[n].room,
+                 std::sqrt((kNodes[n].x - link.x) * (kNodes[n].x - link.x) + (kNodes[n].z - link.z) * (kNodes[n].z - link.z)));
+            return true;
+        }
+    }
+    return false;
+}
+void beedleTick(Traveller& t, const cXyz& link) {
+    if (t.away) {
+        if (gameMinutesNow() < t.backAt || (g_frame % 30) != 0) return;
+        if (dKy_darkworld_check() || dComIfGp_event_runCheck()) return;
+        if (beedlePlace(t, link)) { t.away = false; t.waitSpawn = 0; }
+        return;
+    }
+    // placed, waiting for his room's spawner (he stays put at his spot meanwhile)
+    if (++t.waitSpawn >= kBeedleWaitFrames) {
+        t.waitSpawn = 0;
+        if (!beedlePlace(t, link)) t.away = true;   // nowhere near Link to be: he tries again in a moment
+    }
+}
+
 void update() {
     ++g_frame;
     // open the diagnostic log, retrying every ~2 s until it works; say so in Dusklight's log either way
@@ -2498,10 +2591,11 @@ void update() {
             const Traveller& b = g_t[kBeedleSlot];
             const auto& n = kNodes[std::clamp(b.node, 0, kNodeCount - 1)];
             const f32 dx = n.x - link.x, dz = n.z - link.z;
-            diag("beedle  used %d state %d node %d (stage %d room %d, %.0f from Link) spawned %d dead %d leg %d/%d",
+            diag("beedle  used %d state %d node %d (stage %d room %d, %.0f from Link) spawned %d away %d (back %d %02d:%02d, now %d %02d:%02d) waiting %d leg %d/%d",
                  static_cast<int>(b.used), static_cast<int>(b.state), b.node, n.stage, n.room,
-                 std::sqrt(dx * dx + dz * dz), static_cast<int>(b.spawned), static_cast<int>(b.dead), b.leg,
-                 static_cast<int>(b.route.size()));
+                 std::sqrt(dx * dx + dz * dz), static_cast<int>(b.spawned), static_cast<int>(b.away),
+                 b.backAt / 1440, (b.backAt % 1440) / 60, b.backAt % 60, gameMinutesNow() / 1440,
+                 (gameMinutesNow() % 1440) / 60, gameMinutesNow() % 60, b.waitSpawn, b.leg, static_cast<int>(b.route.size()));
         }
     }
     // Buffer getting full: write it down every few frames, and once a second list which actor types
@@ -2546,6 +2640,19 @@ void update() {
                 // Gone: deleted by the game at an exit or off screen, or its room unloaded. It carries
                 // on virtually from where the roster last had it.
                 diag("gone    slot %d (%s)", s, t.leaving ? "left" : t.lastAct);
+                if (t.beedle) {
+                    // gone from Link's part of the world: away now, and back near Link in a few hours
+                    t.away = true;
+                    t.backAt = gameMinutesNow() + kBeedleAwayMinutes;
+                    t.route.clear();
+                    t.state = ST_WALK;
+                    t.spawned = false;
+                    t.registered = false;
+                    t.leaving = false;
+                    t.actor = fpcM_ERROR_PROCESS_ID_e;
+                    diag("beedle  away until day %d %02d:%02d", t.backAt / 1440, (t.backAt % 1440) / 60, t.backAt % 60);
+                    continue;
+                }
                 if (!t.leaving) {
                     // The game deleted it (scared or stuck off screen). Give it time to get further
                     // down the road before its spawner may bring it back, so it doesn't reappear in
@@ -2595,6 +2702,10 @@ void update() {
         // virtual: the roster moves it along; its room's spawner brings it in when that room is loaded
         if (t.cooldown > 0) --t.cooldown;
         heal(t);
+        if (t.beedle) {   // Beedle isn't moved along out of sight: he turns up near Link
+            beedleTick(t, link);
+            continue;
+        }
         if (t.state == ST_WALK && isDeepNight() && !t.route.empty()) {
             // Properly dark and nobody can see it: it is at its camp seat (or in town) for the night.
             const int night = nightDestination(t, legEnd(t.route[t.leg]));
@@ -2671,8 +2782,9 @@ bool spawnerTick(fopAc_ac_c* spawner, bool firstTick) {
         if (t.crew) continue;                          // convoy people come and go with their convoy
         if (t.guard && !lanayruCleared()) continue;   // the guards come out once Castle Town is lit
         Where w{};
+        if (t.beedle && t.away) continue;
         if (t.state == ST_WALK && !t.route.empty()) {
-            if (isDeepNight()) continue;   // roads are empty at night: only campers appear
+            if (isDeepNight() && !t.beedle) continue;   // roads are empty at night: only campers appear (Beedle never sleeps)
             w = locate(t.route[t.leg], t.dist);
         } else if (t.state == ST_REST) {
             w = restWhere(t, s);

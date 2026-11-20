@@ -12,7 +12,7 @@ bool installSounds();   // his voice clips (res/voices/beedle_*.wav)
 // Beedle's shop talk is off (its graph failed to register).
 void markUnready();
 ModResult registerFlows(mods::flow::GraphBuilder& graph, const MessageLanguage* langs, int nLangs, u16 group);
-u16 talkNode();                     // where today's talk starts (0xFFFF: not ready)
+u16 talkNode(const fopAc_ac_c* who, bool knockedOut);   // where today's talk starts (knocked out: Link wakes him; 0xFFFF: not ready)
 void talkStarted(daNpcPasser_c* p); // Link has started talking to him
 void talkTick(daNpcPasser_c* p);    // each frame of it (he holds still, faces Link)
 void talkEnded(daNpcPasser_c* p);   // "GOODBYE!"

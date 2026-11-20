@@ -40,6 +40,7 @@ bool isGuard(const fopAc_ac_c* actor);   // one of the camp guards
 // One of Link's bombs, lit and out of his hands, within r of `at` (the nearest), else nullptr.
 fopAc_ac_c* liveBombNear(const cXyz& at, f32 r);
 bool isBeedle(const fopAc_ac_c* actor);  // Beedle, wandering the field (his own look, never scared, runs fast)
+void beedleKeepOut(daNpcPasser_c* p);   // never in his tent's room: out of it if he is
 bool isCrew(const fopAc_ac_c* passer);
 // A guard's arms: 0 none (not a guard), 1 spear and tall shield, 2 sword and small shield, 3 sword,
 // small shield and the royal bow.

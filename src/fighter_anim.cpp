@@ -926,6 +926,30 @@ bool fall(daNpcPasser_c* passer, bool landed) {
     return startForced(passer, anim, 1.0f, false, landed ? 2.0f : 4.0f);
 }
 
+bool startGetUp(daNpcPasser_c* passer) {
+    if (passer == nullptr || passer->mpMorf == nullptr) return false;
+    J3DAnmTransformKey* land = borrowed(passer, "land");
+    if (land == nullptr) return false;
+    if (Forced* f = activeForced(passer)) { f->a = nullptr; f->before = nullptr; }   // the fall is over
+    passer->mpMorf->setAnm(land, J3DFrameCtrl::EMode_NONE, 0.0f, -0.8f, 0, -1);
+    passer->mpMorf->setFrameF(static_cast<f32>(land->getFrameMax()) - 1.0f);
+    return true;
+}
+
+bool gettingUp(daNpcPasser_c* passer, f32 upTo) {
+    J3DAnmTransformKey* land = borrowed(passer, "land");
+    if (land == nullptr || passer->mpMorf == nullptr || passer->mpMorf->getAnm() != land) return false;
+    return passer->mpMorf->getFrame() > upTo * static_cast<f32>(land->getFrameMax()) && !passer->mpMorf->isStop();
+}
+
+void endGetUp(daNpcPasser_c* passer) {
+    if (passer == nullptr || passer->mpMorf == nullptr) return;
+    // on his feet: his standing pose, blended in from where the getting-up left him
+    if (auto* idle = static_cast<J3DAnmTransformKey*>(passer->getAnmP(0, passer->getObjNum()))) {
+        passer->mpMorf->setAnm(idle, J3DFrameCtrl::EMode_LOOP, 12.0f, 1.0f, 0, -1);
+    }
+}
+
 bool forcedTick(daNpcPasser_c* passer) {
     Forced* f = activeForced(passer);
     if (f == nullptr || passer->mpMorf == nullptr) return false;

@@ -201,6 +201,12 @@ struct PasserState {
     cXyz tickFrom{};          // where it stood when this tick began (to catch it being moved too far in one)
     bool tickFromSet = false;
     bool wasHidden = false;   // culled from view last tick (logged as it changes, near Link)
+    // Beedle can't die: out of hearts he's knocked out (1 thrown, 2 lying there, 3 getting up), back up
+    // after a while or when Link wakes him (talks to him)
+    u8 ko = 0;
+    int koFrames = 0;
+    bool koWake = false;
+    u32 koAttention = 0;
     daNpcPasser_c* actor = nullptr;
     fpc_ProcID id = 0;
     bool registered = false;  // seen by process ID at least once (create may not be registered yet)
@@ -957,7 +963,7 @@ daNpcPasser_c* livePrey(fpc_ProcID id) {
     auto* actor = static_cast<daNpcPasser_c*>(fopAcM_SearchByID(id));
     if (actor == nullptr || !isPrototypePasser(actor) || passiveCamper(actor)) return nullptr;
     auto* state = findState(actor, false);
-    return state != nullptr && state->dead ? nullptr : actor;
+    return state != nullptr && (state->dead || state->ko != 0) ? nullptr : actor;
 }
 
 void endHunt(Hunt& h) {
@@ -1025,7 +1031,7 @@ daNpcPasser_c* nearestThreatTarget(const fopAc_ac_c* enemy) {
     daNpcPasser_c* result = nullptr;
     f32 nearestDistanceSq = kNoticeRadius * kNoticeRadius;
     for (auto& state : g_states) {
-        daNpcPasser_c* actor = state.dead ? nullptr : liveActor(state);
+        daNpcPasser_c* actor = state.dead || state.ko != 0 ? nullptr : liveActor(state);
         if (actor == nullptr || !isPrototypePasser(actor) || passiveCamper(actor)) {
             continue;
         }
@@ -1202,6 +1208,93 @@ void beginDeath(daNpcPasser_c* passer, PasserState& state) {
     }
 }
 
+// --- Beedle knocked out (he can't die) ---------------------------------------------------------------
+constexpr int kKoLie = 30 * 45;          // lies there this long (unless Link wakes him first)
+constexpr f32 kKoLaunch = 0.6f;          // thrown less hard than a fatal blow throws a traveller
+constexpr f32 kKoUpFrom = 0.45f;         // getting up: the landing played backwards to here, then he stands
+void knockOut(daNpcPasser_c* passer, PasserState& state) {
+    state.ko = 1;
+    state.koFrames = 0;
+    state.koWake = false;
+    state.talking = false;
+    state.cowering = false;
+    state.koAttention = passer->attention_info.flags;
+    passer->attention_info.flags = 0;
+    passer->mCyl.OffTgSetBit();   // nothing more lands on him while he's down
+    passer->speedF = 0.0f;
+    passer->speed.set(0.0f, 0.0f, 0.0f);
+    f32 dirX = -cM_ssin(passer->shape_angle.y), dirZ = -cM_scos(passer->shape_angle.y);
+    if (auto* enemy = nearestEnemy(passer, kThreatRadius)) {
+        const f32 dx = passer->current.pos.x - enemy->current.pos.x, dz = passer->current.pos.z - enemy->current.pos.z;
+        const f32 len = std::sqrt(dx * dx + dz * dz);
+        if (len > 0.001f) { dirX = dx / len; dirZ = dz / len; }
+    }
+    state.knockbackX = dirX * kLaunchSpeedXZ * kKoLaunch;
+    state.knockbackY = kLaunchSpeedY * kKoLaunch;
+    state.knockbackZ = dirZ * kLaunchSpeedXZ * kKoLaunch;
+    passer->shape_angle.y = passer->current.angle.y = cM_atan2s(-dirX, -dirZ);
+    fighter_anim::fall(passer, false);
+    travellers::noteAct(passer, "knocked out");
+}
+// Each tick while he's down (instead of his own code). True: still down.
+bool koTick(daNpcPasser_c* passer, PasserState& state) {
+    passer->speedF = 0.0f;
+    if (state.ko == 1) {   // thrown
+        passer->current.pos.x += state.knockbackX;
+        passer->current.pos.y += state.knockbackY;
+        passer->current.pos.z += state.knockbackZ;
+        state.knockbackX *= kLaunchDrag;
+        state.knockbackZ *= kLaunchDrag;
+        state.knockbackY -= kLaunchGravity;
+        passer->mAcch.CrrPos(dComIfG_Bgsp());
+        if (passer->mAcch.ChkWallHit()) state.knockbackX = state.knockbackZ = 0.0f;
+        if (passer->mAcch.ChkRoofHit() && state.knockbackY > 0.0f) state.knockbackY = 0.0f;
+        if ((state.knockbackY < 0.0f && passer->mAcch.ChkGroundHit()) || ++state.koFrames >= kDeathDuration) {
+            state.knockbackX = state.knockbackY = state.knockbackZ = 0.0f;
+            fighter_anim::fall(passer, true);
+            state.ko = 2;
+            state.koFrames = 0;
+        }
+        return true;
+    }
+    // down: held on the ground
+    passer->speed.y = std::max(passer->speed.y - kGravity, -kMaxFall);
+    passer->current.pos.y += passer->speed.y;
+    passer->mAcch.CrrPos(dComIfG_Bgsp());
+    if (passer->mAcch.ChkGroundHit()) passer->speed.y = 0.0f;
+    if (state.ko == 2) {
+        if ((++state.koFrames >= kKoLie && !state.talking) || state.koWake) {
+            if (fighter_anim::startGetUp(passer)) {
+                state.ko = 3;
+                travellers::noteAct(passer, state.koWake ? "woken by Link: getting up" : "comes round: getting up");
+            } else {
+                state.ko = 4;   // no getting-up animation for this body: just up
+            }
+        }
+        return true;
+    }
+    if (state.ko == 3 && !fighter_anim::gettingUp(passer, kKoUpFrom)) state.ko = 4;
+    if (state.ko == 4) {
+        // up again, his hearts back
+        state.ko = 0;
+        state.koWake = false;
+        travellers::setLife(passer, travellers::maxLife(passer));
+        state.health = (travellers::maxLife(passer) + kQuartersPerHeart - 1) / kQuartersPerHeart;
+        passer->health = static_cast<s16>(state.health);
+        passer->attention_info.flags = state.koAttention;
+        passer->mCyl.OnTgSetBit();
+        state.invuln = kHurtInvulnFrames;
+        fighter_anim::endGetUp(passer);
+        if (state.talking) {
+            beedle_field::talkStarted(passer);   // Link woke him: on with their talk
+        } else {
+            resumeRoute(passer, state);
+        }
+        return false;
+    }
+    return true;
+}
+
 DEFINE_HOOK(&daNpcPasser_c::create_init, PasserCreateInit);
 // execute(), callExecute(), setCollision() and setBaseMtx() are small and get inlined into the
 // passer's profile entry in release builds, so hooks on them never fire. Hook the profile entry
@@ -1350,7 +1443,7 @@ HookAction onInitEscapePre(ModContext*, void* args, void*, void*) {
 // --- Beedle: never scared, he just runs, very fast, kicking up dust like the postman ------------
 // (the game's footstep dust, d_particle_copoly: the same call the postman makes while he runs,
 // daNpcT_c::setFootPrtcl, from each foot that is down)
-constexpr f32 kBeedleRunScale = 2.2f;   // his flight: this much of a townsfolk's full run
+constexpr f32 kBeedleRunScale = 1.6f;   // his flight: this much of a townsfolk's full run
 constexpr f32 kBeedleDustSpeed = 3.0f;  // faster than this: dust
 constexpr int kFootL = 15, kFootR = 18; // the men's skeleton
 dPaPoT_c g_beedleDust{};
@@ -1376,7 +1469,9 @@ void beedleDust(daNpcPasser_c* passer) {
     cXyz footL, footR;
     mDoMtx_multVecZero(m->getAnmMtx(kFootL), &footL);
     mDoMtx_multVecZero(m->getAnmMtx(kFootR), &footR);
-    const bool running = passer->speedF > kBeedleDustSpeed && passer->mAcch.ChkGroundHit();
+    // dust only while he runs from monsters (never on his walk, however brisk)
+    const bool fleeing = passer->mActionIdx == daNpcPasser_c::MODE_1 && passer->field_0xb1c == 1;
+    const bool running = fleeing && passer->speedF > kBeedleDustSpeed && passer->mAcch.ChkGroundHit();
     const f32 ground = passer->current.pos.y;
     const bool downL = running && footL.y - ground < 14.0f;
     const bool downR = running && footR.y - ground < 14.0f;
@@ -1968,7 +2063,10 @@ void onProfileExecutePost(ModContext*, void* args, void*, void*) {
         const bool hold = traveller_gear::lightTick(passer, night, state->bedStep != 0 ||
                                                     travellers::campInfo(passer, nullptr, nullptr, nullptr));
         fighter_anim::layerTick(passer, hold);
-        if (travellers::isBeedle(passer)) beedleDust(passer);
+        if (travellers::isBeedle(passer)) {
+            beedleDust(passer);
+            if (state->ko == 0) travellers::beedleKeepOut(passer);
+        }
         return;
     }
     if (passer->mpMorf == nullptr) {
@@ -2848,6 +2946,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
     (void)&logProgress;   // per-traveller logging off (too chatty with many travellers)
     state->tickFrom = passer->current.pos;
     state->tickFromSet = true;
+    if (state->ko != 0 && koTick(passer, *state)) return HOOK_SKIP_ORIGINAL;   // Beedle, knocked out
 
     // The game deletes a passer the moment it is off screen once its end time of day has passed:
     // look away from a camp at the wrong moment and everyone was gone. Only far off (well out of
@@ -3265,7 +3364,10 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
                 return HOOK_CONTINUE;
             }
         }
-        if (life <= 0) {
+        if (life <= 0 && travellers::isBeedle(passer)) {
+            knockOut(passer, *state);   // he can't die: knocked out cold, up again later
+            return HOOK_CONTINUE;
+        } else if (life <= 0) {
             beginDeath(passer, *state);
         } else if (holdsGround(passer)) {
             // a fighter takes it and stays put; shot by an arrow, it goes after the archer (the nearest
@@ -3436,12 +3538,15 @@ HookAction onTalkTagExecutePre(ModContext*, void* args, void*, void*) {
         const int n = dialogue::lineCount(spot);
         if (spot == dialogue::SPOT_BEEDLE) {
             // Beedle: today's ware, through his shop's talk
-            if (const u16 node = beedle_field::talkNode(); node != 0xFFFF) {
+            auto* bs = findState(who, false);
+            const bool out = bs != nullptr && bs->ko != 0;   // knocked out: Link's waking him
+            if (const u16 node = beedle_field::talkNode(who, out); node != 0xFFFF) {
                 tag->mFlowNodeNo = node;
                 g_talkWith = fopAcM_GetID(who);
                 fopAcM_OnStatus(who, fopAcStts_NOPAUSE_e);
-                if (auto* state = findState(who, false)) state->talking = true;
-                beedle_field::talkStarted(who);
+                if (bs != nullptr) bs->talking = true;
+                if (out) bs->koWake = true;              // he gets up as they talk (talkStarted once he's up)
+                else beedle_field::talkStarted(who);
             }
         } else if (const int slot = travellers::slotIndex(who); people::isPerson(slot) && people::talkNode() != 0xFFFF) {
             // one of the camp travellers: their own talk (an introduction the first time they meet Link)
