@@ -102,6 +102,9 @@ void tentBeds(const cXyz& tentPos, int* asleep, int* busy);
 void noteCamp(const fopAc_ac_c* passer, const char* what, const fopAc_ac_c* enemy);
 // A line in the diary (travellers_diag.log), printf-style.
 void diagLine(const char* fmt, ...);
+// The game's memory pools and our pack's state in the diary (each frame; writes every 10 s and on changes).
+void memoryTick();
+void logMemory(const char* why);
 void noteStand(const fopAc_ac_c* passer, const fopAc_ac_c* enemy);
 void noteHunt(const fopAc_ac_c* enemy, const fopAc_ac_c* prey, bool start);
 void noteDelete(const daNpcPasser_c* passer);

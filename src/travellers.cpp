@@ -30,6 +30,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include "JSystem/JKernel/JKRExpHeap.h"
+#include "d/d_resorce.h"
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -2440,6 +2442,7 @@ void update() {
     int live = 0;
     for (const Traveller& t : g_t) if (t.used && t.spawned) ++live;
     sweepOrphans();
+    memoryTick();
     const FrameStats* fs = frameStats();
     const u32 idx = fs != nullptr ? fs->lastIndexSize : 0;
     const u32 vtx = fs != nullptr ? fs->lastVertSize : 0;
@@ -2723,6 +2726,43 @@ bool pathLookupOpen() { return g_pathLookupOpen; }
 void setPathLookupOpen(bool open) { g_pathLookupOpen = open; }
 
 // The diary, for the other parts of the mod.
+// The game's memory pools, in the diary: every ten seconds, and whenever our big pack (PsrPack.arc, which
+// is shared and unloads when its last user goes) changes between not loaded / loading / loaded. "free" is
+// all the free space added up; "gap" is the largest single free block (an archive must fit in one).
+// Diary lines only: it changes nothing. (A crash loading the pack was a failed 4.9 MB request in the
+// archive pool; these say whether the pool was full, chopped up, or neither.)
+void logMemory(const char* why) {
+    auto line = [](JKRHeap* h, int* size, int* used, int* free, int* gap) {
+        *size = *used = *free = *gap = -1;
+        if (h == nullptr) return;
+        *size = static_cast<int>(h->getSize() / 1024);
+        *free = static_cast<int>(h->getTotalFreeSize() / 1024);
+        *used = *size - *free;
+        *gap = static_cast<int>(h->getFreeSize() / 1024);
+    };
+    int as, au, af, ag, zs, zu, zf, zg, gs, gu, gf, gg;
+    line(mDoExt_getArchiveHeap(), &as, &au, &af, &ag);
+    line(mDoExt_getZeldaHeap(), &zs, &zu, &zf, &zg);
+    line(mDoExt_getGameHeap(), &gs, &gu, &gf, &gg);
+    dRes_info_c* pack = dComIfG_getObjectResInfo("PsrPack");
+    diag("memory  %s | archive %d KB: used %d free %d gap %d | zelda %d: free %d gap %d | game %d: free %d gap %d | pack %s users %d",
+         why, as, au, af, ag, zs, zf, zg, gs, gf, gg,
+         pack == nullptr ? "not loaded" : pack->getArchive() != nullptr ? "loaded" : "loading",
+         pack != nullptr ? pack->getCount() : 0);
+}
+
+void memoryTick() {
+    static int s_state = -1;   // 0 not loaded, 1 loading, 2 loaded
+    dRes_info_c* pack = dComIfG_getObjectResInfo("PsrPack");
+    const int state = pack == nullptr ? 0 : pack->getArchive() != nullptr ? 2 : 1;
+    if (state != s_state) {
+        logMemory(state == 0 ? "pack unloaded" : state == 1 ? "pack LOADING (needs 4815 KB in one gap)" : "pack loaded");
+        s_state = state;
+    } else if (g_frame % 300 == 0) {
+        logMemory("every 10 s");
+    }
+}
+
 void diagLine(const char* fmt, ...) {
     if (g_diag == nullptr) return;
     std::fprintf(g_diag, "%6d ", g_frame);
