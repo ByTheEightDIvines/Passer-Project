@@ -235,6 +235,7 @@ struct PasserState {
     bool onGuard = false;   // this frame: a fighter with an enemy to face (draws and squares up)
     bool turning = false;   // this frame: still turning to face it (shuffles round instead of spinning)
     int stuck = 0;          // fleeing: frames pinned against something (a tent, a rock)
+    bool waitNoted = false; // waiting his turn at a fight (pickFoe): written in the diary once
     int sidestep = 0;       // fleeing / walking: frames left of stepping sideways off something
     s16 sideYaw = 0;        // the way it steps (along the thing it ran into)
     int foeLost = 0;        // frames since a standing fighter last saw its enemy
@@ -508,6 +509,97 @@ fopAc_ac_c* nearestEnemyAt(const cXyz& at, f32 maxDistance, f32 maxAbove = 1.0e9
 
 fopAc_ac_c* nearestEnemy(const daNpcPasser_c* passer, f32 maxDistance) {
     return nearestEnemyAt(passer->current.pos, maxDistance);
+}
+
+// --- one at a time (as in Ocarina of Time) -----------------------------------------------------
+// Every monster has at most one traveller fighting it. A fighter takes the nearest monster nobody has
+// yet; with none free he waits his turn in a ring round the nearest fight, squared up and facing it,
+// and steps in when its fighter goes (down, hurt and off, or onto another). Claims are kept by being
+// asked for: one not asked for in half a second has lapsed. (Before: everyone went for the same
+// monster, nearest the fire or nearest themselves, crowded it and struck each other more than it.)
+constexpr auto kClaimLapse = std::chrono::milliseconds(500);
+constexpr f32 kWaitRing = 330.0f;     // waiters stand this far from the monster (out of its swing)
+struct Claim {
+    fpc_ProcID foe = fpcM_ERROR_PROCESS_ID_e;
+    fpc_ProcID fighter = fpcM_ERROR_PROCESS_ID_e;
+    std::chrono::steady_clock::time_point when{};
+};
+std::array<Claim, 48> g_claims{};
+
+Claim* claimOf(fpc_ProcID foe) {
+    const auto now = std::chrono::steady_clock::now();
+    for (Claim& c : g_claims) {
+        if (c.foe == foe && now - c.when < kClaimLapse) return &c;
+    }
+    return nullptr;
+}
+void claim(fpc_ProcID foe, fpc_ProcID fighter) {
+    const auto now = std::chrono::steady_clock::now();
+    Claim* spare = nullptr;
+    for (Claim& c : g_claims) {
+        if (c.fighter == fighter && c.foe != foe) c = Claim{};   // one monster at a time
+    }
+    for (Claim& c : g_claims) {
+        if (c.foe == foe) { c.fighter = fighter; c.when = now; return; }
+        if (spare == nullptr && (c.foe == fpcM_ERROR_PROCESS_ID_e || now - c.when >= kClaimLapse)) spare = &c;
+    }
+    if (spare != nullptr) *spare = Claim{foe, fighter, now};
+}
+void unclaim(fpc_ProcID fighter) {
+    for (Claim& c : g_claims) if (c.fighter == fighter) c = Claim{};
+}
+
+// The monsters within maxDistance of `at` (and no higher above it than maxAbove, mounted riders aside).
+void foesNear(const cXyz& at, f32 maxDistance, f32 maxAbove, std::vector<fopAc_ac_c*>* out) {
+    struct Search { const cXyz* at; f32 maxSq; f32 maxAbove; std::vector<fopAc_ac_c*>* out; } s{&at, maxDistance * maxDistance, maxAbove, out};
+    out->clear();
+    fpcM_Search([](void* candidate, void* context) -> void* {
+        auto* d = static_cast<Search*>(context);
+        if (d == nullptr || !fopAcM_IsActor(candidate)) return nullptr;
+        auto* e = static_cast<fopAc_ac_c*>(candidate);
+        if (!isFoe(e) || !inPasserArea(e)) return nullptr;
+        if (e->current.pos.y - d->at->y > d->maxAbove && !mountedRider(e)) return nullptr;
+        const f32 dx = e->current.pos.x - d->at->x, dz = e->current.pos.z - d->at->z;
+        if (dx * dx + dz * dz <= d->maxSq) d->out->push_back(e);
+        return nullptr;
+    }, &s);
+}
+
+// This fighter's monster among those near `around`: the one he's already fighting if it's still
+// there, else the nearest to him nobody's fighting (his now), else the nearest to him (*waiting set:
+// his turn hasn't come). nullptr: no monster.
+fopAc_ac_c* pickFoe(daNpcPasser_c* me, const cXyz& around, f32 radius, f32 maxAbove, bool* waiting) {
+    static std::vector<fopAc_ac_c*> foes;
+    foesNear(around, radius, maxAbove, &foes);
+    *waiting = false;
+    const fpc_ProcID myId = fopAcM_GetID(me);
+    if (foes.empty()) {
+        unclaim(myId);
+        return nullptr;
+    }
+    std::sort(foes.begin(), foes.end(), [&](fopAc_ac_c* a, fopAc_ac_c* b) {
+        return me->current.pos.abs2XZ(a->current.pos) < me->current.pos.abs2XZ(b->current.pos);
+    });
+    for (fopAc_ac_c* f : foes) {   // still on the one he had
+        const Claim* c = claimOf(fopAcM_GetID(f));
+        if (c != nullptr && c->fighter == myId) { claim(fopAcM_GetID(f), myId); return f; }
+    }
+    for (fopAc_ac_c* f : foes) {   // the nearest one free
+        if (claimOf(fopAcM_GetID(f)) == nullptr) { claim(fopAcM_GetID(f), myId); return f; }
+    }
+    unclaim(myId);
+    *waiting = true;
+    return foes.front();
+}
+
+// Where a waiting fighter stands: on the ring round the monster, on his own side of it, spread from the
+// others by his slot, so the waiters don't stack.
+cXyz waitSpot(const daNpcPasser_c* me, const fopAc_ac_c* foe) {
+    const int slot = travellers::slotIndex(me);
+    const s16 toMe = cLib_targetAngleY(&foe->current.pos, &me->current.pos);
+    const s16 side = static_cast<s16>(toMe + ((slot % 5) - 2) * 0x1400);
+    return cXyz(foe->current.pos.x + cM_ssin(side) * kWaitRing, me->current.pos.y,
+                foe->current.pos.z + cM_scos(side) * kWaitRing);
 }
 
 // Wolf Link counts as a foe for the fighters (as a man he's a friend): returns him if he is a wolf
@@ -2184,6 +2276,29 @@ void stepToward(daNpcPasser_c* passer, const cXyz& to, f32 speed) {
     passer->mAcch.CrrPos(dComIfG_Bgsp());
 }
 
+// Waiting his turn at a fight (pickFoe): to his spot on the ring at a walk, then squared up there
+// facing the monster (a guard behind his shield), no swings, until it's his.
+void waitTurn(daNpcPasser_c* passer, PasserState& state, const fopAc_ac_c* foe) {
+    passer->speedF = 0.0f;
+    state.chasing = false;
+    state.onGuard = true;
+    state.strikeTimer = std::max(state.strikeTimer, 10);   // a moment to set his feet when it's his turn
+    if (fighter_anim::busy(passer)) return;               // mid-swing or flinching: finish that first
+    const cXyz spot = waitSpot(passer, foe);
+    const f32 dx = spot.x - passer->current.pos.x, dz = spot.z - passer->current.pos.z;
+    if (dx * dx + dz * dz > 70.0f * 70.0f) {
+        guardAnim(passer, state, kAnmWalk);
+        stepToward(passer, spot, Cd2_HIO_walkMaxSpeed(passer->m_type) * 1.4f);
+        return;
+    }
+    guardAnim(passer, state, kAnmIdle);
+    const s16 yaw = cLib_targetAngleY(&passer->current.pos, &foe->current.pos);
+    cLib_addCalcAngleS2(&passer->current.angle.y, yaw, 4, kGuardTurn);
+    passer->shape_angle.y = passer->current.angle.y;
+    state.turning = false;
+    if (soldier(passer)) fighter_anim::raiseShield(passer);
+}
+
 void strike(daNpcPasser_c* passer, PasserState& state) {
     dCcD_Sph& sph = g_strike[&state - g_states.data()];
     sph.Set(state.vsWolf ? kStrikeLinkSrc : kStrikeSrc);
@@ -2524,11 +2639,20 @@ bool campGuard(daNpcPasser_c* passer, PasserState& state) {
     const bool guard = travellers::isGuard(passer);
     const f32 guardRadius = guard ? (state.defending ? kGuardLeashRadius : kGuardWakeRadius)
                                   : (state.defending ? kCampLeashRadius : kCampGuardRadius);
-    auto* enemy = nearestEnemyAt(center, guardRadius, guard ? kSoldierReachAbove : fighter ? kReachAbove : 1.0e9f);
+    // a fighter takes a monster nobody else is fighting, or waits his turn (pickFoe); the others just
+    // cower from the nearest
+    bool waiting = false;
+    auto* enemy = fighter && holdsGround(passer)
+                      ? pickFoe(passer, center, guardRadius, guard ? kSoldierReachAbove : kReachAbove, &waiting)
+                      : nearestEnemyAt(center, guardRadius, guard ? kSoldierReachAbove : fighter ? kReachAbove : 1.0e9f);
     // the wolf at the fire: the fighters go for him; everyone else cowers as from any monster
-    enemy = nearerFoe(center, enemy, wolfLinkNear(center, guardRadius));
+    if (auto* wolf = wolfLinkNear(center, guardRadius); wolf != nullptr && nearerFoe(center, enemy, wolf) == wolf) {
+        enemy = wolf;
+        waiting = false;
+    }
     if (fighter && wolfShy(passer) && enemy == dComIfGp_getPlayer(0)) enemy = nullptr;
-    if (guard && grudge::hostile(passer) && !daPy_py_c::checkNowWolf()) enemy = dComIfGp_getPlayer(0);   // after Link
+    if (guard && grudge::hostile(passer) && !daPy_py_c::checkNowWolf()) { enemy = dComIfGp_getPlayer(0); waiting = false; }   // after Link
+    if (enemy == nullptr || enemy == dComIfGp_getPlayer(0)) unclaim(fopAcM_GetID(passer));
     state.vsWolf = enemy != nullptr && enemy == dComIfGp_getPlayer(0);
 
     if (fighter && !holdsGround(passer)) {
@@ -2565,9 +2689,14 @@ bool campGuard(daNpcPasser_c* passer, PasserState& state) {
             } else {
                 state.reachOk = true;
             }
-            state.chasing = dist > reach && state.reachOk;
+            state.chasing = dist > reach && state.reachOk && !waiting;
             state.onGuard = true;
-            if (fighter_anim::busy(passer)) {
+            if (!waiting && state.waitNoted) { state.waitNoted = false; travellers::noteCamp(passer, "his turn: goes for", enemy); }
+            if (waiting && state.reachOk) {
+                // someone else has this one: his turn's next (one at a time)
+                if (!state.waitNoted) { state.waitNoted = true; travellers::noteCamp(passer, "waits his turn at", enemy); }
+                waitTurn(passer, state, enemy);
+            } else if (fighter_anim::busy(passer)) {
                 // startled, drawing or mid-swing: it stays where it is until that's done
             } else if (!state.reachOk) {
                 // up on a ledge (or down below): no way there; face it behind the shield
@@ -2785,11 +2914,18 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
     if (!campHandled && !state->talking && !state->cowering &&
         !travellers::campInfo(passer, nullptr, nullptr, nullptr)) {
         const bool soldierHere = soldier(passer);
-        auto* enemy = holdsGround(passer) ? nearestEnemyAt(passer->current.pos, soldierHere ? kSoldierSight : kThreatRadius,
-                                                           soldierHere ? kSoldierReachAbove : kReachAbove)
+        // a monster nobody else is fighting, or his turn at the nearest (pickFoe: one at a time)
+        bool waiting = false;
+        auto* enemy = holdsGround(passer) ? pickFoe(passer, passer->current.pos, soldierHere ? kSoldierSight : kThreatRadius,
+                                                    soldierHere ? kSoldierReachAbove : kReachAbove, &waiting)
                                           : nullptr;
+        if (!holdsGround(passer)) unclaim(fopAcM_GetID(passer));
         if (holdsGround(passer) && !wolfShy(passer)) {
-            enemy = nearerFoe(passer->current.pos, enemy, wolfLinkNear(passer->current.pos, kThreatRadius));
+            if (auto* wolf = wolfLinkNear(passer->current.pos, kThreatRadius);
+                wolf != nullptr && nearerFoe(passer->current.pos, enemy, wolf) == wolf) {
+                enemy = wolf;
+                waiting = false;
+            }
         }
         if (state->shooterFrames > 0) {
             // shot at: the archer is its enemy (it charges him) however far off, while he keeps it up
@@ -2800,14 +2936,15 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
                 state->shooterFrames = 0;
             } else if (enemy == nullptr) {
                 enemy = archer;
+                waiting = false;
             }
         }
         // the bowman: monsters out to bow range (birds circling overhead too)
         // a soldier whose squad Link has bombed three times: Link's the one he's after (guard_grudge)
         const bool afterLink = soldierHere && holdsGround(passer) && grudge::hostile(passer) && !daPy_py_c::checkNowWolf();
-        if (afterLink) enemy = dComIfGp_getPlayer(0);
+        if (afterLink) { enemy = dComIfGp_getPlayer(0); waiting = false; }
         const bool bowman = fighter_anim::bowman(passer) && holdsGround(passer) && !afterLink;
-        if (bowman && enemy == nullptr) enemy = nearestEnemyAt(passer->current.pos, kBowRange);
+        if (bowman && enemy == nullptr) { enemy = nearestEnemyAt(passer->current.pos, kBowRange); waiting = false; }
         state->vsWolf = enemy != nullptr && enemy == dComIfGp_getPlayer(0);
         bool shoot = false;
         // up on a ledge or a bluff, down below a drop: nobody on foot gets there (checked a few times a
@@ -2850,7 +2987,11 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
             // out of reach: charge at it (not at wolf Link: him it only squares up to)
             state->shooting = shoot;
             const f32 reach = soldierHere ? reachOf(passer) : kStrikeReach;
-            const bool charge = !shoot && !outOfReach && (!state->vsWolf || afterLink) && !fighter_anim::busy(passer) &&
+            // someone else has this one: he waits his turn on the ring round it (the bowman shoots instead)
+            const bool waitHere = waiting && !shoot && !outOfReach && !state->vsWolf;
+            if (waitHere && !state->waitNoted) { state->waitNoted = true; travellers::noteAct(passer, "waits his turn"); }
+            if (!waitHere && state->waitNoted) { state->waitNoted = false; travellers::noteAct(passer, "his turn: goes in"); }
+            const bool charge = !waitHere && !shoot && !outOfReach && (!state->vsWolf || afterLink) && !fighter_anim::busy(passer) &&
                                 passer->current.pos.absXZ(enemy->current.pos) > reach;
             if (outOfReach && !shoot) fighter_anim::raiseShield(passer);   // holding behind the shield
             if (charge && !state->chasing) {
@@ -2859,7 +3000,9 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
             }
             if (!charge && state->chasing) state->anim = 0xFF;
             state->chasing = charge;
-            if (charge) {
+            if (waitHere) {
+                waitTurn(passer, *state, enemy);
+            } else if (charge) {
                 guardAnim(passer, *state, kAnmRun);
                 stepToward(passer, soldierHere ? flankSpot(passer, enemy) : enemy->current.pos,
                            Cd2_HIO_maxSpeed(passer->m_type) * (soldierHere ? 1.8f : 1.5f));
@@ -2902,7 +3045,7 @@ HookAction onExecutePre(ModContext*, void* args, void*, void*) {
                 const s16 off = static_cast<s16>(cLib_targetAngleY(&passer->current.pos, &enemy->current.pos) -
                                                  passer->shape_angle.y);
                 if (fighter_anim::aimed(passer) && std::abs(off) < kBowFacing) state->swingReq = true;
-            } else if (!outOfReach && dx * dx + dz * dz <= reach * reach) {
+            } else if (!waitHere && !outOfReach && dx * dx + dz * dz <= reach * reach) {
                 if (--state->strikeTimer <= 0 && swingOrStrike(passer, *state)) {
                     state->strikeTimer = kStrikeEvery;
                 }
