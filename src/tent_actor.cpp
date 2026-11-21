@@ -201,9 +201,14 @@ int psrTent_c::CreateHeap() {
     }
     mpRoom[0] = mpRoom[1] = NULL;
     mpFlap[0] = mpFlap[1] = NULL;
+    mpBedroll = NULL;
     mpLit[0] = mpLit[1] = mpLit[2] = NULL;
     mStageNum = 0;
     if (mKind == PSR_TENT_A) {
+        // made in the tent's own space, so it goes with the tent's matrix
+        if (auto* bed = static_cast<J3DModelData*>(dComIfG_getObjectRes(kArcName, "psr_bedroll.bmd"))) {
+            mpBedroll = mDoExt_J3DModel__create(bed, 0x80000, 0x11000084);
+        }
         auto* flap = static_cast<J3DModelData*>(dComIfG_getObjectRes(kArcName, kFlap));
         for (int i = 0; flap != NULL && i < 2; i++) {
             mpFlap[i] = mDoExt_J3DModel__create(flap, 0x80000, 0x11000084);
@@ -267,6 +272,7 @@ int psrTent_c::Execute() {
     const f32 k = psr_tent::kScale[mKind];
     mDoMtx_stack_c::scaleM(k, k, k);
     mpModel->setBaseTRMtx(mDoMtx_stack_c::get());
+    if (mpBedroll != NULL) mpBedroll->setBaseTRMtx(mDoMtx_stack_c::get());
     for (J3DModel* room : mpRoom) {
         if (room != NULL) room->setBaseTRMtx(mDoMtx_stack_c::get());
     }
@@ -385,6 +391,10 @@ int psrTent_c::Execute() {
 
 int psrTent_c::Draw() {
     g_env_light.settingTevStruct(0x20, &current.pos, &tevStr);
+    if (mpBedroll != NULL) {
+        g_env_light.setLightTevColorType_MAJI(mpBedroll, &tevStr);
+        mDoExt_modelUpdateDL(mpBedroll);
+    }
     if (mLit) {
         // lit from inside: drawn without the scene's lighting so the canvas glows in the dark
         dComIfGd_setListBG();

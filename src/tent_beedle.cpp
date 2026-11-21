@@ -28,6 +28,7 @@
 namespace {
 constexpr const char* kArc = "P_Beedl";
 constexpr const char* kModel = "beedle_tent.bmd";
+constexpr const char* kBlink = "beedle_tent.btp";
 constexpr u32 kGroup = 1;   // our shop's group (the high nibble of the keeper's, items' and cameras' params)
 
 // his motions (Wind Waker's, on his own skeleton), picked by the motion sequences below; a message's
@@ -189,7 +190,12 @@ int psrTentBeedle_c::CreateHeap() {
     }
     if (mpMorf[0] == nullptr) return 0;
     mpMorf[0]->getModel()->setUserArea(reinterpret_cast<uintptr_t>(this));
-    return setMotionAnm(0, 0.0f, FALSE) ? 1 : 0;
+    if (!setMotionAnm(0, 0.0f, FALSE)) return 0;
+    // his blink (open, half, shut, half, open), the game's own way: played through, then a pause of 3-6 s
+    if (auto* btp = static_cast<J3DAnmTexPattern*>(dComIfG_getObjectRes(kArc, kBlink))) {
+        if (setBtpAnm(btp, data, 1.0f, J3DFrameCtrl::EMode_LOOP)) mAnmFlags |= ANM_PLAY_BTP | ANM_PAUSE_TIMER_BTP;
+    }
+    return 1;
 }
 
 int psrTentBeedle_c::createHeapCallBack(fopAc_ac_c* a) { return static_cast<psrTentBeedle_c*>(a)->CreateHeap(); }
@@ -370,6 +376,7 @@ int psrTentBeedle_c::Execute() {
 
 int psrTentBeedle_c::Draw() {
     if (mpMorf[0] == nullptr) return 1;
+    if (mBtpAnm.getBtpAnm() != nullptr) mAnmFlags |= ANM_PLAY_BTP | ANM_PAUSE_TIMER_BTP;   // keep blinking whatever his face does
     return draw(FALSE, FALSE, mRealShadowSize, nullptr, 0.0f, FALSE, TRUE, FALSE);
 }
 

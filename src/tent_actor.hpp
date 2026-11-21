@@ -27,6 +27,7 @@ public:
     J3DModel* mpStage[kStageMax];                 // the game's own props behind Beedle's curtain
     int mStageNum;
     J3DModel* mpRoom[2];        // Beedle's tent only: the baked room, day and night
+    J3DModel* mpBedroll;        // small tent only: a bedroll on the floor, head at the back
     J3DModel* mpFlap[2];        // small tent only: the door flaps, left and right (the right is the left mirrored)
     J3DModel* mpLit[3];         // small tent at night with someone inside: lit from within (tent, both flaps)
     bool mLit = false;

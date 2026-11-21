@@ -153,7 +153,7 @@ const Look kCookLook = {"MAD_a2", "mad_a2.bmd", "mad_a2.btp", nullptr};
 
 // Beedle (tools/beedle): his own model on the men's skeleton, his Wind Waker talking (psr_bs_*_up.bck)
 // in the same archive. No pack (his bag is part of him); his lantern hangs from the bag's right side.
-const Look kBeedleLook = {"P_Beedl", "beedle.bmd", nullptr, nullptr};
+const Look kBeedleLook = {"P_Beedl", "beedle.bmd", "beedle.btp", nullptr};   // his blink: open, half, shut, half, open
 const Vec kBeedleHook = {68.6f, 54.0f, 51.9f};   // the lantern's handle on his bag, backbone joint space
 
 // A traveller in the light world wearing one of our looks (or the cook), or nullptr.

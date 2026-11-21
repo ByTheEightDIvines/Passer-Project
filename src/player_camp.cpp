@@ -26,6 +26,7 @@
 #include "f_op/f_op_actor_mng.h"
 #include "f_pc/f_pc_draw_priority.h"
 #include "m_Do/m_Do_audio.h"
+#include "m_Do/m_Do_controller_pad.h"
 #include "m_Do/m_Do_ext.h"
 #include "m_Do/m_Do_mtx.h"
 #include "JSystem/JKernel/JKRExpHeap.h"
@@ -64,6 +65,14 @@ constexpr f32 kDoorFront = 126.2f * 1.3f;
 constexpr f32 kDoorOut = 60.0f;            // where he stands to check it: this far out from the door
 constexpr f32 kDoorIn = 40.0f;             // what he faces: this far in
 constexpr f32 kCheckReach = 190.0f;        // ...within this of where he stands
+// Sitting on the bench: Link's own canoe sit with empty hands (ANM_WAIT_SIT, "waitsit"). The bench's seat
+// is 44 up (psr_bench2: x +-110, y 0..44, z +-17, its sitter facing +z, the fire). Link checks it from a
+// spot just in front; sitting, his hips (joint 0) are steered over the seat's middle, a little above it.
+constexpr f32 kBenchSeatY = 44.0f;
+constexpr f32 kHipsOverSeat = 14.0f;       // Link's hip joint above what he sits on
+constexpr f32 kBenchFront = 80.0f;         // where he stands to check it, toward the fire
+constexpr f32 kBenchReach = 110.0f;
+constexpr int kSitMinFrames = 20;          // sat this long before A or B gets him up
 // Midna's pop, as when she takes the Ordon sword and shield (demo10; copied from the Faron spring's
 // pack into our own psr_fx.jpc): the sparkle she makes things appear and vanish with, one per piece.
 // (Not Link's warp sparkle, ZI_J_LK_WARP_APP_A: played away from Link and three at once, the graphics
@@ -166,6 +175,12 @@ cXyz tentPoint(const cXyz& center, s16 yaw) { return campPoint(center, yaw, 0.0f
 cXyz benchPoint(const cXyz& center, s16 yaw) {
     const s16 a = static_cast<s16>(yaw + kBenchAngle);
     return cXyz(center.x + cM_ssin(a) * kBenchRing, center.y, center.z + cM_scos(a) * kBenchRing);
+}
+s16 benchFacing(s16 yaw) { return static_cast<s16>(yaw + kBenchAngle + 0x8000); }   // its sitter: toward the fire
+cXyz benchFront(const cXyz& center, s16 yaw) {  // where Link stands to check the bench (and gets up to)
+    const cXyz b = benchPoint(center, yaw);
+    const s16 f = benchFacing(yaw);
+    return cXyz(b.x + cM_ssin(f) * kBenchFront, center.y, b.z + cM_scos(f) * kBenchFront);
 }
 cXyz doorPoint(const cXyz& center, s16 yaw) {   // where Link stands to check the tent
     return campPoint(center, yaw, 0.0f, -kTentBack + kDoorFront + kDoorOut);
@@ -492,8 +507,8 @@ const dCcD_SrcCyl kFireCyl = {
 // Parameters: bit 0 = summoned just now (play Midna's scene; the pieces appear in it).
 class psrPCamp_c : public fopAc_ac_c {
 public:
-    enum State : u8 { ST_IDLE, ST_SUMMON, ST_TALK, ST_SLEEP };
-    enum Talk : u8 { TALK_NONE, TALK_TENT };
+    enum State : u8 { ST_IDLE, ST_SUMMON, ST_TALK, ST_SLEEP, ST_SIT };
+    enum Talk : u8 { TALK_NONE, TALK_TENT, TALK_BENCH };
 
     request_of_phase_process_class mPhCamp;
     request_of_phase_process_class mPhPack;
@@ -525,6 +540,7 @@ public:
     dMsgFlow_c mFlow;
     f32 mSleepFrom = 0.0f;
     cXyz mShotEye{}, mShotCenter{};
+    cXyz mSitAt{};               // where Link's feet are held while he sits (steered so his hips sit right)
 
     virtual ~psrPCamp_c();
     cPhs_Step create();
@@ -541,6 +557,7 @@ public:
     void runSummon();
     void runTalk();
     void runSleep();
+    void runSit();
     void shotWide(f32 back, f32 side, f32 up, f32 lookUp, cXyz* eye, cXyz* center) const;
     static int createHeapCallBack(fopAc_ac_c* a) { return static_cast<psrPCamp_c*>(a)->CreateHeap(); }
 
@@ -560,6 +577,7 @@ psrPCamp_c::~psrPCamp_c() {
         // taken away mid-scene (the room went): leave nothing hanging
         g_cam.active = false;
         if (mState == ST_SLEEP) songEnd();
+        if (mState == ST_SIT) dComIfGp_event_reset();
         if (g_sleeping) {
             g_sleeping = false;
             if (daPy_py_c* link = player()) {
@@ -658,7 +676,7 @@ void psrPCamp_c::placeModels() {
     if (mpBench != NULL) {
         const cXyz at = benchPoint(mCenter, mYaw);
         mDoMtx_stack_c::transS(at.x, mGrounded ? mBenchY : mCenter.y, at.z);
-        mDoMtx_stack_c::YrotM(static_cast<s16>(mYaw + kBenchAngle + 0x8000));   // its sitter faces the fire
+        mDoMtx_stack_c::YrotM(benchFacing(mYaw));   // its sitter faces the fire
         mpBench->setBaseTRMtx(mDoMtx_stack_c::get());
     }
 }
@@ -696,7 +714,8 @@ void psrPCamp_c::updateFire() {
     }
 }
 
-// What Link can check here: the tent (from just out of its door). (Only human Link lights the fire: his lantern.)
+// What Link can check here: the tent (from just out of its door), and the bench (from just in front: he sits).
+// (Only human Link lights the fire, with his lantern, and only he sits.)
 void psrPCamp_c::updateAttention() {
     attention_info.flags = 0;
     mTalk = TALK_NONE;
@@ -705,16 +724,23 @@ void psrPCamp_c::updateAttention() {
     const cXyz door = doorPoint(mCenter, mYaw);
     const cXyz& at = link->current.pos;
     const f32 dDoor = std::hypot(at.x - door.x, at.z - door.z);
+    const cXyz front = benchFront(mCenter, mYaw);
+    const f32 dBench = std::hypot(at.x - front.x, at.z - front.z);
+    const bool human = !link->checkWolf();
     if (dDoor < kCheckReach) {
         mTalk = TALK_TENT;
         current.pos = doorFace(mCenter, mYaw);
+    } else if (human && dBench < kBenchReach && std::abs(at.y - mBenchY) < 80.0f) {
+        mTalk = TALK_BENCH;
+        current.pos = benchPoint(mCenter, mYaw);
+        current.pos.y = mBenchY;
     } else {
         current.pos = mCenter;
         return;
     }
-    current.pos.y = mCenter.y;
+    if (mTalk == TALK_TENT) current.pos.y = mCenter.y;
     attention_info.position = current.pos;
-    attention_info.position.y += 120.0f;
+    attention_info.position.y += mTalk == TALK_BENCH ? 70.0f : 120.0f;
     eyePos = attention_info.position;
     attention_info.distances[fopAc_attn_SPEAK_e] = daNpcT_getDistTableIdx(3, 6);
     attention_info.flags = fopAc_AttnFlag_SPEAK_e;
@@ -894,6 +920,64 @@ void psrPCamp_c::runSleep() {
     }
 }
 
+// On the bench: our talk event (no talk in it) holds Link; he plays his canoe sit, facing the fire. Each
+// frame his hips are measured and his feet steered so the hips come to rest over the seat (the sit was
+// made for the canoe, so where it puts his hips is found, not assumed). A or B: he gets up, in front.
+void psrPCamp_c::runSit() {
+    daAlink_c* link = daAlink_getAlinkActorClass();
+    if (link == nullptr) {
+        endEvent();
+        return;
+    }
+    const cXyz bench = benchPoint(mCenter, mYaw);
+    const s16 face = benchFacing(mYaw);
+    if (mTimer == 0) {
+        if (link->mEquipItem != dItemNo_NONE_e) link->deleteEquipItem(FALSE, FALSE);   // empty hands
+        mSitAt = benchFront(mCenter, mYaw);
+        mSitAt.y = mBenchY;
+        current.pos = mCenter;   // what he turns to (his talk partner): the fire
+        travellers::diagLine("pcamp   Link sits on the bench");
+    }
+    ++mTimer;
+    if (!link->checkUnderMove0BckNoArc(daAlink_c::ANM_WAIT_SIT)) link->setSingleAnimeBaseMorf(daAlink_c::ANM_WAIT_SIT, 10.0f);
+    link->shape_angle.y = link->current.angle.y = face;
+    // where his hips are (as last drawn) against where they belong: steer his feet by half the difference
+    MtxP base = link->getModelMtx();
+    MtxP hips = link->mpLinkModel->getAnmMtx(0);
+    if (base != NULL && hips != NULL && mTimer > 2) {
+        const cXyz want(bench.x, mBenchY + kBenchSeatY + kHipsOverSeat, bench.z);
+        const cXyz got(hips[0][3], hips[1][3], hips[2][3]);
+        mSitAt.x += (want.x - got.x) * 0.4f;
+        mSitAt.y += (want.y - got.y) * 0.4f;
+        mSitAt.z += (want.z - got.z) * 0.4f;
+        // never far from the bench, never below its ground (a wild reading can't send him off)
+        const f32 dx = mSitAt.x - bench.x, dz = mSitAt.z - bench.z, d = std::hypot(dx, dz);
+        if (d > 160.0f) {
+            mSitAt.x = bench.x + dx * 160.0f / d;
+            mSitAt.z = bench.z + dz * 160.0f / d;
+        }
+        mSitAt.y = std::clamp(mSitAt.y, mBenchY, mBenchY + 120.0f);
+        if (mTimer == 40) {
+            travellers::diagLine("pcamp   sitting: hips %.0f %.0f %.0f from his feet, %.0f off where they belong",
+                                 got.x - base[0][3], got.y - base[1][3], got.z - base[2][3], (want - got).abs());
+        }
+    }
+    link->current.pos = mSitAt;
+    link->old.pos = mSitAt;
+    link->speed.y = 0.0f;
+    link->speedF = 0.0f;
+    if (mTimer > kSitMinFrames && (mDoCPd_c::getTrigA(PAD_1) || mDoCPd_c::getTrigB(PAD_1))) {
+        cXyz up = benchFront(mCenter, mYaw);
+        const f32 g = probeGround(up.x, mBenchY, up.z);
+        up.y = g != -G_CM3D_F_INF ? g : mBenchY;
+        link->current.pos = up;
+        link->old.pos = up;
+        link->setSingleAnimeBaseMorf(daAlink_c::ANM_WAIT, 8.0f);
+        travellers::diagLine("pcamp   Link gets up from the bench");
+        endEvent();
+    }
+}
+
 int psrPCamp_c::Execute() {
     placeModels();
     updateFire();
@@ -902,13 +986,15 @@ int psrPCamp_c::Execute() {
         updateAttention();
         if (mTalk != TALK_NONE && eventInfo.checkCommandTalk()) {
             attention_info.flags = 0;
-            mState = ST_TALK;
+            mState = mTalk == TALK_BENCH ? ST_SIT : ST_TALK;
+            mTimer = 0;
             mFlowStarted = false;
         }
         break;
     case ST_SUMMON: runSummon(); break;
     case ST_TALK: runTalk(); break;
     case ST_SLEEP: runSleep(); break;
+    case ST_SIT: runSit(); break;
     }
     return 1;
 }
