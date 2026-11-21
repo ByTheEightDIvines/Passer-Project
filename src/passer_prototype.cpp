@@ -1211,7 +1211,6 @@ void beginDeath(daNpcPasser_c* passer, PasserState& state) {
 // --- Beedle knocked out (he can't die) ---------------------------------------------------------------
 constexpr int kKoLie = 30 * 45;          // lies there this long (unless Link wakes him first)
 constexpr f32 kKoLaunch = 0.6f;          // thrown less hard than a fatal blow throws a traveller
-constexpr f32 kKoUpFrom = 0.45f;         // getting up: the landing played backwards to here, then he stands
 void knockOut(daNpcPasser_c* passer, PasserState& state) {
     state.ko = 1;
     state.koFrames = 0;
@@ -1273,7 +1272,7 @@ bool koTick(daNpcPasser_c* passer, PasserState& state) {
         }
         return true;
     }
-    if (state.ko == 3 && !fighter_anim::gettingUp(passer, kKoUpFrom)) state.ko = 4;
+    if (state.ko == 3 && !fighter_anim::gettingUp(passer)) state.ko = 4;
     if (state.ko == 4) {
         // up again, his hearts back
         state.ko = 0;

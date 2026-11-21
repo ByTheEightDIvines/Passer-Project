@@ -75,11 +75,12 @@ void raiseShield(daNpcPasser_c* passer);
 // The fall (the last blow): the Bokoblin's fly-back pose while in the air (landed=false), then its
 // landing sprawl (landed=true), held on the last frame. False if the body has no such animation.
 bool fall(daNpcPasser_c* passer, bool landed);
-// Getting up off the ground after the fall (Beedle, knocked out): the landing played backwards, from
-// lying there; gettingUp is true until it has come back to `upTo` (0..1) of the way through, where
-// endGetUp hands him his own animations back. False: this body has no landing.
+// Getting up off the ground after the fall (Beedle, knocked out): his get-up (psr_m_getup, starting
+// where the landing leaves him: sits up, squats, a groggy shake of the head, up on his feet); gettingUp
+// is true until it has played, and endGetUp blends him into his standing pose. False: no get-up for
+// this body.
 bool startGetUp(daNpcPasser_c* passer);
-bool gettingUp(daNpcPasser_c* passer, f32 upTo);
+bool gettingUp(daNpcPasser_c* passer);
 void endGetUp(daNpcPasser_c* passer);
 // Once a frame, after the traveller's own code: keeps a hit or the fall playing. True while one is on.
 bool forcedTick(daNpcPasser_c* passer);

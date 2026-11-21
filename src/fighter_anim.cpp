@@ -928,18 +928,17 @@ bool fall(daNpcPasser_c* passer, bool landed) {
 
 bool startGetUp(daNpcPasser_c* passer) {
     if (passer == nullptr || passer->mpMorf == nullptr) return false;
-    J3DAnmTransformKey* land = borrowed(passer, "land");
-    if (land == nullptr) return false;
+    J3DAnmTransformKey* up = borrowed(passer, "getup");   // (Beedle's: from where the landing leaves him)
+    if (up == nullptr) return false;
     if (Forced* f = activeForced(passer)) { f->a = nullptr; f->before = nullptr; }   // the fall is over
-    passer->mpMorf->setAnm(land, J3DFrameCtrl::EMode_NONE, 0.0f, -0.8f, 0, -1);
-    passer->mpMorf->setFrameF(static_cast<f32>(land->getFrameMax()) - 1.0f);
+    passer->mpMorf->setAnm(up, J3DFrameCtrl::EMode_NONE, 0.0f, 1.0f, 0, -1);
     return true;
 }
 
-bool gettingUp(daNpcPasser_c* passer, f32 upTo) {
-    J3DAnmTransformKey* land = borrowed(passer, "land");
-    if (land == nullptr || passer->mpMorf == nullptr || passer->mpMorf->getAnm() != land) return false;
-    return passer->mpMorf->getFrame() > upTo * static_cast<f32>(land->getFrameMax()) && !passer->mpMorf->isStop();
+bool gettingUp(daNpcPasser_c* passer) {
+    J3DAnmTransformKey* up = borrowed(passer, "getup");
+    if (up == nullptr || passer->mpMorf == nullptr || passer->mpMorf->getAnm() != up) return false;
+    return !passer->mpMorf->isStop() && passer->mpMorf->getFrame() < passer->mpMorf->getEndFrame() - 1.0f;
 }
 
 void endGetUp(daNpcPasser_c* passer) {
