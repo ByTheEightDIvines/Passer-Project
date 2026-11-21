@@ -28,9 +28,11 @@
 - **Local compile check:** `/home/claude/build` (ninja), if the container still has it. Otherwise rely on CI.
 
 ## Installed right now (verified)
-- **Build:** `b127b0e`, `.dusk` sha256 `504d872e192c09596b969a3750631ef6664ae6d5dfc70452b51821d07669d034`.
-- **Pack:** its `PsrPack.arc` contains the new `bck/psr_m_getup.bck`. The installed `.dusk` is now the master copy of that archive.
-  - The user's own asset folder, if they rebuild from it, does NOT have it yet. We offered to put it in the Passer Project folder; no answer yet.
+- **Build:** `35853da`, `.dusk` sha256 `7cf818cb51e1452ba572c53a9a71c70164ffe798e79db85742eebb8d72e1c6d1`.
+- **Archives:**
+  - `PsrPack.arc` contains the new `bck/psr_m_getup.bck`.
+  - `PsrCamp.arc` contains the new `bmdr/coro_wood_link.bmd`, which Link's camp now uses (no spit posts).
+- **Backup copies:** everything from this session (build, both updated archives, sources, handover) is also in `Desktop\Passer Project\Session 2026-11-20\`.
 
 ## What this session did (all installed in b127b0e)
 1. **`71a6ae9`, guard zooming, first cause found from the video and diary:**
@@ -73,14 +75,10 @@
 The user said: once these are done, "we can finally do the big AI build for the NPCs".
 
 1. **Link's camp fire: simpler, no spit sticks.**
-   - DONE as an asset, NOT installed.
+   - DONE and INSTALLED (`35853da`). The user hasn't seen it in game yet.
    - The posts and forks are 92 triangles of `coro_wood.bmd`, sharing no vertices with the woodpile. They were collapsed to a hidden point to make `coro_wood_link.bmd`.
    - `coro_wood.bmd` itself must stay: the travellers' camps hang their pot on it.
-   - **Still to do:**
-     - Put `coro_wood_link.bmd` into PsrCamp.arc.
-     - Point `kFireParts[1]` in `src/player_camp.cpp` at it.
-     - Show the user a render of the whole camp first.
-     - (The file is in the zip with this handover.)
+   - It's in PsrCamp.arc, and `kFireParts[1]` in `src/player_camp.cpp` points at it.
 2. **Link's camp layout ("looks out of place next to the tent").** Now:
    - Fire at the camp centre.
    - Tent (a_tent ×1.3, footprint ±167 × ±275 scaled) at z −650, door facing the fire, so about 400 of empty ground between door and fire.
@@ -117,6 +115,10 @@ The user said: once these are done, "we can finally do the big AI build for the 
   - The Rom Dump (vanilla `res/Object`) was denied twice. Don't ask again; use mod archives and the handover zip.
 - **Handover zip:** `Desktop\Passer Project\DT_handover_2026-11-18.zip`, 171 MB. Contains `work/w_anim` (bmd/bck/render/rarc/rarcwrite tools), `repo/tools`, and assets.
 
-## Files with this handover
-- `coro_wood_link.bmd`: Link's fire wood without the spit posts (not yet in any archive).
-- `beedle_getup_sheet.png` / `beedle_getup.gif`: the approved get-up.
+## Files in Desktop\Passer Project\Session 2026-11-20\
+- `Dynamic Travelers (35853da).dusk`: the installed build.
+- `assets/overlay/res/Object/PsrPack.arc` and `PsrCamp.arc`: the updated archives. Copy them over the asset folder if rebuilding from it.
+- `assets/coro_wood_link.bmd` and `assets/psr_m_getup.bck`: the new pieces on their own.
+- `source_35853da.zip`: the repo at this build.
+- `tools_w_anim_getup.zip`: the model/animation tools used and the get-up script.
+- `renders/`: the get-up GIF and sheet, the fire-wood preview.
