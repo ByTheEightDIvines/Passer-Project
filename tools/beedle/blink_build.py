@@ -9,7 +9,7 @@ def h16(s):
     return h
 assert h16('SC_eye')==0x735e
 def pad(b,a=32,fill=b'\0'): return b+fill*((-len(b))%a)
-def add_textures(bmd, imgs, names):
+def add_textures(bmd, imgs, names, like=0, alpha=True):
     d=bytearray(bmd); o=d.find(b'TEX1'); assert o>0
     size=struct.unpack_from('>I',d,o+4)[0]; assert o+size==len(d) or o+size==len(d)-(len(d)-o-size)
     n=struct.unpack_from('>H',d,o+8)[0]; ho=o+struct.unpack_from('>I',d,o+0xC)[0]; so=o+struct.unpack_from('>I',d,o+0x10)[0]
@@ -17,15 +17,16 @@ def add_textures(bmd, imgs, names):
     data=[]
     for i in range(n):
         h=hdr[i]; fmt,w,hh=h[0],struct.unpack_from('>H',h,2)[0],struct.unpack_from('>H',h,4)[0]
-        assert fmt==14 and h[0x18]==1
+        assert fmt==14 and h[0x18]==1, (fmt,h[0x18])
         st=ho+32*i+struct.unpack_from('>I',h,0x1C)[0]; data.append(bytes(d[st:st+w*hh//2]))
     old=[]; cnt=struct.unpack_from('>H',d,so)[0]
     for i in range(cnt):
         off=struct.unpack_from('>H',d,so+4+4*i+2)[0]; old.append(d[so+off:d.index(b'\0',so+off)].decode())
-    eye=hdr[0]
+    eye=hdr[like]
     for im,nm in zip(imgs,names):
-        a=np.asarray(im.convert('RGBA'),np.uint8); assert a.shape==(256,256,4)
-        hdr.append(bytearray(eye)); data.append(encode_cmpr_rgba(a)); old.append(nm)
+        a=np.asarray(im.convert('RGBA'),np.uint8)
+        h=bytearray(eye); struct.pack_into('>HH',h,2,a.shape[1],a.shape[0])
+        hdr.append(h); data.append(encode_cmpr_rgba(a) if alpha else __import__('bmdwrite').encode_cmpr(a[...,:3])); old.append(nm)
     N=len(hdr)
     # string table
     st=struct.pack('>HH',N,0xFFFF); off=4+4*N; body=b''

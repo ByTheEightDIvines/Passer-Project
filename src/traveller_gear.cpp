@@ -149,7 +149,7 @@ const Look* lookFor(int type, int variant) {
 }
 
 // The camp cook (camp_cook.cpp): #9's own model and clothes, straight from the game.
-const Look kCookLook = {"MAD_a2", "mad_a2.bmd", "mad_a2.btp", nullptr};
+const Look kCookLook = {"P_Cook", "psr_cook.bmd", "psr_cook.btp", nullptr};   // cream jacket, grey hair, canvas apron
 
 // Beedle (tools/beedle): his own model on the men's skeleton, his Wind Waker talking (psr_bs_*_up.bck)
 // in the same archive. No pack (his bag is part of him); his lantern hangs from the bag's right side.
