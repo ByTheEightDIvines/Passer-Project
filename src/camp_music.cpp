@@ -6,6 +6,7 @@
 
 #include "camp_music.hpp"
 
+#include "SSystem/SComponent/c_counter.h"
 #include "SSystem/SComponent/c_math.h"
 #include "Z2AudioLib/Z2AudioMgr.h"
 #include "d/actor/d_a_npc_passer.h"
@@ -42,9 +43,15 @@ enum Phase { kIdle, kLoading, kPlaying, kResting };
 Phase g_phase = kIdle;
 int g_song = -1;
 u32 soundId(int s) { return g_soundId[g_song < 0 ? 0 : g_song][s]; }
-int g_frames = 0;                     // into the current phase
-int g_lastBard = -1000;               // frame the bard last played
-int g_frame = 0;
+int g_frames = 0;                     // into the current phase (game frames)
+// Timed in GAME frames (g_Counter): the mod's update can run more often than the game's frame, and
+// the bard reports once per game frame, so counting updates made his reports look like gaps and cut the
+// song off moments after it began. And a gap is forgiven for a while (he stands up a moment, a fight
+// nearby, a frame the game skips him): the song carries on and picks up where it was.
+constexpr u32 kGrace = 90;            // 3 s without a report before the song stops
+u32 g_lastBard = 0;                   // game frame the bard last played
+bool g_heardBard = false;
+u32 g_lastCounter = 0xFFFFFFFFu;
 int g_men = 0, g_women = 0;           // singing along this frame (counted up, used next frame)
 int g_menNow = 0, g_womenNow = 0;
 JGeometry::TVec3<f32> g_pos;          // the bard: where the music comes from
@@ -139,7 +146,8 @@ bool install() {
 
 void bardPlays(daNpcPasser_c* bard) {
     if (bard == nullptr) return;
-    g_lastBard = g_frame;
+    g_lastBard = g_Counter.mCounter0;
+    g_heardBard = true;
     ++g_men;                               // he sings as he plays
     g_pos.set(bard->current.pos.x, bard->current.pos.y + 100.0f, bard->current.pos.z);
 }
@@ -150,11 +158,13 @@ void singsAlong(daNpcPasser_c* singer) {
 }
 
 void tick() {
-    ++g_frame;
+    const u32 now = g_Counter.mCounter0;
+    if (now == g_lastCounter) return;     // once per game frame (the singers' counts are per game frame too)
+    g_lastCounter = now;
     g_menNow = g_men; g_womenNow = g_women;
     g_men = g_women = 0;
     if (!g_installed) return;
-    const bool bard = g_frame - g_lastBard <= 10;
+    const bool bard = g_heardBard && now - g_lastBard <= kGrace;
     if (!bard) {
         if (g_phase != kIdle) {
             travellers::diagLine("music   the bard stopped");
