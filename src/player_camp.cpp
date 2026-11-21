@@ -52,7 +52,7 @@ namespace {
 // --- the camp's layout (camp space: +z is the way it faces, toward where Link stood) ------------
 const char* kCampArc = "PsrCamp";   // Coro's fire (ours)
 const char* kPackArc = "PsrPack";   // the log bench (ours)
-const char* kFireParts[2] = {"coro_stones.bmd", "coro_wood.bmd"};   // no pot: no soup at Link's camp
+const char* kFireParts[2] = {"coro_stones.bmd", "coro_wood_link.bmd"};   // no pot, no soup, no spit posts at Link's camp
 constexpr f32 kFlameY = -30.0f;            // Coro's flame comes up from under his firewood
 constexpr f32 kTentBack = 650.0f;          // the tent behind the fire, its door to it
 constexpr s16 kBenchAngle = 0x1C00;        // the bench in front of the fire, a little to the side
